@@ -70,11 +70,11 @@ impl Node {
             port: self.port,
         };
 
-        println!("开始UDP广播...");
+        println!("Starting UDP broadcast...");
         loop {
             let json = serde_json::to_string(&message).unwrap();
             if let Err(e) = socket.send_to(json.as_bytes(), broadcast_addr).await {
-                eprintln!("广播消息失败: {}", e);
+                eprintln!("Broadcast message failed: {}", e);
             }
             tokio::time::sleep(BROADCAST_INTERVAL).await;
         }
@@ -82,7 +82,7 @@ impl Node {
 
     async fn start_udp_discovery(&self) -> std::io::Result<()> {
         let socket = UdpSocket::bind(("0.0.0.0", BROADCAST_PORT)).await?;
-        println!("开始监听UDP发现消息在端口 {}...", BROADCAST_PORT);
+        println!("Starting to listen for UDP discovery messages on port {}...", BROADCAST_PORT);
         
         let mut buf = [0u8; 1024];
         loop {
@@ -95,47 +95,47 @@ impl Node {
                                 let node = self.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = node.connect_to_peer(peer_addr).await {
-                                        eprintln!("连接到节点 {} 失败: {}", peer_addr, e);
+                                        eprintln!("Failed to connect to node {}: {}", peer_addr, e);
                                     }
                                 });
                             }
                         }
                     }
                 }
-                Err(e) => eprintln!("接收UDP消息失败: {}", e),
+                Err(e) => eprintln!("Failed to receive UDP message: {}", e),
             }
         }
     }
 
     async fn connect_to_peer(&self, addr: SocketAddr) -> std::io::Result<()> {
         if self.peers.lock().unwrap().contains_key(&addr) {
-            println!("已经连接到节点 {}", addr);
+            println!("Already connected to node {}", addr);
             return Ok(());
         }
 
         let stream = TcpStream::connect(addr).await?;
-        println!("TCP连接已建立到 {}", addr);
+        println!("TCP connection established to {}", addr);
         let (reader, writer) = stream.into_split();
 
         let (tx, mut rx) = mpsc::channel(32);
         self.peers.lock().unwrap().insert(addr, tx);
-        println!("已连接到节点: {}", addr);
+        println!("Connected to node: {}", addr);
 
         let mut writer = BufWriter::new(writer);
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
-                println!("正在发送消息: {}", msg.trim());
+                println!("Sending message: {}", msg.trim());
                 if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                    eprintln!("发送消息失败: {}", e);
+                    eprintln!("Failed to send message: {}", e);
                     break;
                 }
                 if let Err(e) = writer.flush().await {
-                    eprintln!("刷新缓冲区失败: {}", e);
+                    eprintln!("Failed to flush buffer: {}", e);
                     break;
                 }
-                println!("消息发送完成");
+                println!("Message sent successfully");
             }
-            println!("消息发送任务结束: {}", addr);
+            println!("Message sending task ended: {}", addr);
         });
 
         let node = self.clone();
@@ -147,23 +147,23 @@ impl Node {
                 line.clear();
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
-                        println!("连接关闭: {}", addr);
+                        println!("Connection closed: {}", addr);
                         break;
                     }
                     Ok(n) => {
-                        println!("收到 {} 字节的原始消息: {}", n, line);
+                        println!("Received {} bytes of raw message: {}", n, line);
                         if let Err(e) = node.handle_message(line.trim()).await {
-                            eprintln!("处理消息失败: {}", e);
+                            eprintln!("Failed to process message: {}", e);
                         }
                     }
                     Err(e) => {
-                        eprintln!("读取消息失败: {}", e);
+                        eprintln!("Failed to read message: {}", e);
                         break;
                     }
                 }
             }
 
-            println!("连接断开: {}", addr);
+            println!("Connection disconnected: {}", addr);
             node.peers.lock().unwrap().remove(&addr);
         });
 
@@ -175,23 +175,23 @@ impl Node {
         let (tx, mut rx) = mpsc::channel(32);
         
         self.peers.lock().unwrap().insert(addr, tx);
-        println!("接受新连接: {}", addr);
+        println!("Accepting new connection: {}", addr);
 
         let mut writer = BufWriter::new(writer);
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
-                println!("正在发送消息: {}", msg.trim());
+                println!("Sending message: {}", msg.trim());
                 if let Err(e) = writer.write_all(msg.as_bytes()).await {
-                    eprintln!("发送消息失败: {}", e);
+                    eprintln!("Failed to send message: {}", e);
                     break;
                 }
                 if let Err(e) = writer.flush().await {
-                    eprintln!("刷新缓冲区失败: {}", e);
+                    eprintln!("Failed to flush buffer: {}", e);
                     break;
                 }
-                println!("消息发送完成");
+                println!("Message sent successfully");
             }
-            println!("消息发送任务结束: {}", addr);
+            println!("Message sending task ended: {}", addr);
         });
 
         let node = self.clone();
@@ -203,23 +203,23 @@ impl Node {
                 line.clear();
                 match reader.read_line(&mut line).await {
                     Ok(0) => {
-                        println!("连接关闭: {}", addr);
+                        println!("Connection closed: {}", addr);
                         break;
                     }
                     Ok(n) => {
-                        println!("收到 {} 字节的原始消息: {}", n, line);
+                        println!("Received {} bytes of raw message: {}", n, line);
                         if let Err(e) = node.handle_message(line.trim()).await {
-                            eprintln!("处理消息失败: {}", e);
+                            eprintln!("Failed to process message: {}", e);
                         }
                     }
                     Err(e) => {
-                        eprintln!("读取消息失败: {}", e);
+                        eprintln!("Failed to read message: {}", e);
                         break;
                     }
                 }
             }
 
-            println!("连接断开: {}", addr);
+            println!("Connection disconnected: {}", addr);
             node.peers.lock().unwrap().remove(&addr);
         });
 
@@ -232,7 +232,7 @@ impl Node {
             content,
         };
         let json = serde_json::to_string(&message).unwrap() + "\n";  
-        println!("准备发送JSON消息: {}", json.trim());
+        println!("Preparing to send JSON message: {}", json.trim());
 
         let peers = {
             let guard = self.peers.lock().unwrap();
@@ -240,16 +240,16 @@ impl Node {
         };
 
         if peers.is_empty() {
-            println!("当前没有连接的节点");
+            println!("No connected nodes currently");
             return Ok(());
         }
 
-        println!("正在向 {} 个节点发送消息", peers.len());
+        println!("Sending message to {} nodes", peers.len());
         for (addr, sender) in peers.iter() {
             match sender.send(json.clone()).await {
-                Ok(_) => println!("消息已发送到节点 {}", addr),
+                Ok(_) => println!("Message sent to node {}", addr),
                 Err(e) => {
-                    eprintln!("发送消息到 {} 失败: {}", addr, e);
+                    eprintln!("Failed to send message to {}: {}", addr, e);
                     self.peers.lock().unwrap().remove(addr);
                 }
             }
@@ -259,32 +259,32 @@ impl Node {
     }
 
     async fn handle_message(&self, line: &str) -> Result<(), serde_json::Error> {
-        println!("尝试解析消息: {}", line);
+        println!("Trying to parse message: {}", line);
         match serde_json::from_str(line) {
             Ok(Message::Chat { from, content }) => {
-                println!("\n收到来自 {} 的消息: {}", from, content);
+                println!("\nReceived message from {}: {}", from, content);
                 print!("> ");
                 std::io::stdout().flush().unwrap();
                 Ok(())
             }
             Ok(Message::Discovery { name, port }) => {
-                println!("收到来自 {} 的Discovery消息，端口: {}", name, port);
+                println!("Received Discovery message from {}, port: {}", name, port);
                 Ok(())
             }
             Err(e) => {
-                eprintln!("解析消息失败: {} (原始消息: {})", e, line);
+                eprintln!("Failed to parse message: {} (raw message: {})", e, line);
                 Err(e)
             }
         }
     }
 
     pub async fn run(&self) -> std::io::Result<()> {
-        println!("启动节点服务...");
-        println!("本地节点: {} (TCP端口: {})", self.name, self.port);
+        println!("Starting node service...");
+        println!("Local node: {} (TCP port: {})", self.name, self.port);
 
         let listener = TcpListener::bind(("0.0.0.0", self.port)).await?;
-        println!("TCP服务已启动在端口 {}", self.port);
-        println!("\n开始聊天 (输入 'quit' 退出):");
+        println!("TCP service started on port {}", self.port);
+        println!("\nStart chatting (type 'quit' to exit):");
         print!("> ");
         std::io::stdout().flush().unwrap();
 
@@ -292,14 +292,14 @@ impl Node {
         tokio::spawn(async move {
             while let Ok((stream, addr)) = listener.accept().await {
                 if let Err(e) = node.handle_incoming_connection(stream, addr).await {
-                    eprintln!("处理连接失败: {}", e);
+                    eprintln!("Failed to handle connection: {}", e);
                 }
             }
         });
 
         let broadcast_socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
         broadcast_socket.set_broadcast(true)?;
-        println!("开始监听UDP发现消息在端口 8888...");
+        println!("Starting to listen for UDP discovery messages on port 8888...");
 
         let discovery_socket = UdpSocket::bind(("0.0.0.0", 8888)).await;
         match discovery_socket {
@@ -311,10 +311,10 @@ impl Node {
                         if let Ok(msg) = String::from_utf8(buf[..len].to_vec()) {
                             if let Ok(Message::Discovery { port, name: _ }) = serde_json::from_str(&msg) {
                                 let peer_addr = SocketAddr::new(addr.ip(), port);
-                                if peer_addr.port() != node.port {  // 避免连接自己
-                                    if !node.peers.lock().unwrap().contains_key(&peer_addr) {  // 只连接新节点
+                                if peer_addr.port() != node.port {  // Avoid connecting to self
+                                    if !node.peers.lock().unwrap().contains_key(&peer_addr) {  // Only connect to new nodes
                                         if let Err(e) = node.connect_to_peer(peer_addr).await {
-                                            eprintln!("连接节点失败: {}", e);
+                                            eprintln!("Failed to connect to node: {}", e);
                                         }
                                     }
                                 }
@@ -324,11 +324,11 @@ impl Node {
                 });
             }
             Err(e) => {
-                eprintln!("UDP发现服务失败: {}", e);
+                eprintln!("UDP discovery service failed: {}", e);
             }
         }
 
-        println!("开始UDP广播...");
+        println!("Starting UDP broadcast...");
         let node = self.clone();
         tokio::spawn(async move {
             let message = Message::Discovery {
@@ -340,7 +340,7 @@ impl Node {
             
             loop {
                 if let Err(e) = broadcast_socket.send_to(json.as_bytes(), broadcast_addr).await {
-                    eprintln!("UDP广播失败: {}", e);
+                    eprintln!("UDP broadcast failed: {}", e);
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -358,7 +358,7 @@ impl Node {
             }
 
             if let Err(e) = self.broadcast_message(message).await {
-                eprintln!("发送消息失败: {}", e);
+                eprintln!("Failed to send message: {}", e);
             }
             print!("> ");
             std::io::stdout().flush().unwrap();
