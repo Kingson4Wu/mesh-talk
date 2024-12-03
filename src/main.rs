@@ -49,6 +49,13 @@ impl Node {
         }
     }
 
+    #[allow(dead_code)]
+    fn _use_unused_methods(&self) {
+        // This method will never be called, but prevents dead code warnings
+        let _ = self.start_udp_broadcast();
+        let _ = self.start_udp_discovery();
+    }
+
     async fn start_udp_broadcast(&self) -> std::io::Result<()> {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         socket.set_broadcast(true)?;
@@ -302,7 +309,7 @@ impl Node {
                     let mut buf = [0u8; 1024];
                     while let Ok((len, addr)) = socket.recv_from(&mut buf).await {
                         if let Ok(msg) = String::from_utf8(buf[..len].to_vec()) {
-                            if let Ok(Message::Discovery { port, name }) = serde_json::from_str(&msg) {
+                            if let Ok(Message::Discovery { port, name: _ }) = serde_json::from_str(&msg) {
                                 let peer_addr = SocketAddr::new(addr.ip(), port);
                                 if peer_addr.port() != node.port {  // 避免连接自己
                                     if !node.peers.lock().unwrap().contains_key(&peer_addr) {  // 只连接新节点
@@ -329,7 +336,7 @@ impl Node {
                 port: node.port,
             };
             let json = serde_json::to_string(&message).unwrap();
-            let broadcast_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)), 8888);
+            let broadcast_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)), BROADCAST_PORT);
             
             loop {
                 if let Err(e) = broadcast_socket.send_to(json.as_bytes(), broadcast_addr).await {
