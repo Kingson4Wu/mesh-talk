@@ -196,6 +196,8 @@ impl PersistentEventLog {
     }
 }
 
+// NOTE: this impl is structurally identical to `impl SyncStore for EventLog`
+// in sync.rs — keep the two in sync.
 impl SyncStore for PersistentEventLog {
     fn event_ids(&self, conversation: &ConversationId) -> Vec<EventId> {
         self.events(conversation).iter().map(|e| e.id).collect()

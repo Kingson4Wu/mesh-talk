@@ -7,6 +7,13 @@
 //! Reconciliation is id-set based, not version-vector based: the store does not
 //! guarantee dense per-author sequences, so a version-vector diff would miss a
 //! gap. See the module plan for the rationale.
+//!
+//! [`SyncStore::events_excluding`] returns the missing events in the store's
+//! `(lamport, id)` order, which is topological for honestly-built events, so a
+//! requester can ingest them one-by-one (each event's parents precede it or
+//! already exist). [`SyncStore::ingest`] re-validates every event regardless,
+//! so a peer that violates the Lamport invariant cannot corrupt the receiver —
+//! at worst its events are rejected with `MissingParents`.
 
 use crate::eventlog::event::{ConversationId, Event, EventId};
 use crate::eventlog::store::{AppendOutcome, EventLog};
@@ -27,6 +34,9 @@ pub struct SyncRequest {
 pub struct SyncResponse {
     pub conversation: ConversationId,
     pub events: Vec<Event>,
+    /// The responder's OWN event ids (note: `SyncRequest::have` is the
+    /// requester's). The requester uses these to compute the events the
+    /// responder is missing, returned via [`SyncFollowup`].
     pub have: Vec<EventId>,
 }
 
@@ -44,7 +54,9 @@ pub struct ApplyReport {
     pub applied: usize,
     /// Events already present (content-addressed duplicates).
     pub duplicates: usize,
-    /// Events rejected by validation, with the reason. (id, message)
+    /// Events rejected by validation, with a human-readable reason. (id, message)
+    /// Phase-0 keeps the reason as a `String` (diagnostics only); a structured
+    /// `LogError` would be needed before sync branches on the failure kind.
     pub rejected: Vec<(EventId, String)>,
 }
 
@@ -64,6 +76,8 @@ pub trait SyncStore {
     fn ingest(&mut self, event: Event) -> Result<AppendOutcome, LogError>;
 }
 
+// NOTE: this impl is structurally identical to `impl SyncStore for
+// PersistentEventLog` in persist.rs — keep the two in sync.
 impl SyncStore for EventLog {
     fn event_ids(&self, conversation: &ConversationId) -> Vec<EventId> {
         self.events(conversation).iter().map(|e| e.id).collect()
@@ -153,5 +167,46 @@ mod tests {
             bincode::deserialize(&bincode::serialize(&resp).unwrap()).unwrap();
         assert_eq!(req2.have, req.have);
         assert_eq!(resp2.events, resp.events);
+    }
+
+    #[test]
+    fn events_excluding_preserves_topo_order_skipping_middle() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let mid = ev(&id, 2, vec![root.id], 2, b"mid");
+        let tip = ev(&id, 3, vec![mid.id], 3, b"tip");
+        log.append(root.clone()).unwrap();
+        log.append(mid.clone()).unwrap();
+        log.append(tip.clone()).unwrap();
+
+        // Exclude the MIDDLE event; the remainder must stay in topo order.
+        let have: HashSet<EventId> = std::iter::once(mid.id).collect();
+        let remaining = log.events_excluding(&conv(), &have);
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].id, root.id); // root before tip
+        assert_eq!(remaining[1].id, tip.id);
+    }
+
+    #[test]
+    fn event_ids_is_empty_for_unknown_conversation() {
+        let log = EventLog::default();
+        assert!(log.event_ids(&conv()).is_empty());
+        let all: HashSet<EventId> = HashSet::new();
+        assert!(log.events_excluding(&conv(), &all).is_empty());
+    }
+
+    #[test]
+    fn followup_round_trips_through_bincode() {
+        let id = DeviceIdentity::generate();
+        let a = ev(&id, 1, vec![], 1, b"a");
+        let followup = SyncFollowup {
+            conversation: conv(),
+            events: vec![a.clone()],
+        };
+        let back: SyncFollowup =
+            bincode::deserialize(&bincode::serialize(&followup).unwrap()).unwrap();
+        assert_eq!(back.conversation, followup.conversation);
+        assert_eq!(back.events, followup.events);
     }
 }
