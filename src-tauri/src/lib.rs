@@ -28,6 +28,7 @@ pub mod platform;
 pub mod services;
 pub mod state;
 pub mod storage;
+pub mod transport;
 pub mod tray;
 pub mod user_friendly_errors;
 pub mod utils;

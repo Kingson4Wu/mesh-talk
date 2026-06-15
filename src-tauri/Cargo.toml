@@ -46,6 +46,8 @@ log = "0.4.28"
 hex = "0.4"
 # For RSA encryption test
 rsa = { version = "0.9", features = ["std"] }
+# Noise secure transport
+snow = "0.9"
 
 [dev-dependencies]
 once_cell = "1.19"
