@@ -1,0 +1,12 @@
+# Gitleaks config — extends the default ruleset with a narrow allowlist.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Paths that legitimately contain key-shaped strings (test fixtures, lockfiles, generated keys)."
+paths = [
+  '''Cargo\.lock''',
+  '''.*package-lock\.json''',
+  '''src-tauri/src/.*tests?\.rs''',
+  '''src-tauri/src/commands\.rs''',
+]

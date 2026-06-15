@@ -1,7 +1,25 @@
-[deepwiki](https://deepwiki.com/Kingson4Wu/mesh-talk)
+<a id="readme-top"></a>
 
 # Mesh-Talk
+
+[![CI](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml)
+[![Gitleaks](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
+[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#prerequisites)
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/Kingson4Wu/mesh-talk)
+
 A local network chat tool written in Rust that enables users to communicate directly with others on the same network using UDP broadcast and TCP connections.
+
+<p align="center">
+  <a href="CONTEXT.md"><strong>Domain & architecture »</strong></a>
+  ·
+  <a href="https://github.com/Kingson4Wu/mesh-talk/issues/new?template=bug_report.yml">Report Bug</a>
+  ·
+  <a href="https://github.com/Kingson4Wu/mesh-talk/issues/new?template=feature_request.yml">Request Feature</a>
+</p>
 
 ## Features
 
@@ -124,6 +142,19 @@ The project includes scripts for automated maintenance:
 - Automatic security scanning for dependencies
 - Build verification on multiple platforms
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev
+setup, build/test/lint commands, and conventions. The domain model and
+architecture are documented in [CONTEXT.md](CONTEXT.md) and [AGENTS.md](AGENTS.md).
+
+## Security
+
+Please report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not
+open a public issue for security reports.
+
 ## License
 
-This project is open source and available under the MIT License.
+This project is open source under the [MIT License](LICENSE).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
