@@ -75,7 +75,9 @@ impl EventLog {
 
     /// Insert an event that is already known to be valid (validated here, or
     /// authenticated at rest on reload). Must be called in causal order:
-    /// every parent must already be indexed.
+    /// every parent must already be indexed. The precondition is checked by a
+    /// `debug_assert!`; release builds trust the caller's ordering, and an
+    /// out-of-order insert would leave a stale head rather than failing.
     pub(crate) fn index_trusted(&mut self, event: Event) {
         debug_assert!(
             event.parents.iter().all(|p| self.events.contains_key(p)),
@@ -153,6 +155,13 @@ impl EventLog {
     }
 
     /// Per-author highest sequence number seen in a conversation (for sync).
+    ///
+    /// This is a **max(seq), not a dense high-water mark**: the store does not
+    /// enforce gap-free per-author sequences, so `author → 5` does NOT imply
+    /// seqs 1..=5 are all present (a peer could deliver seqs 1 and 5 only). The
+    /// sync engine must treat this as an availability hint and reconcile actual
+    /// coverage via the causal frontier ([`EventLog::heads`]) and missing-parent
+    /// detection, not assume contiguity.
     pub fn version_vector(&self, conversation: &ConversationId) -> HashMap<Author, u64> {
         self.version.get(conversation).cloned().unwrap_or_default()
     }
