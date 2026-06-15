@@ -17,6 +17,7 @@ pub async fn dial(
     expected_peer: Option<&PublicIdentity>,
 ) -> Result<SecureChannel<TcpStream>, TransportError> {
     let stream = TcpStream::connect(addr).await?;
+    stream.set_nodelay(true)?;
     SecureChannel::connect(stream, identity, expected_peer).await
 }
 
@@ -26,6 +27,7 @@ pub async fn accept(
     identity: &DeviceIdentity,
 ) -> Result<SecureChannel<TcpStream>, TransportError> {
     let (stream, _addr) = listener.accept().await?;
+    stream.set_nodelay(true)?;
     SecureChannel::accept(stream, identity).await
 }
 
@@ -69,5 +71,36 @@ mod tests {
         let result = dial(addr, &a, Some(&wrong)).await;
         assert!(matches!(result, Err(TransportError::UnexpectedPeer)));
         let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn dial_with_no_expected_peer_still_authenticates() {
+        // `None` does not PIN a peer, but the channel is still authenticated:
+        // `peer_identity()` reflects the real, cryptographically-verified peer.
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let b_pub = b.public();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            accept(&listener, &b).await.expect("accept");
+        });
+
+        let ch = dial(addr, &a, None).await.expect("dial with no pin");
+        assert_eq!(ch.peer_identity(), &b_pub);
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn dial_to_a_closed_port_errors() {
+        // Bind then drop to get a port that is now closed; dialing it must return
+        // an error (connection refused), never panic.
+        let a = DeviceIdentity::generate();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        assert!(dial(addr, &a, None).await.is_err());
     }
 }
