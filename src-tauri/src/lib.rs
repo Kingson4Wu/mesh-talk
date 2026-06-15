@@ -25,6 +25,7 @@ pub mod events;
 pub mod identity;
 pub mod logger;
 pub mod network;
+pub mod node;
 pub mod notifications;
 pub mod perf;
 pub mod platform;
