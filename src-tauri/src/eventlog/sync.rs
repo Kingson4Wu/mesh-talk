@@ -66,7 +66,10 @@ pub trait SyncStore {
     /// All event ids this store holds for the conversation.
     fn event_ids(&self, conversation: &ConversationId) -> Vec<EventId>;
     /// The conversation's events whose id is NOT in `have`, cloned, in
-    /// topological (`(lamport, id)`) order — safe to ingest one-by-one.
+    /// **topological order**: every event's parents must precede it in the
+    /// returned slice or already be in `have`, so a requester can ingest them
+    /// one-by-one without a spurious `MissingParents`. `EventLog`'s `(lamport,
+    /// id)` sort satisfies this for honestly-authored events.
     fn events_excluding(
         &self,
         conversation: &ConversationId,
@@ -162,9 +165,14 @@ pub fn handle_followup(store: &mut impl SyncStore, followup: &SyncFollowup) -> A
 }
 
 /// Run a full in-process reconciliation between two stores for one conversation.
-/// `a` is the requester, `b` the responder; afterward both hold the union of the
-/// two logs. Returns `(report_a, report_b)` — what each side applied. This is the
-/// reference driver; over a network, the three messages travel across a channel.
+/// `a` is the requester, `b` the responder. Afterward both hold the union of the
+/// **valid** events each can accept: events that fail [`SyncStore::ingest`] (bad
+/// signature, missing parent, equivocation) are skipped on both sides and listed
+/// in the returned [`ApplyReport`]s. Returns `(report_a, report_b)`.
+///
+/// This is the reference in-process driver (over a network the three messages
+/// travel across a channel). It is PAIRWISE: transitive propagation across three
+/// or more peers requires chaining `reconcile` calls (e.g. A↔B then B↔C).
 pub fn reconcile<A: SyncStore, B: SyncStore>(
     a: &mut A,
     b: &mut B,
@@ -229,7 +237,10 @@ mod tests {
         b.append(root.clone()).unwrap();
         b.append(b_ev.clone()).unwrap();
 
-        reconcile(&mut a, &mut b, conv());
+        let (report_a, report_b) = reconcile(&mut a, &mut b, conv());
+        assert_eq!(report_a.applied, 1); // a receives b_ev
+        assert_eq!(report_b.applied, 1); // b receives a_ev
+        assert!(report_a.rejected.is_empty() && report_b.rejected.is_empty());
         assert_converged(&a, &b);
         // Both now hold all three events.
         assert!(a.has(&a_ev.id) && a.has(&b_ev.id));
@@ -252,7 +263,9 @@ mod tests {
         let mut partial = EventLog::default();
         partial.append(root.clone()).unwrap();
 
-        reconcile(&mut partial, &mut full, conv());
+        let (report_partial, report_full) = reconcile(&mut partial, &mut full, conv());
+        assert_eq!(report_partial.applied, 2); // partial receives a_ev + b_ev
+        assert_eq!(report_full.applied, 0); // full already had everything
         assert_converged(&partial, &full);
         assert_eq!(partial.events(&conv()).len(), 3);
     }
@@ -670,5 +683,41 @@ mod tests {
         assert_eq!(report.applied, 0);
         assert_eq!(report.rejected.len(), 2);
         assert_eq!(store.event_ids(&conv()).len(), 1); // still just root
+    }
+
+    #[test]
+    fn peer_holding_merge_event_converges_in_one_round() {
+        // A already holds a full DAG including a merge of two branches; B holds
+        // only the root. A SINGLE reconcile must bring B fully up to date — the
+        // merge and both its parents arrive topologically ordered in one round.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let root = ev(&alice, 1, vec![], 1, b"root");
+        let a1 = ev(&alice, 2, vec![root.id], 2, b"a1");
+        let b1 = Event::new(
+            &bob,
+            conv(),
+            1,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b1".to_vec(),
+        );
+        let merge = ev(&alice, 3, vec![a1.id, b1.id], 3, b"merge");
+
+        let mut a = EventLog::default();
+        for e in [&root, &a1, &b1, &merge] {
+            a.append(e.clone()).unwrap();
+        }
+        let mut b = EventLog::default();
+        b.append(root.clone()).unwrap();
+
+        // B is the requester (behind); A is the responder (holds the merge).
+        let (report_b, report_a) = reconcile(&mut b, &mut a, conv());
+        assert_eq!(report_b.applied, 3); // a1, b1, merge
+        assert_eq!(report_a.applied, 0);
+        assert_converged(&a, &b);
+        assert!(b.has(&merge.id));
     }
 }
