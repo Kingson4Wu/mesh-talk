@@ -20,11 +20,12 @@
 
 use crate::eventlog::event::{Author, ConversationId, Event, EventId};
 use crate::eventlog::store::{AppendOutcome, EventLog};
+use crate::eventlog::sync::SyncStore;
 use crate::eventlog::LogError;
 use crate::storage::encryption::{
     decrypt_data, encrypt_data, generate_salt, EncryptionKey, NONCE_SIZE, SALT_SIZE,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -192,6 +193,26 @@ impl PersistentEventLog {
     }
     pub fn prepare(&self, conversation: &ConversationId) -> (Vec<EventId>, u64) {
         self.log.prepare(conversation)
+    }
+}
+
+impl SyncStore for PersistentEventLog {
+    fn event_ids(&self, conversation: &ConversationId) -> Vec<EventId> {
+        self.events(conversation).iter().map(|e| e.id).collect()
+    }
+    fn events_excluding(
+        &self,
+        conversation: &ConversationId,
+        have: &HashSet<EventId>,
+    ) -> Vec<Event> {
+        self.events(conversation)
+            .into_iter()
+            .filter(|e| !have.contains(&e.id))
+            .cloned()
+            .collect()
+    }
+    fn ingest(&mut self, event: Event) -> Result<AppendOutcome, LogError> {
+        self.append(event)
     }
 }
 

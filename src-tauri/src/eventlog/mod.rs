@@ -9,10 +9,12 @@
 pub mod event;
 pub mod persist;
 pub mod store;
+pub mod sync;
 
 pub use event::{Author, ConversationId, Event, EventId, EventKind};
 pub use persist::PersistentEventLog;
 pub use store::{AppendOutcome, EventLog};
+pub use sync::{ApplyReport, SyncFollowup, SyncRequest, SyncResponse, SyncStore};
 
 /// Errors from the event log.
 #[derive(Debug)]
