@@ -4,5 +4,7 @@
 //! plaintext UDP discovery (which carried no keys).
 
 pub mod announce;
+pub mod roster;
 
 pub use announce::Announce;
+pub use roster::{PeerRecord, Roster, UserId};
