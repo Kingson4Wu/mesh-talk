@@ -122,6 +122,8 @@ pub fn handle_request(store: &impl SyncStore, request: &SyncRequest) -> SyncResp
 /// Ingest a batch of received events through the store's validation gate,
 /// tallying outcomes. An invalid event is rejected and recorded, not fatal —
 /// the rest of the batch still applies.
+/// Phase-1 TODO: a malicious peer can inflate `rejected` with many bad events;
+/// cap batch size at the transport boundary before calling this.
 fn ingest_all(store: &mut impl SyncStore, events: &[Event]) -> ApplyReport {
     let mut report = ApplyReport::default();
     for event in events {
@@ -141,6 +143,8 @@ pub fn handle_response(
     response: &SyncResponse,
 ) -> (ApplyReport, SyncFollowup) {
     let report = ingest_all(store, &response.events);
+    // `collect` into a HashSet implicitly drops any duplicate ids an
+    // adversarial peer may have placed in `have`.
     let remote_have: HashSet<EventId> = response.have.iter().copied().collect();
     let events = store.events_excluding(&response.conversation, &remote_have);
     (
@@ -471,5 +475,57 @@ mod tests {
         let report = handle_followup(&mut responder, &followup);
         assert_eq!(report.applied, 1);
         assert!(responder.has(&c.id));
+    }
+
+    #[test]
+    fn child_of_rejected_parent_is_orphaned_safely() {
+        // A malicious batch: a valid event, a forged event, and a child that
+        // depends on the forged (rejected) one. The child must fail cleanly with
+        // a missing parent — never corrupt the store.
+        let id = DeviceIdentity::generate();
+        let mut store = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        store.append(root.clone()).unwrap();
+
+        let a = ev(&id, 2, vec![root.id], 2, b"a");
+        let mut forged = ev(&id, 3, vec![root.id], 2, b"forged");
+        forged.sig[0] ^= 0xFF; // breaks the signature
+        let child = ev(&id, 4, vec![forged.id], 3, b"child"); // parent = the forged event
+
+        let response = SyncResponse {
+            conversation: conv(),
+            events: vec![a.clone(), forged.clone(), child.clone()],
+            have: vec![],
+        };
+        let (report, _followup) = handle_response(&mut store, &response);
+
+        assert_eq!(report.applied, 1); // only `a`
+        assert_eq!(report.rejected.len(), 2); // forged (bad sig) + child (missing parent)
+        assert!(store.has(&a.id));
+        assert!(!store.has(&forged.id) && !store.has(&child.id));
+    }
+
+    #[test]
+    fn all_rejected_batch_changes_nothing() {
+        let id = DeviceIdentity::generate();
+        let mut store = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        store.append(root.clone()).unwrap();
+
+        // Two events that reference a parent the store does not hold.
+        let phantom = EventId::new([9u8; 32]);
+        let x = ev(&id, 2, vec![phantom], 2, b"x");
+        let y = ev(&id, 3, vec![phantom], 2, b"y");
+
+        let response = SyncResponse {
+            conversation: conv(),
+            events: vec![x.clone(), y.clone()],
+            have: vec![],
+        };
+        let (report, _followup) = handle_response(&mut store, &response);
+
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.rejected.len(), 2);
+        assert_eq!(store.event_ids(&conv()).len(), 1); // still just root
     }
 }
