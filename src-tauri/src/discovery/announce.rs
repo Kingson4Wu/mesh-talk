@@ -1,6 +1,7 @@
 //! The signed discovery announce and its UDP wire format.
 
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 
 /// Domain separator for announce signatures.
@@ -115,7 +116,13 @@ pub fn decode(data: &[u8]) -> Option<Announce> {
     {
         return None;
     }
-    bincode::deserialize(&data[MAGIC.len() + 1..]).ok()
+    // Strict parse: reject trailing bytes (fail closed). The fixint encoding
+    // matches `bincode::serialize` in `encode`, so valid announces still decode.
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .deserialize(&data[MAGIC.len() + 1..])
+        .ok()
 }
 
 #[cfg(test)]
@@ -170,5 +177,44 @@ mod tests {
         assert!(decode(&[]).is_none());
         assert!(decode(b"XXXX\x01garbage").is_none()); // bad magic
         assert!(decode(b"MTAN\x02garbage").is_none()); // bad version
+    }
+
+    #[test]
+    fn announce_from_a_does_not_verify_under_b() {
+        // Take A's signed announce, swap in B's identity keys + user_id (so the
+        // user_id still matches its ed25519_pub) but keep A's signature → fails.
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let a_announce = Announce::new(&a, "Alice", 4000);
+        let spoofed = Announce {
+            user_id: b.public().user_id(),
+            ed25519_pub: b.public().ed25519_pub,
+            x25519_pub: a_announce.x25519_pub,
+            name: a_announce.name.clone(),
+            tcp_port: a_announce.tcp_port,
+            sig: a_announce.sig.clone(),
+        };
+        assert!(!spoofed.verify());
+    }
+
+    #[test]
+    fn tampered_x25519_key_fails_verify() {
+        let id = DeviceIdentity::generate();
+        let mut a = Announce::new(&id, "Alice", 4000);
+        a.x25519_pub[0] ^= 0xFF; // the DH key is a signed field
+        assert!(!a.verify());
+    }
+
+    #[test]
+    fn decode_rejects_valid_framing_with_garbage_body() {
+        assert!(decode(b"MTAN\x01\xFF\xFF\xFF\xFF").is_none());
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes() {
+        let id = DeviceIdentity::generate();
+        let mut bytes = encode(&Announce::new(&id, "Alice", 4000));
+        bytes.push(0xAB); // junk appended after a valid announce
+        assert!(decode(&bytes).is_none());
     }
 }
