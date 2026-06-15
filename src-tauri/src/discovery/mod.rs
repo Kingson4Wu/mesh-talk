@@ -5,6 +5,7 @@
 
 pub mod announce;
 pub mod roster;
+pub mod service;
 
 pub use announce::Announce;
 pub use roster::{PeerRecord, Roster, UserId};
