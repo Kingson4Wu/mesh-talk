@@ -18,6 +18,7 @@ pub mod contacts;
 pub mod crypto;
 pub mod domain;
 pub mod error;
+pub mod eventlog;
 pub mod events;
 pub mod identity;
 pub mod logger;
