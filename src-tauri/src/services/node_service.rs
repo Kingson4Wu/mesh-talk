@@ -312,6 +312,7 @@ impl NodeService {
                 user_id,
                 ip: _,   // IP from the message data
                 port: _, // Port from the message data
+                public_key,
             }) => {
                 println!(
                     "Received contact request from '{}' (alias: '{}') at {} (signature bytes: {}) with user_id: {:?}",
@@ -321,6 +322,38 @@ impl NodeService {
                     signature.len(),
                     user_id
                 );
+
+                // Verify the sender's signature over the original request fields
+                // before doing anything else. A present-but-invalid signature is
+                // a forgery/tamper and is dropped; an absent one is accepted for
+                // backward compatibility with unsigned peers.
+                let sig_payload = crate::contacts::signing::contact_request_payload(
+                    user_id.as_deref().unwrap_or(""),
+                    &requester_public_key,
+                    &requester_alias,
+                    timestamp,
+                );
+                match crate::contacts::signing::verify(&public_key, &signature, &sig_payload) {
+                    crate::contacts::signing::SignatureCheck::Invalid => {
+                        warn!(
+                            "Rejecting contact request from {} (user_id {:?}): invalid signature",
+                            requester_public_key, user_id
+                        );
+                        return Ok(());
+                    }
+                    crate::contacts::signing::SignatureCheck::Missing => {
+                        warn!(
+                            "Contact request from {} is unsigned; accepting (legacy peer)",
+                            requester_public_key
+                        );
+                    }
+                    crate::contacts::signing::SignatureCheck::Valid => {
+                        info!(
+                            "Verified contact request signature from {} (user_id {:?})",
+                            requester_public_key, user_id
+                        );
+                    }
+                }
 
                 let requester_public_key_event = requester_public_key.clone();
 
@@ -387,6 +420,7 @@ impl NodeService {
                     user_id,
                     ip: Some(peer_ip.clone()), // Use the actual connection IP
                     port: Some(peer_port),     // Use the actual connection port
+                    public_key,
                 }) {
                     Ok(json) => json,
                     Err(err) => {
@@ -412,14 +446,44 @@ impl NodeService {
                 approved,
                 responder_alias,
                 timestamp,
-                signature: _,
+                signature,
                 user_id,
-                ..
+                public_key,
             }) => {
                 println!(
                     "Received contact response from '{}' (alias: '{}', approved: {}) at {}",
                     responder_public_key, responder_alias, approved, timestamp
                 );
+
+                // Verify the responder's signature before acting on the response.
+                let sig_payload = crate::contacts::signing::contact_response_payload(
+                    user_id.as_deref().unwrap_or(""),
+                    &responder_public_key,
+                    &responder_alias,
+                    approved,
+                    timestamp,
+                );
+                match crate::contacts::signing::verify(&public_key, &signature, &sig_payload) {
+                    crate::contacts::signing::SignatureCheck::Invalid => {
+                        warn!(
+                            "Rejecting contact response from {} (user_id {:?}): invalid signature",
+                            responder_public_key, user_id
+                        );
+                        return Ok(());
+                    }
+                    crate::contacts::signing::SignatureCheck::Missing => {
+                        warn!(
+                            "Contact response from {} is unsigned; accepting (legacy peer)",
+                            responder_public_key
+                        );
+                    }
+                    crate::contacts::signing::SignatureCheck::Valid => {
+                        info!(
+                            "Verified contact response signature from {} (user_id {:?})",
+                            responder_public_key, user_id
+                        );
+                    }
+                }
 
                 if let Some(uid) = user_id {
                     self.connection_manager

@@ -1466,7 +1466,7 @@ async fn send_contact_request_impl(
     match contact_request_service
         .send_contact_request_with_user_id(
             &session.user.name,
-            &session.user.name, // Using username as password placeholder - the service should handle this differently
+            &session.password, // real password so the request can be signed
             &target_public_key,
             alias.as_deref(),
             session.user.user_id.clone(), // Use provided user_id or fallback to session user_id
@@ -1586,7 +1586,7 @@ async fn handle_contact_request_impl(
             contact_request_service
                 .send_contact_response(
                     &session.user.name,
-                    "", // Empty password placeholder - the service should get credentials differently
+                    &session.password, // real password so the response can be signed
                     &contact_request.requester_public_key,
                     false, // not approved
                     None,

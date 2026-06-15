@@ -25,8 +25,10 @@ there is no central server. Key security properties:
 
 This is an experimental project. The following are tracked, not yet hardened:
 
-- Contact request/response messages are not yet cryptographically verified
-  (signatures are transported but not validated end-to-end).
+- Contact requests/responses are signed with the sender's ed25519 key and
+  verified on receipt (a present-but-invalid signature is rejected). However,
+  the binding between a `user_id` and its public key is trust-on-first-use —
+  there is no key directory, so a first contact from an unknown key is accepted.
 - LAN transport is unauthenticated at the network layer; trust the network you
   run on.
 

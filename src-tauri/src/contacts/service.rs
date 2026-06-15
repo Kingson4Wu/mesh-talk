@@ -1,6 +1,9 @@
 use crate::contacts::manager::ContactManager;
 use crate::contacts::request::{ContactRequest, ContactResponse};
+use crate::contacts::signing;
 use crate::events::{emit_contact_added, with_node_event_app_handle};
+use crate::identity::keys::KeyManager;
+use crate::identity::manager::IdentityManager;
 use crate::services::node_service::NodeService;
 use serde_json::Value;
 use std::net::{SocketAddr, UdpSocket};
@@ -12,6 +15,7 @@ use tracing::{info, warn};
 pub struct ContactRequestService {
     contact_manager: Arc<ContactManager>,
     node_service: Arc<Mutex<NodeService>>,
+    identity_manager: Arc<IdentityManager>,
 }
 
 impl ContactRequestService {
@@ -19,10 +23,38 @@ impl ContactRequestService {
     pub fn new(
         contact_manager: Arc<ContactManager>,
         node_service: Arc<Mutex<NodeService>>,
+        identity_manager: Arc<IdentityManager>,
     ) -> Self {
         ContactRequestService {
             contact_manager,
             node_service,
+            identity_manager,
+        }
+    }
+
+    /// Load the user's ed25519 signing key for signing outgoing contact
+    /// messages. Returns `None` (and logs) when the key cannot be loaded — e.g.
+    /// the password is unavailable — so sending still works unsigned.
+    fn load_signing_key(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Option<ed25519_dalek::SigningKey> {
+        match self
+            .identity_manager
+            .get_user_private_key(username, password)
+        {
+            Ok(bytes) => match KeyManager::deserialize_secret_key(&bytes) {
+                Ok(key) => Some(key),
+                Err(err) => {
+                    warn!("Failed to deserialize signing key for {username}: {err}");
+                    None
+                }
+            },
+            Err(err) => {
+                warn!("Could not load signing key for {username} (sending unsigned): {err:?}");
+                None
+            }
         }
     }
 
@@ -52,7 +84,7 @@ impl ContactRequestService {
     pub async fn send_contact_request_with_user_id(
         &self,
         username: &str,
-        _password: &str, // Password parameter kept for compatibility, but not used
+        password: &str,
         target_public_key: &str,
         alias: Option<&str>,
         user_id: String,
@@ -97,15 +129,25 @@ impl ContactRequestService {
 
         let requester_address = format!("{}:{}", local_ip, port);
 
-        // Create a basic contact request - in a real implementation, this would be properly signed
-        let contact_request = crate::contacts::request::ContactRequest {
-            requester_public_key: requester_address.clone(),
-            requester_alias: alias_value.clone(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            signature: vec![], // This would be a real signature in a working implementation
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Sign the request with the user's ed25519 key when available so the
+        // recipient can verify authenticity; fall back to unsigned otherwise.
+        let (public_key, signature) = match self.load_signing_key(username, password) {
+            Some(key) => {
+                let payload = signing::contact_request_payload(
+                    &user_id,
+                    &requester_address,
+                    &alias_value,
+                    timestamp,
+                );
+                let (pk, sig) = signing::sign(&key, &payload);
+                (Some(pk), sig)
+            }
+            None => (None, Vec::new()),
         };
 
         info!(
@@ -115,15 +157,16 @@ impl ContactRequestService {
 
         // Create a message for the contact request with user ID
         let message = crate::domain::message::Message::ContactRequest {
-            requester_public_key: contact_request.requester_public_key,
+            requester_public_key: requester_address.clone(),
             requester_alias: alias_value.clone(),
-            timestamp: contact_request.timestamp,
-            signature: contact_request.signature,
+            timestamp,
+            signature,
             node_name: Some(node_name.clone()),
             username: Some(username.to_string()),
             user_id: Some(user_id.clone()),
             ip: remote_ip.clone(), // Add the remote IP to the message
             port: remote_port,     // Add the remote port to the message
+            public_key,
         };
 
         // Serialize the message
@@ -185,7 +228,7 @@ impl ContactRequestService {
     pub async fn handle_contact_request(
         &self,
         username: &str,
-        _password: &str, // Password parameter kept for compatibility, but not used
+        password: &str,
         request_json: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("=== START HANDLE_CONTACT_REQUEST IN SERVICE ===");
@@ -253,15 +296,15 @@ impl ContactRequestService {
             }
         };
 
-        // Verify the signature when present; otherwise skip (placeholder implementation)
+        // Signature authenticity is verified at the network receive boundary
+        // (see node_service) against the sender's ed25519 public key, which is
+        // carried in the wire message. The legacy struct-level check (which
+        // treated the address field as a public key) is intentionally not run.
         if request.signature.is_empty() {
             log::info!(
-                "Received unsigned contact request from {}; skipping signature verification",
+                "Contact request from {} carries no signature",
                 request.requester_public_key
             );
-        } else if !request.verify_signature().unwrap_or(false) {
-            log::error!("Invalid signature in contact request");
-            return Err("Invalid signature in contact request".into());
         }
 
         log::info!(
@@ -318,7 +361,7 @@ impl ContactRequestService {
         );
         if let Err(err) = self.contact_manager.add_contact(
             username,
-            _password,
+            password,
             ip,
             port,
             &request.requester_alias,
@@ -344,7 +387,7 @@ impl ContactRequestService {
         let response_result = self
             .send_contact_response(
                 username,
-                _password,
+                password,
                 &request.requester_public_key,
                 true,
                 contact_user_id.clone(),
@@ -366,7 +409,7 @@ impl ContactRequestService {
     pub async fn send_contact_response(
         &self,
         username: &str,
-        _password: &str, // Password parameter kept for compatibility, but not used
+        password: &str,
         target_public_key: &str,
         approved: bool,
         target_user_id: Option<String>,
@@ -396,35 +439,41 @@ impl ContactRequestService {
             port
         );
 
-        // Create a basic contact response - in a real implementation, this would be properly signed
-        let contact_response = crate::contacts::request::ContactResponse {
-            responder_public_key: responder_public_key.clone(),
-            approved,
-            responder_alias: responder_alias.clone(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            signature: vec![], // This would be a real signature in a working implementation
-            user_id: if local_user_id.trim().is_empty() {
-                None
-            } else {
-                Some(local_user_id.clone())
-            },
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let response_user_id = if local_user_id.trim().is_empty() {
+            None
+        } else {
+            Some(local_user_id.clone())
+        };
+
+        // Sign the response with the user's ed25519 key when available.
+        let (public_key, signature) = match self.load_signing_key(username, password) {
+            Some(key) => {
+                let payload = signing::contact_response_payload(
+                    response_user_id.as_deref().unwrap_or(""),
+                    &responder_public_key,
+                    &responder_alias,
+                    approved,
+                    timestamp,
+                );
+                let (pk, sig) = signing::sign(&key, &payload);
+                (Some(pk), sig)
+            }
+            None => (None, Vec::new()),
         };
 
         // Create a message for the contact response
         let message = crate::domain::message::Message::ContactResponse {
-            responder_public_key: contact_response.responder_public_key.clone(),
-            approved: contact_response.approved,
-            responder_alias: contact_response.responder_alias.clone(),
-            timestamp: contact_response.timestamp,
-            signature: contact_response.signature.clone(),
-            user_id: if local_user_id.trim().is_empty() {
-                None
-            } else {
-                Some(local_user_id.clone())
-            },
+            responder_public_key: responder_public_key.clone(),
+            approved,
+            responder_alias: responder_alias.clone(),
+            timestamp,
+            signature,
+            user_id: response_user_id.clone(),
+            public_key,
         };
 
         // Serialize the message
@@ -498,13 +547,14 @@ impl ContactRequestService {
         // Deserialize the contact response
         let response = ContactResponse::from_json(response_json)?;
 
+        // Signature authenticity is verified at the network receive boundary
+        // (see node_service) against the sender's ed25519 public key. The legacy
+        // struct-level check (which treated the address as a public key) is not run.
         if response.signature.is_empty() {
             info!(
-                "Received unsigned contact response from {}; skipping signature verification",
+                "Contact response from {} carries no signature",
                 response.responder_public_key
             );
-        } else if !response.verify_signature().unwrap_or(false) {
-            return Err("Invalid signature in contact response".into());
         }
 
         // Parse the IP and port from the public key
@@ -616,6 +666,7 @@ impl ContactRequestService {
                 user_id: message_user_id,
                 ip: message_ip,
                 port: message_port,
+                public_key: _,
             } => {
                 // Create a contact request from the message data
                 let request = ContactRequest {
@@ -735,8 +786,12 @@ mod tests {
             0,
         )));
         let identity_manager = crate::identity::manager::IdentityManager::new(file_manager.clone());
-        let contact_manager = Arc::new(ContactManager::new(file_manager.clone(), identity_manager));
-        let _service = ContactRequestService::new(contact_manager, node_service);
+        let contact_manager = Arc::new(ContactManager::new(
+            file_manager.clone(),
+            identity_manager.clone(),
+        ));
+        let _service =
+            ContactRequestService::new(contact_manager, node_service, Arc::new(identity_manager));
 
         // Just test that the service can be created
         assert!(true);
@@ -754,8 +809,12 @@ mod tests {
             0,
         )));
         let identity_manager = crate::identity::manager::IdentityManager::new(file_manager.clone());
-        let contact_manager = Arc::new(ContactManager::new(file_manager.clone(), identity_manager));
-        let service = ContactRequestService::new(contact_manager, node_service);
+        let contact_manager = Arc::new(ContactManager::new(
+            file_manager.clone(),
+            identity_manager.clone(),
+        ));
+        let service =
+            ContactRequestService::new(contact_manager, node_service, Arc::new(identity_manager));
 
         // Test processing a contact request message
         let contact_request_message = crate::domain::message::Message::ContactRequest {
@@ -768,6 +827,7 @@ mod tests {
             user_id: Some("test-user-1".to_string()),
             ip: Some("127.0.0.1".to_string()),
             port: Some(7000),
+            public_key: None,
         };
 
         let message_json = serde_json::to_string(&contact_request_message).unwrap();
@@ -790,6 +850,7 @@ mod tests {
             timestamp: 1234567890,
             signature: vec![1, 2, 3, 4],
             user_id: Some("test-user-1".to_string()),
+            public_key: None,
         };
 
         let message_json = serde_json::to_string(&contact_response_message).unwrap();

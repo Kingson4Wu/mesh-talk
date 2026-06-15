@@ -67,6 +67,9 @@ pub enum Message {
         ip: Option<String>,
         #[serde(default)]
         port: Option<u16>,
+        /// Sender's ed25519 public key (base64) used to verify `signature`.
+        #[serde(default)]
+        public_key: Option<String>,
     },
     ContactResponse {
         responder_public_key: String,
@@ -76,6 +79,9 @@ pub enum Message {
         signature: Vec<u8>,
         #[serde(default)]
         user_id: Option<String>, // Add user ID field
+        /// Sender's ed25519 public key (base64) used to verify `signature`.
+        #[serde(default)]
+        public_key: Option<String>,
     },
     FileOffer(FileOfferPayload),
     FileChunk(FileChunkPayload),

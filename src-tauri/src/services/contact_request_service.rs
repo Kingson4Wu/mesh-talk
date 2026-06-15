@@ -26,7 +26,8 @@ impl ContactRequestService {
 
         // Note: The original ContactRequestService expects a Libp2pNetwork which is not available
         // For now, we'll create the service without the network and handle it differently
-        let inner = InnerContactRequestService::new(contact_manager, node_service);
+        let inner =
+            InnerContactRequestService::new(contact_manager, node_service, identity_manager);
 
         INSTANCE
             .set(Arc::new(inner))
