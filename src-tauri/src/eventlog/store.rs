@@ -124,6 +124,13 @@ impl EventLog {
     }
 
     /// All events in a conversation, in deterministic total order `(lamport, id)`.
+    ///
+    /// This order is topologically consistent (parents before children) for
+    /// events created via [`EventLog::prepare`], which stamps `max_lamport + 1`.
+    /// It is NOT guaranteed topological for events from a peer that violates the
+    /// Lamport invariant (`child.lamport > parent.lamport`); the store does not
+    /// validate Lamport monotonicity. Callers needing strict causal order for
+    /// untrusted input must enforce it themselves.
     pub fn events(&self, conversation: &ConversationId) -> Vec<&Event> {
         let mut events: Vec<&Event> = match self.by_conversation.get(conversation) {
             Some(ids) => ids.iter().filter_map(|id| self.events.get(id)).collect(),
@@ -154,7 +161,13 @@ impl EventLog {
     /// and the next Lamport timestamp (one past the highest seen).
     pub fn prepare(&self, conversation: &ConversationId) -> (Vec<EventId>, u64) {
         let parents = self.heads(conversation);
-        let lamport = self.max_lamport.get(conversation).copied().unwrap_or(0) + 1;
+        let lamport = self
+            .max_lamport
+            .get(conversation)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .expect("lamport u64 overflow (unreachable in practice)");
         (parents, lamport)
     }
 }
@@ -393,5 +406,72 @@ mod tests {
         let (parents, lamport) = log.prepare(&conv());
         assert_eq!(parents, vec![root.id]);
         assert_eq!(lamport, 6); // one past the highest lamport (5)
+    }
+
+    #[test]
+    fn events_tiebreak_by_id_when_lamport_equal() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let root = mk(&alice, 1, vec![], 1, b"root");
+        log.append(root.clone()).unwrap();
+        // Two concurrent children of root, both at lamport 2 (different authors).
+        let a = mk(&alice, 2, vec![root.id], 2, b"a");
+        let b = Event::new(
+            &bob,
+            conv(),
+            1,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b".to_vec(),
+        );
+        log.append(a.clone()).unwrap();
+        log.append(b.clone()).unwrap();
+
+        let ordered = log.events(&conv());
+        assert_eq!(ordered[0].id, root.id);
+        // The two concurrent events appear in id order, regardless of append order.
+        let mut expected = vec![a.id, b.id];
+        expected.sort();
+        assert_eq!(ordered[1].id, expected[0]);
+        assert_eq!(ordered[2].id, expected[1]);
+    }
+
+    #[test]
+    fn events_sort_independent_of_append_order() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let root = mk(&alice, 1, vec![], 1, b"root");
+        log.append(root.clone()).unwrap();
+        // Two concurrent children of root with different lamports (2 and 3).
+        let low = mk(&alice, 2, vec![root.id], 2, b"low");
+        let high = Event::new(
+            &bob,
+            conv(),
+            1,
+            vec![root.id],
+            3,
+            0,
+            EventKind::Message,
+            b"high".to_vec(),
+        );
+        // Append the higher-lamport event FIRST.
+        log.append(high.clone()).unwrap();
+        log.append(low.clone()).unwrap();
+
+        let lamports: Vec<u64> = log.events(&conv()).iter().map(|e| e.lamport).collect();
+        assert_eq!(lamports, vec![1, 2, 3]); // sorted despite reverse append
+    }
+
+    #[test]
+    fn queries_on_unknown_conversation_are_empty() {
+        let log = EventLog::default();
+        assert!(log.events(&conv()).is_empty());
+        assert!(log.heads(&conv()).is_empty());
+        assert!(log.version_vector(&conv()).is_empty());
+        assert_eq!(log.prepare(&conv()), (vec![], 1));
     }
 }
