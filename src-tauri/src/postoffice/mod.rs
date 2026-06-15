@@ -152,4 +152,28 @@ mod tests {
         reconcile(&mut alice_log, &mut po, conv());
         assert!(po.has(&ev.id));
     }
+
+    #[test]
+    fn duplicate_accept_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let alice = DeviceIdentity::generate();
+        let mut po =
+            PostOffice::open(&dir.path().join("po.log"), "pw", DeviceIdentity::generate()).unwrap();
+
+        let ev = message(&alice, 1, vec![], 1, b"x");
+        assert_eq!(po.accept(ev.clone()).unwrap(), AppendOutcome::Appended);
+        // Re-accepting the same event is a no-op duplicate, not a relay failure.
+        assert_eq!(po.accept(ev.clone()).unwrap(), AppendOutcome::Duplicate);
+        assert!(po.has(&ev.id));
+    }
+
+    #[test]
+    fn unknown_conversation_and_id_hold_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let po =
+            PostOffice::open(&dir.path().join("po.log"), "pw", DeviceIdentity::generate()).unwrap();
+
+        assert!(po.held_ids(&conv()).is_empty());
+        assert!(!po.has(&EventId::new([9u8; 32])));
+    }
 }
