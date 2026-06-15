@@ -14,6 +14,7 @@
 use crate::identity::device::DeviceIdentity;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use bincode::Options;
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -145,8 +146,14 @@ pub fn open(
     sender_x25519_pub: &[u8; 32],
     envelope_bytes: &[u8],
 ) -> Result<Vec<u8>, DmError> {
-    let envelope: SealedEnvelope =
-        bincode::deserialize(envelope_bytes).map_err(|e| DmError::Serialization(e.to_string()))?;
+    // Strict parse: reject any trailing bytes (fail closed). This config uses
+    // fixed-int little-endian encoding, byte-identical to `bincode::serialize`
+    // used in `seal`, so legitimate envelopes still round-trip.
+    let envelope: SealedEnvelope = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .deserialize(envelope_bytes)
+        .map_err(|e| DmError::Serialization(e.to_string()))?;
 
     let recipient_static = StaticSecret::from(recipient.secret_bytes().1);
     let recipient_x_pub = recipient.public().x25519_pub;
@@ -222,6 +229,18 @@ mod tests {
         let sealed = seal(&alice, &bob.public().x25519_pub, b"hello bob").unwrap();
         let opened = open(&bob, &alice.public().x25519_pub, &sealed).unwrap();
         assert_eq!(opened, b"hello bob");
+    }
+
+    #[test]
+    fn open_rejects_trailing_bytes() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let mut sealed = seal(&alice, &bob.public().x25519_pub, b"hi").unwrap();
+        // It opens cleanly as-is.
+        assert!(open(&bob, &alice.public().x25519_pub, &sealed).is_ok());
+        // Appending junk must make it fail (strict parse), not silently succeed.
+        sealed.push(0xAB);
+        assert!(open(&bob, &alice.public().x25519_pub, &sealed).is_err());
     }
 
     #[test]
