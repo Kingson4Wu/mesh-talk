@@ -14,7 +14,7 @@ pub struct FirewallCheckResult {
     pub message: Option<String>,
 }
 
-pub fn check_firewall(port: u16) -> FirewallCheckResult {
+pub fn check_firewall(_port: u16) -> FirewallCheckResult {
     #[cfg(target_os = "windows")]
     {
         return check_windows_firewall(port);
@@ -22,7 +22,7 @@ pub fn check_firewall(port: u16) -> FirewallCheckResult {
 
     #[cfg(target_os = "macos")]
     {
-        return check_macos_firewall();
+        check_macos_firewall()
     }
 
     #[cfg(target_os = "linux")]
@@ -43,7 +43,7 @@ pub fn check_firewall(port: u16) -> FirewallCheckResult {
     }
 }
 
-pub fn allow_firewall(port: u16) -> Result<(), String> {
+pub fn allow_firewall(_port: u16) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         return allow_windows_firewall(port);
@@ -51,7 +51,7 @@ pub fn allow_firewall(port: u16) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        return allow_macos_firewall();
+        allow_macos_firewall()
     }
 
     #[cfg(target_os = "linux")]

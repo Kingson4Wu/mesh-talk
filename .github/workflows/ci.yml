@@ -39,7 +39,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy, rustfmt, llvm-tools-preview
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -60,6 +60,11 @@ jobs:
           npm ci
           npm run build
 
+      - name: Lint frontend (ESLint)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: frontend
+        run: npm run lint
+
       - name: Rustfmt (check)
         if: matrix.os == 'ubuntu-latest'
         working-directory: src-tauri
@@ -70,24 +75,54 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test
+      - name: Test (macOS)
+        if: matrix.os == 'macos-latest'
         working-directory: src-tauri
         run: cargo test
 
-      - name: Shellcheck scripts
-        if: matrix.os == 'ubuntu-latest'
-        run: shellcheck --severity=warning scripts/*.sh hooks/* .claude/hooks/*.sh
-
-      - name: Install cargo-audit
+      # On Linux, run the tests through llvm-cov so we get coverage in the same
+      # pass (avoids compiling/running the suite twice).
+      - name: Install cargo-llvm-cov
         if: matrix.os == 'ubuntu-latest'
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit
+          tool: cargo-llvm-cov
 
-      # Cargo.lock lives at the workspace root, so run from there.
-      - name: Audit Rust dependencies
+      - name: Test + coverage (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo audit
+        working-directory: src-tauri
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        with:
+          files: src-tauri/lcov.info
+          fail_ci_if_error: false
+
+      - name: Spelling (typos)
+        if: matrix.os == 'ubuntu-latest'
+        uses: crate-ci/typos@v1
+
+      - name: Shellcheck scripts
+        if: matrix.os == 'ubuntu-latest'
+        run: shellcheck --severity=warning scripts/*.sh .claude/hooks/*.sh
+
+      - name: Install supply-chain tools
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+
+      # Unused dependencies (knip's Rust equivalent). Cargo.toml files at root.
+      - name: Unused dependencies (cargo-machete)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo machete
+
+      # Advisories + licenses + bans + sources (config: deny.toml).
+      - name: Supply-chain policy (cargo-deny)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo deny check
 
   # Stable name for the branch-protection required check: stays "verify" no
   # matter how the matrix above evolves.

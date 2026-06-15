@@ -1,3 +1,17 @@
+// Pragmatic, intentional lint allowances (the substantive clippy lints stay on):
+//  - module_inception: test modules are `mod tests` inside `*/tests.rs`.
+//  - too_many_arguments: a few service/domain constructors; refactor tracked separately.
+//  - assertions_on_constants: placeholder "can construct" smoke tests.
+//  - single_match: a couple of intentional single-arm matches.
+//  - manual_flatten: a nested `if let Ok` loop kept for readability.
+#![allow(
+    clippy::module_inception,
+    clippy::too_many_arguments,
+    clippy::assertions_on_constants,
+    clippy::single_match,
+    clippy::manual_flatten
+)]
+
 pub mod api;
 pub mod commands;
 pub mod contacts;
@@ -147,7 +161,7 @@ pub fn run_tauri() {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             // Initialize logging system
-            if let Err(e) = crate::logger::init_logging(&app.handle()) {
+            if let Err(e) = crate::logger::init_logging(app.handle()) {
                 log::error!("Failed to initialize logging: {}", e);
             }
 
@@ -283,13 +297,12 @@ pub async fn launch_network_with_broadcast(
         Arc::clone(&service.node_registry)
     };
     let udp_discovery_handle: JoinHandle<()> = tokio::spawn({
-        let local_ip = local_ip.clone();
         async move {
             tokio::spawn(crate::network::udp::start_udp_discovery(
                 discovery_registry,
                 move |peer_addr, peer_name, peer_username, peer_port, peer_user_id| {
                     let service_clone = discovery_service.clone();
-                    let local_ip = local_ip.clone();
+                    let local_ip = local_ip;
                     tokio::spawn(async move {
                         // log::info!("[UDP Discovery Callback] Received peer_addr: {}", peer_addr);
                         let (service_port, local_user_id) = {

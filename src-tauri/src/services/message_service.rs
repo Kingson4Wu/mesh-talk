@@ -409,7 +409,7 @@ impl MessageService {
 
         let message = self
             .load_message_from_disk(&id)
-            .ok_or_else(|| MessageError::MessageNotFound)?;
+            .ok_or(MessageError::MessageNotFound)?;
 
         // Update cache
         {
@@ -515,7 +515,7 @@ mod tests {
     fn test_create_message() {
         let message_service = setup_test_service();
         let _result = message_service.create_message(
-            "owner".to_string(),
+            "owner",
             "test-user-1".to_string(),
             "192.168.1.100:7000".to_string(),
             Some("test-user-2".to_string()),
@@ -536,7 +536,7 @@ mod tests {
     fn test_create_message_invalid_data() {
         let message_service = setup_test_service();
         let result = message_service.create_message(
-            "owner".to_string(),
+            "owner",
             "test-user-1".to_string(),
             "192.168.1.100:7000".to_string(),
             Some("test-user-2".to_string()),
@@ -554,7 +554,7 @@ mod tests {
         // A message I received (to me, from someone else) counts as unread.
         let received = svc
             .create_message(
-                "me".to_string(),
+                "me",
                 "other".to_string(),
                 "1.2.3.4:7000".to_string(),
                 Some("me".to_string()),
@@ -565,7 +565,7 @@ mod tests {
 
         // A message I sent (from me) must not count toward my unread total.
         svc.create_message(
-            "me".to_string(),
+            "me",
             "me".to_string(),
             "127.0.0.1:7000".to_string(),
             Some("other".to_string()),

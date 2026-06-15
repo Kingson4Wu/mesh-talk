@@ -34,6 +34,8 @@ fn rsa_key_cache() -> &'static Mutex<HashMap<String, RsaPrivateKey>> {
 #[derive(Clone)]
 pub struct PublicKeyFileManager {
     base_path: PathBuf,
+    // Retained for future identity-aware key operations.
+    #[allow(dead_code)]
     identity_manager: Arc<IdentityManager>,
 }
 

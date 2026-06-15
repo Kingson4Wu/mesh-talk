@@ -61,7 +61,7 @@ fn cleanup_old_logs(logs_dir: &Path, max_days: u64) -> Result<(), std::io::Error
                 let path = entry.path();
 
                 // Only process files with .log extension
-                if path.extension().map_or(false, |ext| ext == "log") {
+                if path.extension().is_some_and(|ext| ext == "log") {
                     if let Ok(metadata) = fs::metadata(&path) {
                         if let Ok(modified) = metadata.modified() {
                             if modified < cutoff_time {
@@ -86,12 +86,7 @@ fn cleanup_old_logs(logs_dir: &Path, max_days: u64) -> Result<(), std::io::Error
 pub fn get_logs_directory(
     _app_handle: &tauri::AppHandle,
 ) -> Result<std::path::PathBuf, tauri::Error> {
-    get_mesh_talk_logs_dir().map_err(|e| {
-        tauri::Error::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            e.to_string(),
-        ))
-    })
+    get_mesh_talk_logs_dir().map_err(|e| tauri::Error::from(std::io::Error::other(e.to_string())))
 }
 
 /// Get the current log file path

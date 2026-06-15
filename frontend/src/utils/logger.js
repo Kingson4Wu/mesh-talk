@@ -14,12 +14,12 @@ import { info, warn, error, debug } from "@tauri-apps/plugin-log";
  */
 export async function logInfo(message, context = null) {
   try {
-    const logMessage = context 
+    const logMessage = context
       ? `${message} | Context: ${JSON.stringify(context)}`
       : message;
     await info(logMessage);
   } catch (err) {
-    console.info(`[LOG FALLBACK] INFO: ${message}`, context || '');
+    console.info(`[LOG FALLBACK] INFO: ${message}`, context || "");
   }
 }
 
@@ -30,12 +30,12 @@ export async function logInfo(message, context = null) {
  */
 export async function logWarn(message, context = null) {
   try {
-    const logMessage = context 
+    const logMessage = context
       ? `${message} | Context: ${JSON.stringify(context)}`
       : message;
     await warn(logMessage);
   } catch (err) {
-    console.warn(`[LOG FALLBACK] WARN: ${message}`, context || '');
+    console.warn(`[LOG FALLBACK] WARN: ${message}`, context || "");
   }
 }
 
@@ -46,17 +46,18 @@ export async function logWarn(message, context = null) {
  */
 export async function logError(message, context = null) {
   try {
-    const errorMessage = message instanceof Error 
-      ? `${message.message} | Stack: ${message.stack || 'No stack trace'}`
-      : message;
-      
-    const logMessage = context 
+    const errorMessage =
+      message instanceof Error
+        ? `${message.message} | Stack: ${message.stack || "No stack trace"}`
+        : message;
+
+    const logMessage = context
       ? `${errorMessage} | Context: ${JSON.stringify(context)}`
       : errorMessage;
-      
+
     await error(logMessage);
   } catch (err) {
-    console.error(`[LOG FALLBACK] ERROR: ${message}`, context || '');
+    console.error(`[LOG FALLBACK] ERROR: ${message}`, context || "");
   }
 }
 
@@ -67,12 +68,12 @@ export async function logError(message, context = null) {
  */
 export async function logDebug(message, context = null) {
   try {
-    const logMessage = context 
+    const logMessage = context
       ? `${message} | Context: ${JSON.stringify(context)}`
       : message;
     await debug(logMessage);
   } catch (err) {
-    console.debug(`[LOG FALLBACK] DEBUG: ${message}`, context || '');
+    console.debug(`[LOG FALLBACK] DEBUG: ${message}`, context || "");
   }
 }
 
@@ -87,7 +88,7 @@ export async function logChatEvent(eventType, messageData) {
     from: messageData.from_address,
     to: messageData.to_address,
     contentLength: messageData.content?.length || 0,
-    timestamp: messageData.sent_at
+    timestamp: messageData.sent_at,
   });
 }
 
@@ -109,7 +110,7 @@ export async function logAuthEvent(eventType, authData) {
   await logInfo(`Auth event: ${eventType}`, {
     userId: authData.userId,
     username: authData.username,
-    timestamp: Date.now()
+    timestamp: Date.now(),
   });
 }
 
@@ -122,7 +123,7 @@ export async function logContactEvent(eventType, contactData) {
   await logInfo(`Contact event: ${eventType}`, {
     contactId: contactData.id,
     contactName: contactData.name,
-    contactAddress: contactData.address
+    contactAddress: contactData.address,
   });
 }
 
@@ -135,7 +136,7 @@ export const Logger = {
   chat: logChatEvent,
   network: logNetworkEvent,
   auth: logAuthEvent,
-  contact: logContactEvent
+  contact: logContactEvent,
 };
 
 export default Logger;

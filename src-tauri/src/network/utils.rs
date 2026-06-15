@@ -176,10 +176,7 @@ mod tests {
             || async {
                 let current_attempt = counter.fetch_add(1, Ordering::SeqCst);
                 if current_attempt < 2 {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Temporary error",
-                    ))
+                    Err(std::io::Error::other("Temporary error"))
                 } else {
                     Ok("Success")
                 }
@@ -202,10 +199,7 @@ mod tests {
         let result: Result<String, std::io::Error> = retry_with_backoff(
             || async {
                 counter.fetch_add(1, Ordering::SeqCst);
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Persistent error",
-                ))
+                Err(std::io::Error::other("Persistent error"))
             },
             &RetryConfig {
                 max_retries: 2,

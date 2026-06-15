@@ -4,8 +4,7 @@ use crate::domain::node::Node;
 use crate::domain::node_registry::NodeRegistry;
 use crate::error::{MeshTalkError, MeshTalkResult, NetworkErrorKind};
 use crate::events::{
-    emit_contact_added, emit_contact_request_received, emit_contact_response_received,
-    with_node_event_app_handle,
+    emit_contact_request_received, emit_contact_response_received, with_node_event_app_handle,
 };
 use crate::network::reconnection::ReconnectionManager;
 use crate::network::tcp::{handle_incoming_connection, send_message_with_retry, ConnectionManager};
@@ -43,8 +42,6 @@ pub trait MessageEventListener: Send + Sync {
 lazy_static::lazy_static! {
     pub static ref NOTIFICATION_SERVICE: crate::services::notification_service::NotificationService = crate::services::notification_service::NotificationService::new();
 }
-
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// NodeService manages the network node and peer connections
 #[derive(Clone)]
@@ -313,8 +310,8 @@ impl NodeService {
                 node_name,
                 username,
                 user_id,
-                ip,   // IP from the message data
-                port, // Port from the message data
+                ip: _,   // IP from the message data
+                port: _, // Port from the message data
             }) => {
                 println!(
                     "Received contact request from '{}' (alias: '{}') at {} (signature bytes: {}) with user_id: {:?}",
@@ -415,7 +412,7 @@ impl NodeService {
                 approved,
                 responder_alias,
                 timestamp,
-                signature,
+                signature: _,
                 user_id,
                 ..
             }) => {
@@ -488,7 +485,7 @@ impl NodeService {
             Err(e) => {
                 eprintln!("Failed to parse message: {}", e);
                 eprintln!("Message content: {}", line);
-                return Err(e);
+                Err(e)
             }
         }
     }

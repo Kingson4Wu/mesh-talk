@@ -311,7 +311,7 @@ impl FileTransferManager {
         let checksum = compute_file_checksum(&path).await?;
         let transfer_id = uuid::Uuid::new_v4().to_string();
 
-        let mut manifest = TransferManifest {
+        let manifest = TransferManifest {
             transfer_id: transfer_id.clone(),
             direction: TransferDirection::Outgoing,
             file_name: file_name.clone(),
@@ -674,7 +674,7 @@ impl FileTransferManager {
 
     async fn wait_for_ack(
         runtime: Arc<Mutex<TransferRuntime>>,
-        transfer_id: &str,
+        _transfer_id: &str,
     ) -> Result<(), FileTransferError> {
         let notify = {
             let mut state = runtime.lock().await;
@@ -861,6 +861,7 @@ impl FileTransferManager {
             let _ = OpenOptions::new()
                 .create(true)
                 .write(true)
+                .truncate(false)
                 .open(Path::new(&temp_path))
                 .await;
         }
@@ -1047,6 +1048,7 @@ impl FileTransferManager {
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&temp_path)
             .await?;
         file.seek(SeekFrom::Start(payload.offset)).await?;

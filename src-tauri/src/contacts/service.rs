@@ -56,9 +56,9 @@ impl ContactRequestService {
         target_public_key: &str,
         alias: Option<&str>,
         user_id: String,
-        remote_username: Option<String>, // Add username parameter
-        remote_ip: Option<String>,       // Add IP parameter
-        remote_port: Option<u16>,        // Add port parameter
+        _remote_username: Option<String>, // Add username parameter
+        remote_ip: Option<String>,        // Add IP parameter
+        remote_port: Option<u16>,         // Add port parameter
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Note: In a real implementation, this would be called from a context that has access to the user's keys
         // without needing to re-authenticate. For now, we'll work with what's available.

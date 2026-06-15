@@ -20,16 +20,20 @@ Argument: `$ARGUMENTS` — `quick` (default) or `full`.
 
 ## full
 
-Everything in `quick`, plus:
+Everything in `quick`, plus (mirrors `ci.yml`):
 
-- **Rust deps**: `cargo audit` (install with `cargo install --locked cargo-audit`
-  if missing) — RustSec advisories.
-- **Frontend deps**: `cd frontend && npm audit --audit-level=high`.
-- **Secrets**: `gitleaks git . --config .gitleaks.toml --redact -v` (install the
-  gitleaks CLI if missing) — credential-shaped strings in the tree/history.
-- **Full health check**: `make check` (chains fmt, clippy, prettier, eslint,
-  tests, builds) — heavy; run when you want the same checks as the
-  `Code Quality and Health Check` workflow.
+- **Supply chain**: `cargo deny check` — advisories + licenses + bans + sources
+  (config `deny.toml`). Fixes go via `cargo update -p <crate>`, not by widening
+  the ignore list. Brew: `brew install cargo-deny`.
+- **Unused deps**: `cargo machete` (brew has no formula; `cargo install
+  cargo-machete`) — the knip equivalent.
+- **Coverage**: `cd src-tauri && nice -n 10 cargo llvm-cov --workspace
+  -- --test-threads=2` (`cargo install cargo-llvm-cov`).
+- **Spelling**: `typos` (config `_typos.toml`; `brew install typos-cli`).
+- **Frontend**: `cd frontend && npm run lint && npm audit --audit-level=high`.
+- **Secrets**: `gitleaks git . --config .gitleaks.toml --redact -v`.
+- **Mutation** (slow): trigger the `Mutation Testing` workflow, or locally
+  `cd src-tauri && cargo mutants --in-diff <(git diff origin/main...HEAD)`.
 
 ## Report
 

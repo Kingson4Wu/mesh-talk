@@ -17,8 +17,12 @@
         <template v-if="message.kind === 'file' && message.file">
           <div class="file-message">
             <div class="file-header">
-              <span class="file-name">{{ message.file.fileName || 'File' }}</span>
-              <span class="file-size">{{ formatBytes(message.file.fileSize) }}</span>
+              <span class="file-name">{{
+                message.file.fileName || "File"
+              }}</span>
+              <span class="file-size">{{
+                formatBytes(message.file.fileSize)
+              }}</span>
             </div>
             <div class="file-progress">
               <div
@@ -243,7 +247,10 @@ const canOpen = (message) => {
   if (!message?.file) {
     return false;
   }
-  return message.file.status === "completed" && Boolean(message.file.localPath || message.file.path);
+  return (
+    message.file.status === "completed" &&
+    Boolean(message.file.localPath || message.file.path)
+  );
 };
 </script>
 

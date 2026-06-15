@@ -185,7 +185,10 @@ import { useRealTimeMessages } from "../../composables/chat/useRealTimeMessages"
 import { useFeedbackStore } from "../../stores/feedbackStore";
 import { API } from "../../services/api";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import {
+  open as openDialog,
+  save as saveDialog,
+} from "@tauri-apps/plugin-dialog";
 import { open as openShell } from "@tauri-apps/plugin-shell";
 import { splitAddress, buildDiscoveredLabel } from "../../utils/addressUtils";
 import Logger from "../../utils/logger";
@@ -325,7 +328,7 @@ const discoveredNodeList = computed(() => {
   const uniqueAddresses = new Set();
   return discoveredNodes.value
     .filter((node) => {
-      const online = node?.is_connected ?? (node?.status === "online");
+      const online = node?.is_connected ?? node?.status === "online";
       if (!online) {
         return false;
       }
@@ -438,7 +441,9 @@ const resolvePendingRequestJson = () => {
       try {
         return normalize(atob(base64));
       } catch (err) {
-        Logger.error("Failed to decode base64 contact request:", { error: err });
+        Logger.error("Failed to decode base64 contact request:", {
+          error: err,
+        });
       }
     }
   }
@@ -447,19 +452,19 @@ const resolvePendingRequestJson = () => {
 };
 
 // Message handling functions
-  // Send a message to connected peers
-  const handleSend = async (content) => {
-    const result = await store.sendMessage(content, activeContact.value);
-    if (!result.success && store.error) {
-      Logger.error(store.error);
-      await Logger.error("Failed to send message", {
-        contentLength: content.length,
-        error: store.error
-      });
-    } else {
-      await Logger.chat("sent", result.message);
-    }
-  };
+// Send a message to connected peers
+const handleSend = async (content) => {
+  const result = await store.sendMessage(content, activeContact.value);
+  if (!result.success && store.error) {
+    Logger.error(store.error);
+    await Logger.error("Failed to send message", {
+      contentLength: content.length,
+      error: store.error,
+    });
+  } else {
+    await Logger.chat("sent", result.message);
+  }
+};
 
 const handleAttach = async () => {
   try {
@@ -499,7 +504,9 @@ const handleCancelTransfer = async (transferId) => {
 
 const handleOpenTransfer = async (fileMeta) => {
   const targetPath =
-    fileMeta?.localPath ?? fileMeta?.path ?? fileTransfers.value?.[fileMeta?.transferId]?.localPath;
+    fileMeta?.localPath ??
+    fileMeta?.path ??
+    fileTransfers.value?.[fileMeta?.transferId]?.localPath;
   if (!targetPath) {
     feedback.showError("File not available yet");
     return;
@@ -587,151 +594,159 @@ const handleDiscoveryConnect = async (node) => {
   store.selectConversation(node);
 };
 
-  const handleDiscoveryInvite = async (node) => {
-    Logger.info("Handling discovery invite for node:", { node });
-    if (!node || !node.address) {
-      Logger.error("Invalid node for invitation");
-      return;
-    }
+const handleDiscoveryInvite = async (node) => {
+  Logger.info("Handling discovery invite for node:", { node });
+  if (!node || !node.address) {
+    Logger.error("Invalid node for invitation");
+    return;
+  }
 
-    // Extract the public key from the node's address or other properties
-    // In a real implementation, we would have the public key available in the node object
-    const targetPublicKey = node.public_key || node.address; // Fallback to address if no public key
+  // Extract the public key from the node's address or other properties
+  // In a real implementation, we would have the public key available in the node object
+  const targetPublicKey = node.public_key || node.address; // Fallback to address if no public key
 
-    Logger.info("Sending contact request to public key:", { targetPublicKey });
+  Logger.info("Sending contact request to public key:", { targetPublicKey });
 
-    try {
-      // Extract additional fields for the contact request
-      const username = node.username || null;
-      const remoteIp = node.ip || null;
-      const port = node.listen_port || node.port || null;
-      const userId = node.user_id || null;
-      
-      Logger.info("Contact request parameters:", {
-        targetPublicKey,
-        alias: node.display_label || node.name,
-        username,
-        remoteIp,
-        port,
-        userId
-      });
+  try {
+    // Extract additional fields for the contact request
+    const username = node.username || null;
+    const remoteIp = node.ip || null;
+    const port = node.listen_port || node.port || null;
+    const userId = node.user_id || null;
 
-      const result = await API.contacts.sendContactRequest(
-        targetPublicKey,
-        node.display_label || node.name,
-        username,
-        remoteIp,
-        port,
-        userId,
+    Logger.info("Contact request parameters:", {
+      targetPublicKey,
+      alias: node.display_label || node.name,
+      username,
+      remoteIp,
+      port,
+      userId,
+    });
+
+    const result = await API.contacts.sendContactRequest(
+      targetPublicKey,
+      node.display_label || node.name,
+      username,
+      remoteIp,
+      port,
+      userId,
+    );
+
+    Logger.info("Contact request result:", { result });
+
+    if (result.success) {
+      feedback.showSuccess(
+        `Invitation sent to ${node.display_label || node.name}`,
       );
-
-      Logger.info("Contact request result:", { result });
-
-      if (result.success) {
-        feedback.showSuccess(
-          `Invitation sent to ${node.display_label || node.name}`,
-        );
-      } else {
-        feedback.showError(
-          `Failed to send invitation: ${result.message || "Unknown error"}`,
-        );
-      }
-    } catch (error) {
-      Logger.error("Error sending contact request:", { error });
-      feedback.showError(`Error sending invitation: ${error.message}`);
+    } else {
+      feedback.showError(
+        `Failed to send invitation: ${result.message || "Unknown error"}`,
+      );
     }
-  };
+  } catch (error) {
+    Logger.error("Error sending contact request:", { error });
+    feedback.showError(`Error sending invitation: ${error.message}`);
+  }
+};
 
 // Contact request popup functions
-  // Handle incoming contact requests
-  const handleContactRequest = async (event) => {
-    Logger.info('Received contact request:', { payload: event.payload });
-    await Logger.contact("request-received", event.payload);
-    
-    pendingContactRequest.value = event.payload;
-    showContactRequestPopup.value = true;
-  };
+// Handle incoming contact requests
+const handleContactRequest = async (event) => {
+  Logger.info("Received contact request:", { payload: event.payload });
+  await Logger.contact("request-received", event.payload);
 
-  // Accept a contact request
-  const acceptContactRequest = async () => {
-    const requestJson = resolvePendingRequestJson();
-    if (!requestJson) {
-      feedback.showError('Unable to parse contact request payload.');
-      await Logger.error("Failed to parse contact request payload");
-      showContactRequestPopup.value = false;
-      pendingContactRequest.value = null;
-      return;
-    }
+  pendingContactRequest.value = event.payload;
+  showContactRequestPopup.value = true;
+};
 
-    try {
-      const result = await API.contacts.handleContactRequest(requestJson, true);
-      
-      if (result.success) {
-        feedback.showSuccess(`Contact request from ${pendingContactRequest.value.requester_alias} accepted`);
-        await Logger.contact("accepted", {
-          requesterAlias: pendingContactRequest.value.requester_alias,
-          requesterPublicKey: pendingContactRequest.value.requester_public_key
-        });
-        
-        // Refresh contacts to show the new contact
-        await store.refreshContacts();
-      } else {
-        feedback.showError(`Failed to accept contact request: ${result.message || 'Unknown error'}`);
-        await Logger.error("Failed to accept contact request", {
-          error: result.message || 'Unknown error'
-        });
-      }
-    } catch (error) {
-      Logger.error('Error accepting contact request:', { error });
-      feedback.showError(`Error accepting contact request: ${error.message}`);
-      await Logger.error("Exception while accepting contact request", {
-        error: error.message,
-        stack: error.stack
+// Accept a contact request
+const acceptContactRequest = async () => {
+  const requestJson = resolvePendingRequestJson();
+  if (!requestJson) {
+    feedback.showError("Unable to parse contact request payload.");
+    await Logger.error("Failed to parse contact request payload");
+    showContactRequestPopup.value = false;
+    pendingContactRequest.value = null;
+    return;
+  }
+
+  try {
+    const result = await API.contacts.handleContactRequest(requestJson, true);
+
+    if (result.success) {
+      feedback.showSuccess(
+        `Contact request from ${pendingContactRequest.value.requester_alias} accepted`,
+      );
+      await Logger.contact("accepted", {
+        requesterAlias: pendingContactRequest.value.requester_alias,
+        requesterPublicKey: pendingContactRequest.value.requester_public_key,
       });
-    } finally {
-      showContactRequestPopup.value = false;
-      pendingContactRequest.value = null;
-    }
-  };
 
-  // Decline a contact request
-  const declineContactRequest = async () => {
-    const requestJson = resolvePendingRequestJson();
-    if (!requestJson) {
-      feedback.showError('Unable to parse contact request payload.');
-      await Logger.error("Failed to parse contact request payload for decline");
-      showContactRequestPopup.value = false;
-      pendingContactRequest.value = null;
-      return;
-    }
-
-    try {
-      const result = await API.contacts.handleContactRequest(requestJson, false);
-      
-      if (result.success) {
-        feedback.showInfo(`Contact request from ${pendingContactRequest.value.requester_alias} declined`);
-        await Logger.contact("declined", {
-          requesterAlias: pendingContactRequest.value.requester_alias,
-          requesterPublicKey: pendingContactRequest.value.requester_public_key
-        });
-      } else {
-        feedback.showError(`Failed to decline contact request: ${result.message || 'Unknown error'}`);
-        await Logger.error("Failed to decline contact request", {
-          error: result.message || 'Unknown error'
-        });
-      }
-    } catch (error) {
-      Logger.error('Error declining contact request:', { error });
-      feedback.showError(`Error declining contact request: ${error.message}`);
-      await Logger.error("Exception while declining contact request", {
-        error: error.message,
-        stack: error.stack
+      // Refresh contacts to show the new contact
+      await store.refreshContacts();
+    } else {
+      feedback.showError(
+        `Failed to accept contact request: ${result.message || "Unknown error"}`,
+      );
+      await Logger.error("Failed to accept contact request", {
+        error: result.message || "Unknown error",
       });
-    } finally {
-      showContactRequestPopup.value = false;
-      pendingContactRequest.value = null;
     }
-  };
+  } catch (error) {
+    Logger.error("Error accepting contact request:", { error });
+    feedback.showError(`Error accepting contact request: ${error.message}`);
+    await Logger.error("Exception while accepting contact request", {
+      error: error.message,
+      stack: error.stack,
+    });
+  } finally {
+    showContactRequestPopup.value = false;
+    pendingContactRequest.value = null;
+  }
+};
+
+// Decline a contact request
+const declineContactRequest = async () => {
+  const requestJson = resolvePendingRequestJson();
+  if (!requestJson) {
+    feedback.showError("Unable to parse contact request payload.");
+    await Logger.error("Failed to parse contact request payload for decline");
+    showContactRequestPopup.value = false;
+    pendingContactRequest.value = null;
+    return;
+  }
+
+  try {
+    const result = await API.contacts.handleContactRequest(requestJson, false);
+
+    if (result.success) {
+      feedback.showInfo(
+        `Contact request from ${pendingContactRequest.value.requester_alias} declined`,
+      );
+      await Logger.contact("declined", {
+        requesterAlias: pendingContactRequest.value.requester_alias,
+        requesterPublicKey: pendingContactRequest.value.requester_public_key,
+      });
+    } else {
+      feedback.showError(
+        `Failed to decline contact request: ${result.message || "Unknown error"}`,
+      );
+      await Logger.error("Failed to decline contact request", {
+        error: result.message || "Unknown error",
+      });
+    }
+  } catch (error) {
+    Logger.error("Error declining contact request:", { error });
+    feedback.showError(`Error declining contact request: ${error.message}`);
+    await Logger.error("Exception while declining contact request", {
+      error: error.message,
+      stack: error.stack,
+    });
+  } finally {
+    showContactRequestPopup.value = false;
+    pendingContactRequest.value = null;
+  }
+};
 
 // Other functions
 const logout = async () => {
@@ -749,41 +764,44 @@ watch(
 );
 
 // Lifecycle hooks
-  // Initialize component
-  onMounted(async () => {
-    if (!store.isAuthenticated) {
-      router.replace({ name: "login" });
-      return;
-    }
-    await startMessageListener();
-    
-    // Log component initialization
-    await Logger.info("ChatView component mounted", {
-      userId: store.user?.id,
-      userName: store.user?.name,
-      userAddress: store.user?.address
-    });
-    
-    // Initial data loading
-    await Promise.all([
-      store.refreshContacts(),
-      store.refreshMessages(),
-      store.refreshNodeInfo(),
-    ]);
-    
-    // Listen for contact request events
-    contactRequestUnlisten.value = await listen('contact-request-received', handleContactRequest);
-    contactAddedUnlisten.value = await listen('contact-added', async () => {
-      await store.refreshContacts();
-    });
-    
-    // Log successful initialization
-    await Logger.info("ChatView component initialized successfully");
+// Initialize component
+onMounted(async () => {
+  if (!store.isAuthenticated) {
+    router.replace({ name: "login" });
+    return;
+  }
+  await startMessageListener();
 
-    if (pendingIncomingTransfers.value.length > 0) {
-      void processNextIncomingTransfer();
-    }
+  // Log component initialization
+  await Logger.info("ChatView component mounted", {
+    userId: store.user?.id,
+    userName: store.user?.name,
+    userAddress: store.user?.address,
   });
+
+  // Initial data loading
+  await Promise.all([
+    store.refreshContacts(),
+    store.refreshMessages(),
+    store.refreshNodeInfo(),
+  ]);
+
+  // Listen for contact request events
+  contactRequestUnlisten.value = await listen(
+    "contact-request-received",
+    handleContactRequest,
+  );
+  contactAddedUnlisten.value = await listen("contact-added", async () => {
+    await store.refreshContacts();
+  });
+
+  // Log successful initialization
+  await Logger.info("ChatView component initialized successfully");
+
+  if (pendingIncomingTransfers.value.length > 0) {
+    void processNextIncomingTransfer();
+  }
+});
 
 onBeforeUnmount(() => {
   void stopMessageListener();

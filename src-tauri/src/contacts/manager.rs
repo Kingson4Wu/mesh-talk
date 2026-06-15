@@ -32,9 +32,10 @@ impl ContactList {
 
 #[derive(Clone)]
 pub struct ContactManager {
-    // Keep the original file manager for other operations
+    // Retained for non-contact file operations / API symmetry.
+    #[allow(dead_code)]
     file_manager: FileManager,
-    // Add the public key encryption file manager for contacts
+    // The public key encryption file manager used for the contacts store.
     public_key_file_manager: PublicKeyFileManager,
 }
 
@@ -195,7 +196,7 @@ impl ContactManager {
 
         // Check if the contact exists and get its current state
         if let Some(contact) = contact_list.contacts.get(contact_address) {
-            let contact_clone = contact.clone();
+            let _contact_clone = contact.clone();
 
             // Remove the contact
             contact_list.contacts.remove(contact_address);
@@ -402,7 +403,7 @@ impl ContactManager {
         );
 
         match result {
-            Ok(mut contacts) => {
+            Ok(contacts) => {
                 log::info!(
                     "Successfully loaded {} contacts for user '{}'",
                     contacts.contacts.len(),

@@ -106,9 +106,10 @@ if ! cd src-tauri && cargo clippy --fix --allow-dirty --allow-staged; then
 fi
 cd ..
 
-# Run ESLint (Frontend linter)
+# Run ESLint (Frontend linter). ESLint 9 uses flat config (eslint.config.js);
+# the `--ext` flag was removed, so run the package script which lints the project.
 print_status "success" "Running frontend linter (ESLint)..."
-if ! cd frontend && npx eslint src/ --ext .js,.ts,.vue; then
+if ! cd frontend && npm run lint; then
     print_status "error" "Frontend linting issues found. Please fix ESLint errors."
     exit 1
 fi

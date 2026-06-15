@@ -226,7 +226,7 @@ pub async fn get_node_info(
 
     Ok(NodeInfo {
         name: node_name,
-        user_id: user_id,
+        user_id,
         port,
         username,
         status,
@@ -657,7 +657,7 @@ fn get_contacts_impl(app_state: &AppState) -> CommandResult<ContactResult> {
         session.user.name.clone(),    // Pass the actual username
         session.user.user_id.clone(), // Pass the user_id as well
     );
-    contacts.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    contacts.sort_by_key(|a| a.name.to_lowercase());
 
     // Log the retrieved contacts as JSON
     println!(
@@ -1061,9 +1061,7 @@ mod tests {
     use super::*;
     use crate::services::auth_service::AuthService;
     use crate::services::contact_service::ContactService;
-    use crate::services::file_transfer::{
-        FileTransferHandle, FileTransferManager, TransferManifest,
-    };
+
     use crate::services::message_service::MessageService;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -1451,7 +1449,7 @@ async fn send_contact_request_impl(
     username: Option<String>,
     remote_ip: Option<String>,
     port: Option<u16>,
-    user_id: Option<String>,
+    _user_id: Option<String>,
     app_state: &AppState,
 ) -> CommandResult<ContactRequestResult> {
     let session = require_session(app_state)?;

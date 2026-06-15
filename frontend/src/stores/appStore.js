@@ -10,7 +10,7 @@ import {
   buildNodeDisplayLabel,
   splitAddress,
   getMessageConversationKey,
-  buildDiscoveredLabel
+  buildDiscoveredLabel,
 } from "../utils/addressUtils";
 
 export const useAppStore = defineStore("app", () => {
@@ -69,7 +69,7 @@ export const useAppStore = defineStore("app", () => {
     // Log discovery nodes
     console.log("[APP STORE] Discovery nodes for contact matching:", {
       totalDiscovered: discoveredNodes.value.length,
-      discoveredNodes: discoveredNodes.value.map(node => ({
+      discoveredNodes: discoveredNodes.value.map((node) => ({
         user_id: node.user_id,
         address: node.address,
         ip: node.ip,
@@ -77,14 +77,14 @@ export const useAppStore = defineStore("app", () => {
         is_connected: node.is_connected,
         status: node.status,
         name: node.name,
-        username: node.username
-      }))
+        username: node.username,
+      })),
     });
 
     // Create a map of discovered nodes by user_id for quick lookup
     const discoveredNodeMap = {};
     const discoveredNodeByAddress = {};
-    discoveredNodes.value.forEach(node => {
+    discoveredNodes.value.forEach((node) => {
       if (!node?.is_connected) {
         return;
       }
@@ -97,21 +97,27 @@ export const useAppStore = defineStore("app", () => {
     });
 
     // Create updated contacts list by merging with discovery info
-    const updatedContacts = contacts.value.map(contact => {
+    const updatedContacts = contacts.value.map((contact) => {
       // Look for matching discovered node by user_id
       const discoveredNode =
         (contact.user_id && discoveredNodeMap[contact.user_id]) ||
         (contact.address && discoveredNodeByAddress[contact.address]);
-      
+
       // Log the matching process
       if (contact.user_id) {
-        console.log(`[APP STORE] Contact matching - Contact user_id: ${contact.user_id}, Found in discovery: ${!!discoveredNode}, Is online: ${discoveredNode?.is_connected || false}`);
+        console.log(
+          `[APP STORE] Contact matching - Contact user_id: ${contact.user_id}, Found in discovery: ${!!discoveredNode}, Is online: ${discoveredNode?.is_connected || false}`,
+        );
       }
-      
+
       if (discoveredNode) {
         // Use discovery node info to update contact status and address
-        console.log(`[APP STORE] Updating contact ${contact.name} with discovery info: is_connected=${discoveredNode.is_connected}, ip=${discoveredNode.ip}, address=${discoveredNode.address}`);
-        const mergedStatus = discoveredNode.status ?? (discoveredNode.is_connected ? "online" : "offline");
+        console.log(
+          `[APP STORE] Updating contact ${contact.name} with discovery info: is_connected=${discoveredNode.is_connected}, ip=${discoveredNode.ip}, address=${discoveredNode.address}`,
+        );
+        const mergedStatus =
+          discoveredNode.status ??
+          (discoveredNode.is_connected ? "online" : "offline");
         return {
           ...contact,
           // Priority: Use discovery node status
@@ -187,7 +193,7 @@ export const useAppStore = defineStore("app", () => {
     const accountName = user.value?.name ?? "Guest";
     const nodeName = contact.node_name ?? contact.name ?? "Unknown";
     // Use the name field from backend if username is not available
-    const username = contact.username ?? contact.name ?? "Unknown"; 
+    const username = contact.username ?? contact.name ?? "Unknown";
     const listenPort = contact.listen_port ?? addressPort ?? 0;
     const displayLabel =
       contact.display_label ??
@@ -206,7 +212,7 @@ export const useAppStore = defineStore("app", () => {
       ip: contact.ip ?? addressIp ?? "127.0.0.1",
       display_label: displayLabel,
       // Preserve the original name field from the backend, don't override with displayLabel
-      name: contact.name ?? username, 
+      name: contact.name ?? username,
       status,
       is_online: contact.is_online ?? status === "online",
       added_at: contact.added_at ?? Date.now(),
@@ -304,7 +310,9 @@ export const useAppStore = defineStore("app", () => {
     const bytes = Number(payload.bytes ?? 0);
     const total = Number(payload.total ?? 0);
     const direction =
-      payload.direction ?? fileTransfers.value[transferId]?.direction ?? "outgoing";
+      payload.direction ??
+      fileTransfers.value[transferId]?.direction ??
+      "outgoing";
 
     updateTransferState(transferId, {
       bytesTransferred: bytes,
@@ -327,7 +335,9 @@ export const useAppStore = defineStore("app", () => {
     const status = String(payload.status ?? "pending").toLowerCase();
     const errorMessage = payload.error ?? null;
     const direction =
-      payload.direction ?? fileTransfers.value[transferId]?.direction ?? "outgoing";
+      payload.direction ??
+      fileTransfers.value[transferId]?.direction ??
+      "outgoing";
 
     updateTransferState(transferId, {
       status,
@@ -360,7 +370,9 @@ export const useAppStore = defineStore("app", () => {
         ? senderUserId === user.value.user_id
         : false;
     const direction = isOutgoing ? "outgoing" : "incoming";
-    const requiresSavePath = !isOutgoing && (payload.requestSavePath ?? payload.request_save_path ?? true);
+    const requiresSavePath =
+      !isOutgoing &&
+      (payload.requestSavePath ?? payload.request_save_path ?? true);
 
     updateTransferState(transferId, {
       status: "pending",
@@ -396,7 +408,9 @@ export const useAppStore = defineStore("app", () => {
     const path = payload.path ?? null;
     const checksumValid = payload.checksumValid ?? true;
     const direction =
-      payload.direction ?? fileTransfers.value[transferId]?.direction ?? "outgoing";
+      payload.direction ??
+      fileTransfers.value[transferId]?.direction ??
+      "outgoing";
 
     updateTransferState(transferId, {
       status: "completed",
@@ -610,7 +624,9 @@ export const useAppStore = defineStore("app", () => {
       refreshDiscoveredNodes(),
     ]);
     await refreshTransfers();
-    console.log("[APP STORE] Bootstrap completed, contacts, messages, node info, and discovered nodes updated");
+    console.log(
+      "[APP STORE] Bootstrap completed, contacts, messages, node info, and discovered nodes updated",
+    );
     startBackgroundIntervals();
     ensureEventListeners();
   }
@@ -634,13 +650,13 @@ export const useAppStore = defineStore("app", () => {
         networkRunning.value = true;
         networkStatus.value = "connected";
       }
-      
+
       // Log successful refresh
       await Logger.network("node-info-refresh", {
         nodeName: info.name,
         nodePort: info.port,
         nodeStatus: info.status,
-        networkStatus: networkStatus.value
+        networkStatus: networkStatus.value,
       });
     } catch (err) {
       setError(err, {
@@ -648,11 +664,11 @@ export const useAppStore = defineStore("app", () => {
         source: "store.refreshNodeInfo",
         toast: false,
       });
-      
+
       // Log error
       await Logger.error("Failed to refresh node info", {
         error: err.message,
-        source: "store.refreshNodeInfo"
+        source: "store.refreshNodeInfo",
       });
     }
   }
@@ -663,47 +679,55 @@ export const useAppStore = defineStore("app", () => {
     return Promise.resolve();
   }
 
-    // Refresh contacts from the backend
+  // Refresh contacts from the backend
   async function refreshContacts() {
     console.log("[APP STORE] Starting contacts refresh from backend API...");
     try {
       const result = await API.contacts.getContacts();
       if (result.success) {
-        const contactsFromApi = Array.isArray(result.contacts) ? result.contacts : [];
+        const contactsFromApi = Array.isArray(result.contacts)
+          ? result.contacts
+          : [];
 
-        console.log("[APP STORE] Successfully received contacts from backend:", {
-          count: contactsFromApi.length,
-          contacts: contactsFromApi.map(c => ({
-            id: c.id,
-            name: c.name,
-            user_id: c.user_id, // Added for debugging
-            username: c.username,
-            address: c.address,
-            is_online: c.is_online,
-            status: c.status
-          }))
-        });
-        
+        console.log(
+          "[APP STORE] Successfully received contacts from backend:",
+          {
+            count: contactsFromApi.length,
+            contacts: contactsFromApi.map((c) => ({
+              id: c.id,
+              name: c.name,
+              user_id: c.user_id, // Added for debugging
+              username: c.username,
+              address: c.address,
+              is_online: c.is_online,
+              status: c.status,
+            })),
+          },
+        );
+
         applyContacts(contactsFromApi);
-        
+
         // Log successful refresh and print contact data
         console.log("[APP STORE] Contacts applied to store:", {
           contactCount: contactsFromApi.length,
-          contacts: contactsFromApi.map(c => ({
+          contacts: contactsFromApi.map((c) => ({
             id: c.id,
             name: c.name,
             username: c.username,
             address: c.address,
             is_online: c.is_online,
-            status: c.status
-          }))
+            status: c.status,
+          })),
         });
-        
+
         await Logger.contact("contacts-refresh", {
-          contactCount: contactsFromApi.length
+          contactCount: contactsFromApi.length,
         });
       } else {
-        console.error("[APP STORE] Failed to get contacts from backend:", result);
+        console.error(
+          "[APP STORE] Failed to get contacts from backend:",
+          result,
+        );
       }
     } catch (err) {
       console.error("[APP STORE] Error refreshing contacts from backend:", err);
@@ -712,11 +736,11 @@ export const useAppStore = defineStore("app", () => {
         source: "store.refreshContacts",
         toast: false,
       });
-      
+
       // Log error
       await Logger.error("Failed to refresh contacts", {
         error: err.message,
-        source: "store.refreshContacts"
+        source: "store.refreshContacts",
       });
     }
   }
@@ -725,14 +749,16 @@ export const useAppStore = defineStore("app", () => {
   async function refreshMessages() {
     try {
       const result = await API.messages.getMessages();
-      const normalized = normalizeMessageList(Array.isArray(result) ? result : []);
+      const normalized = normalizeMessageList(
+        Array.isArray(result) ? result : [],
+      );
       messages.value = normalized;
       recomputeUnread();
-      
+
       // Log successful refresh
       await Logger.chat("messages-refresh", {
         messageCount: normalized.length,
-        unreadCount: unreadCount.value
+        unreadCount: unreadCount.value,
       });
     } catch (err) {
       setError(err, {
@@ -740,11 +766,11 @@ export const useAppStore = defineStore("app", () => {
         source: "store.refreshMessages",
         toast: false,
       });
-      
+
       // Log error
       await Logger.error("Failed to refresh messages", {
         error: err.message,
-        source: "store.refreshMessages"
+        source: "store.refreshMessages",
       });
     }
   }
@@ -759,13 +785,13 @@ export const useAppStore = defineStore("app", () => {
         source: "messages.send",
         toast: true,
       });
-      
+
       // Log validation error
       await Logger.error("Empty message content", {
         error: "Message content cannot be empty",
-        source: "messages.send"
+        source: "messages.send",
       });
-      
+
       return { success: false, error: "Message content cannot be empty" };
     }
 
@@ -784,7 +810,10 @@ export const useAppStore = defineStore("app", () => {
         userId: targetUserId,
         address: targetAddress,
       });
-      if (result?.success || (result && typeof result === "object" && result.id)) {
+      if (
+        result?.success ||
+        (result && typeof result === "object" && result.id)
+      ) {
         const messagePayload = result?.message ?? result;
         const message = upsertMessage(messagePayload);
         if (!message) {
@@ -802,9 +831,9 @@ export const useAppStore = defineStore("app", () => {
         await Logger.chat("message-sent", {
           messageId: message.id,
           contentLength: trimmed.length,
-          recipient: activeConversation.value
+          recipient: activeConversation.value,
         });
-        
+
         return { success: true, message };
       } else {
         const error = new Error(result?.message ?? "Failed to send message");
@@ -813,14 +842,17 @@ export const useAppStore = defineStore("app", () => {
           source: "messages.send",
           toast: true,
         });
-        
+
         // Log send failure
         await Logger.error("Failed to send message", {
           error: result?.message ?? "Failed to send message",
-          source: "messages.send"
+          source: "messages.send",
         });
-        
-        return { success: false, error: result?.message ?? "Failed to send message" };
+
+        return {
+          success: false,
+          error: result?.message ?? "Failed to send message",
+        };
       }
     } catch (err) {
       setError(err, {
@@ -828,14 +860,14 @@ export const useAppStore = defineStore("app", () => {
         source: "messages.send",
         toast: true,
       });
-      
+
       // Log exception
       await Logger.error("Exception while sending message", {
         error: err.message,
         source: "messages.send",
-        stack: err.stack
+        stack: err.stack,
       });
-      
+
       return { success: false, error: err.message };
     }
   }
@@ -1185,14 +1217,10 @@ export const useAppStore = defineStore("app", () => {
     const address =
       typeof target === "string"
         ? target.trim() || null
-        : contact?.address ?? contact?.public_key ?? null;
+        : (contact?.address ?? contact?.public_key ?? null);
 
     const label =
-      contact?.display_label ??
-      contact?.name ??
-      address ??
-      userId ??
-      "unknown";
+      contact?.display_label ?? contact?.name ?? address ?? userId ?? "unknown";
 
     try {
       if (userId) {
@@ -1213,7 +1241,8 @@ export const useAppStore = defineStore("app", () => {
           address: result?.address ?? address ?? null,
           reused: Boolean(result?.reused),
         });
-        activeConversation.value = conversationKey ?? result?.address ?? address ?? userId;
+        activeConversation.value =
+          conversationKey ?? result?.address ?? address ?? userId;
         return;
       }
 
@@ -1369,7 +1398,7 @@ export const useAppStore = defineStore("app", () => {
         console.log("[FRONTEND] Payload nodes:", payload.nodes);
         if (payload.nodes) {
           const filteredNodes = payload.nodes.filter((node) => {
-            const online = node?.is_connected ?? (node?.status === "online");
+            const online = node?.is_connected ?? node?.status === "online";
             return online;
           });
 
@@ -1380,9 +1409,9 @@ export const useAppStore = defineStore("app", () => {
               username: node.username,
               ip: node.ip,
               user_id: node.user_id,
-              source_ip: node.source_ip
+              source_ip: node.source_ip,
             });
-            
+
             return {
               ...node,
               display_label:
@@ -1395,7 +1424,10 @@ export const useAppStore = defineStore("app", () => {
                 }),
             };
           });
-          console.log("[FRONTEND] Updated discoveredNodes:", discoveredNodes.value);
+          console.log(
+            "[FRONTEND] Updated discoveredNodes:",
+            discoveredNodes.value,
+          );
         }
       }),
       listen("firewall-permission-required", (event) => {
@@ -1418,13 +1450,17 @@ export const useAppStore = defineStore("app", () => {
           });
 
           if (!approved) {
-            feedback.showInfo("Firewall permission declined", { autoDismiss: 2500 });
+            feedback.showInfo("Firewall permission declined", {
+              autoDismiss: 2500,
+            });
             return;
           }
 
           try {
             await API.network.allowFirewall(port);
-            feedback.showSuccess("Firewall rule applied", { autoDismiss: 2500 });
+            feedback.showSuccess("Firewall rule applied", {
+              autoDismiss: 2500,
+            });
           } catch (err) {
             console.error("[APP STORE] Failed to apply firewall rule", err);
             setError(err, {
@@ -1656,20 +1692,20 @@ export const useAppStore = defineStore("app", () => {
     console.log("[APP STORE] Syncing contact status with discovery nodes:", {
       totalDiscovered: discoveredNodes.value.length,
       totalContacts: contacts.value.length,
-      discoveredNodes: discoveredNodes.value.map(node => ({
+      discoveredNodes: discoveredNodes.value.map((node) => ({
         user_id: node.user_id,
         address: node.address,
         ip: node.ip,
         port: node.port,
         is_connected: node.is_connected,
-        status: node.status
-      }))
+        status: node.status,
+      })),
     });
 
     // Create a map of discovered nodes by user_id for quick lookup
     const discoveredNodeMap = {};
     const discoveredNodeByAddress = {};
-    discoveredNodes.value.forEach(node => {
+    discoveredNodes.value.forEach((node) => {
       if (node.user_id) {
         discoveredNodeMap[node.user_id] = node;
       }
@@ -1687,13 +1723,19 @@ export const useAppStore = defineStore("app", () => {
 
       // Log the matching process
       if (contact.user_id) {
-        console.log(`[APP STORE] Sync - Contact user_id: ${contact.user_id}, Found in discovery: ${!!discoveredNode}, Is online: ${discoveredNode?.is_connected || false}`);
+        console.log(
+          `[APP STORE] Sync - Contact user_id: ${contact.user_id}, Found in discovery: ${!!discoveredNode}, Is online: ${discoveredNode?.is_connected || false}`,
+        );
       }
 
       if (discoveredNode) {
         // Use discovery node info to update contact
-        console.log(`[APP STORE] Sync - Updating contact ${contact.name} with discovery info: is_connected=${discoveredNode.is_connected}, ip=${discoveredNode.ip}, address=${discoveredNode.address}`);
-        const mergedStatus = discoveredNode.status ?? (discoveredNode.is_connected ? "online" : "offline");
+        console.log(
+          `[APP STORE] Sync - Updating contact ${contact.name} with discovery info: is_connected=${discoveredNode.is_connected}, ip=${discoveredNode.ip}, address=${discoveredNode.address}`,
+        );
+        const mergedStatus =
+          discoveredNode.status ??
+          (discoveredNode.is_connected ? "online" : "offline");
         return {
           ...contact,
           // Priority: Use discovery node status
@@ -1734,7 +1776,9 @@ export const useAppStore = defineStore("app", () => {
         if (!isAuthenticated.value) {
           return;
         }
-        console.log("[APP STORE] Periodically refreshing contacts from backend...");
+        console.log(
+          "[APP STORE] Periodically refreshing contacts from backend...",
+        );
         await refreshContacts();
       }, 10000); // Refresh contacts from backend every 10 seconds
     }

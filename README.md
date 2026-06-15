@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml)
 [![Gitleaks](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml)
+[![codecov](https://codecov.io/gh/Kingson4Wu/mesh-talk/branch/main/graph/badge.svg)](https://codecov.io/gh/Kingson4Wu/mesh-talk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)

@@ -408,10 +408,7 @@ impl ConnectionManager {
         }
 
         let mut addr_map = self.addr_users.lock().unwrap();
-        addr_map
-            .entry(addr)
-            .or_insert_with(HashSet::new)
-            .insert(user_id);
+        addr_map.entry(addr).or_default().insert(user_id);
     }
 
     /// Register connection by inspecting the node registry for the address

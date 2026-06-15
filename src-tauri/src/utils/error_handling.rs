@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_map_io_error() {
-        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "Test IO error");
+        let io_error = std::io::Error::other("Test IO error");
         let command_error = map_io_error_to_command_error(io_error);
         let error_string = format!("{:?}", command_error);
         assert!(error_string.contains("IO error"));

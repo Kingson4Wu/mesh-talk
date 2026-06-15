@@ -1,0 +1,19 @@
+# typos (crate-ci) — source spell checker config.
+# https://github.com/crate-ci/typos
+
+[default.extend-words]
+# sed branch-to-label syntax in scripts/clean_commit.sh ( ...;/\n$/ba ).
+ba = "ba"
+
+[default.extend-identifiers]
+# "UPnP" (Universal Plug and Play) trips the Pn->On heuristic.
+UPnP = "UPnP"
+
+[files]
+extend-exclude = [
+  "Cargo.lock",
+  "frontend/package-lock.json",
+  "package-lock.json",
+  "src-tauri/icons/**",
+  "specifications/**/*.md",
+]

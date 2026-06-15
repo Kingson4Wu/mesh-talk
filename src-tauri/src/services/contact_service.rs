@@ -3,7 +3,6 @@ use crate::domain::models::Contact;
 use crate::identity::manager::IdentityManager;
 use crate::storage::file_manager::FileManager;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
@@ -73,17 +72,6 @@ impl ContactService {
         INSTANCE.set(ContactService::new(contact_manager)).ok();
     }
 
-    fn normalize_optional_field(value: Option<String>) -> Option<String> {
-        value.and_then(|val| {
-            let trimmed = val.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-    }
-
     /// Add a new contact
     pub fn add_contact(
         &self,
@@ -91,7 +79,7 @@ impl ContactService {
         user_id: String,
         name: String,
         address: String,
-        notes: Option<String>,
+        _notes: Option<String>,
     ) -> ContactResult<Contact> {
         let normalized_name = name.trim();
         if normalized_name.is_empty() {
@@ -111,7 +99,7 @@ impl ContactService {
 
         // For this implementation, we'll use a placeholder password
         // In a real implementation, you'd need to get the actual password from the session
-        let password = "placeholder_password";
+        let _password = "placeholder_password";
 
         // First, check if the contact already exists in the contact manager
         // Extract IP and port from the address (format: "ip:port")
@@ -147,7 +135,7 @@ impl ContactService {
                 password,
                 ip,
                 port,
-                &normalized_name,
+                normalized_name,
                 Some(user_id.clone()),
             )
             .map_err(|e| ContactError::StorageError(format!("Failed to add contact: {}", e)))?;
@@ -403,7 +391,7 @@ impl ContactService {
         {
             Ok(cm_contact) => {
                 // Convert the contact manager contact to domain model contact
-                let contact_user_id = cm_contact.user_id.unwrap_or_else(|| user_id);
+                let contact_user_id = cm_contact.user_id.unwrap_or(user_id);
 
                 // Extract username from display label if it's in "username • other_info" format, or use as is
                 let cleaned_username = if cm_contact.username.contains(" • ") {
@@ -451,7 +439,7 @@ impl ContactService {
     }
 
     /// Get a contact by ID
-    pub fn get_contact(&self, username: String, id: String) -> ContactResult<Contact> {
+    pub fn get_contact(&self, _username: String, id: String) -> ContactResult<Contact> {
         // Try to get from cache first
         {
             let cache = self.cache.lock().unwrap();
@@ -481,7 +469,7 @@ impl ContactService {
 
     pub fn update_contact(
         &self,
-        username: String,
+        _username: String,
         id: String,
         name: Option<String>,
         address: Option<String>,
@@ -561,8 +549,8 @@ mod tests {
             file_manager,
             (*identity_manager).clone(),
         ));
-        let contact_service = ContactService::new(contact_manager);
-        contact_service
+
+        ContactService::new(contact_manager)
     }
 
     #[test]

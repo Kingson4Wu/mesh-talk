@@ -84,20 +84,6 @@ export function getMessageConversationKey(message, userAddress = null) {
 }
 
 /**
- * Normalize a list of contacts
- * @param {Array} list - Array of contact objects
- * @param {Object} currentUser - Current user context (optional)
- * @returns {Array} Array of normalized contact objects
- */
-export function normalizeContactList(list = [], currentUser = null) {
-  return [...list]
-    .map((contact) => normalizeContact(contact, currentUser))
-    .sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-    );
-}
-
-/**
  * Normalize a message object with proper defaults
  * @param {Object} message - The raw message object
  * @returns {Object} Normalized message object
@@ -139,7 +125,11 @@ export function normalizeMessage(message) {
     } catch (err) {
       // not json, keep as text
     }
-  } else if (rawContent && typeof rawContent === "object" && rawContent.type === "file") {
+  } else if (
+    rawContent &&
+    typeof rawContent === "object" &&
+    rawContent.type === "file"
+  ) {
     kind = "file";
     file = {
       transferId: rawContent.transferId,
@@ -148,7 +138,8 @@ export function normalizeMessage(message) {
       checksum: rawContent.checksum ?? null,
       status: rawContent.status ?? "pending",
       direction: rawContent.direction ?? "outgoing",
-      bytesTransferred: rawContent.bytesTransferred ?? rawContent.resumeOffset ?? 0,
+      bytesTransferred:
+        rawContent.bytesTransferred ?? rawContent.resumeOffset ?? 0,
       resumeOffset: rawContent.resumeOffset ?? 0,
       targetUserId: rawContent.targetUserId ?? null,
       targetAddress: rawContent.targetAddress ?? null,

@@ -50,10 +50,14 @@ Filter tests while iterating: `cd src-tauri && cargo test contacts::`.
 Code-quality feedback in this repo is **tool-agnostic and committed**, so you get
 it on clone without configuring an editor:
 
-- A `PostToolUse` hook in `.claude/settings.json` runs `cargo fmt` + `clippy` on
-  Rust files Claude Code edits.
+- A `PostToolUse` hook in `.claude/settings.json` runs `rustfmt` on Rust files
+  Claude Code edits.
 - CI (`.github/workflows/ci.yml`) gates formatting, Clippy (`-D warnings`),
-  tests, the frontend build, and a `cargo audit` dependency scan.
+  tests + coverage, the frontend build + ESLint, supply-chain policy
+  (`cargo deny`), unused deps (`cargo machete`), spelling (`typos`), and
+  shellcheck. Mutation testing (`cargo mutants`) runs in `mutants.yml`.
+
+Quick local equivalents are wrapped in the **`/audit`** Claude command.
 
 ## Architecture
 
