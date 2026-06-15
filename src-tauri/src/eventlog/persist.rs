@@ -18,11 +18,13 @@
 //! any altered event is rejected, and the sync engine re-fetches missing events
 //! from peers. A dropped or reordered local record is therefore self-healing.
 
-use crate::eventlog::event::Event;
+use crate::eventlog::event::{Author, ConversationId, Event, EventId};
+use crate::eventlog::store::{AppendOutcome, EventLog};
 use crate::eventlog::LogError;
 use crate::storage::encryption::{
     decrypt_data, encrypt_data, generate_salt, EncryptionKey, NONCE_SIZE, SALT_SIZE,
 };
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -130,6 +132,57 @@ impl LogFile {
         self.file.write_all(&buf)?;
         self.file.flush()?;
         Ok(())
+    }
+}
+
+/// A durable event log: an in-memory [`EventLog`] backed by an encrypted,
+/// append-only [`LogFile`]. On append it validates, persists, then indexes —
+/// so a write failure never leaves an unpersisted event in memory.
+pub struct PersistentEventLog {
+    log: EventLog,
+    file: LogFile,
+}
+
+impl PersistentEventLog {
+    /// Open (or create) the log at `path`, replaying any stored events.
+    pub fn open(path: &Path, password: &str) -> Result<Self, LogError> {
+        let (file, events) = LogFile::open(path, password)?;
+        let mut log = EventLog::default();
+        // Records were validated when first appended and are AES-GCM
+        // authenticated at rest, so replay them as trusted, in file (causal) order.
+        for event in events {
+            log.index_trusted(event);
+        }
+        Ok(Self { log, file })
+    }
+
+    /// Validate, persist, then index an event.
+    pub fn append(&mut self, event: Event) -> Result<AppendOutcome, LogError> {
+        if !self.log.validate(&event)? {
+            return Ok(AppendOutcome::Duplicate);
+        }
+        self.file.append_record(&event)?;
+        self.log.index_trusted(event);
+        Ok(AppendOutcome::Appended)
+    }
+
+    pub fn has(&self, id: &EventId) -> bool {
+        self.log.has(id)
+    }
+    pub fn get(&self, id: &EventId) -> Option<&Event> {
+        self.log.get(id)
+    }
+    pub fn events(&self, conversation: &ConversationId) -> Vec<&Event> {
+        self.log.events(conversation)
+    }
+    pub fn heads(&self, conversation: &ConversationId) -> Vec<EventId> {
+        self.log.heads(conversation)
+    }
+    pub fn version_vector(&self, conversation: &ConversationId) -> HashMap<Author, u64> {
+        self.log.version_vector(conversation)
+    }
+    pub fn prepare(&self, conversation: &ConversationId) -> (Vec<EventId>, u64) {
+        self.log.prepare(conversation)
     }
 }
 
@@ -285,5 +338,74 @@ mod tests {
         }
         let (_f, events) = LogFile::open(&path, "pw").unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn durable_log_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let conv = ConversationId::new([1u8; 32]);
+        let id = DeviceIdentity::generate();
+
+        let root = mk(&id, 1, 1, b"root");
+        let child = Event::new(
+            &id,
+            conv,
+            2,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"child".to_vec(),
+        );
+        {
+            let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+            plog.append(root.clone()).unwrap();
+            plog.append(child.clone()).unwrap();
+            assert_eq!(plog.heads(&conv), vec![child.id]);
+        }
+
+        // Reopen: events, heads, and version vector are rebuilt from disk.
+        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        let events = plog.events(&conv);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, root.id);
+        assert_eq!(events[1].id, child.id);
+        assert_eq!(plog.heads(&conv), vec![child.id]);
+        assert_eq!(plog.version_vector(&conv).get(&root.author), Some(&2));
+    }
+
+    #[test]
+    fn invalid_event_is_not_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let id = DeviceIdentity::generate();
+
+        let mut bad = mk(&id, 1, 1, b"bad");
+        bad.sig[0] ^= 0xFF; // break the signature
+        {
+            let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+            assert!(matches!(plog.append(bad), Err(LogError::BadSignature)));
+        }
+        // Reopen: nothing was written.
+        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        assert_eq!(plog.events(&ConversationId::new([1u8; 32])).len(), 0);
+    }
+
+    #[test]
+    fn duplicate_append_writes_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let conv = ConversationId::new([1u8; 32]);
+        let id = DeviceIdentity::generate();
+        let e = mk(&id, 1, 1, b"hi");
+        {
+            let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+            assert_eq!(plog.append(e.clone()).unwrap(), AppendOutcome::Appended);
+            assert_eq!(plog.append(e.clone()).unwrap(), AppendOutcome::Duplicate);
+        }
+        // Reopen: the duplicate was not written a second time.
+        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        assert_eq!(plog.events(&conv).len(), 1);
     }
 }

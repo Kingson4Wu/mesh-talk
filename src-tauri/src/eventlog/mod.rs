@@ -11,6 +11,7 @@ pub mod persist;
 pub mod store;
 
 pub use event::{Author, ConversationId, Event, EventId, EventKind};
+pub use persist::PersistentEventLog;
 pub use store::{AppendOutcome, EventLog};
 
 /// Errors from the event log.
