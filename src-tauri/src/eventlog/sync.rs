@@ -161,6 +161,22 @@ pub fn handle_followup(store: &mut impl SyncStore, followup: &SyncFollowup) -> A
     ingest_all(store, &followup.events)
 }
 
+/// Run a full in-process reconciliation between two stores for one conversation.
+/// `a` is the requester, `b` the responder; afterward both hold the union of the
+/// two logs. Returns `(report_a, report_b)` — what each side applied. This is the
+/// reference driver; over a network, the three messages travel across a channel.
+pub fn reconcile<A: SyncStore, B: SyncStore>(
+    a: &mut A,
+    b: &mut B,
+    conversation: ConversationId,
+) -> (ApplyReport, ApplyReport) {
+    let request = build_request(a, conversation);
+    let response = handle_request(b, &request);
+    let (report_a, followup) = handle_response(a, &response);
+    let report_b = handle_followup(b, &followup);
+    (report_a, report_b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +205,133 @@ mod tests {
             EventKind::Message,
             payload.to_vec(),
         )
+    }
+
+    /// Assert two stores hold the same conversation log (same events, same order).
+    fn assert_converged(a: &EventLog, b: &EventLog) {
+        let ea: Vec<EventId> = a.events(&conv()).iter().map(|e| e.id).collect();
+        let eb: Vec<EventId> = b.events(&conv()).iter().map(|e| e.id).collect();
+        assert_eq!(ea, eb, "stores did not converge");
+    }
+
+    #[test]
+    fn disjoint_branches_converge() {
+        let id = DeviceIdentity::generate();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a_ev = ev(&id, 2, vec![root.id], 2, b"a");
+        let b_ev = ev(&id, 3, vec![root.id], 2, b"b");
+
+        let mut a = EventLog::default();
+        a.append(root.clone()).unwrap();
+        a.append(a_ev.clone()).unwrap();
+
+        let mut b = EventLog::default();
+        b.append(root.clone()).unwrap();
+        b.append(b_ev.clone()).unwrap();
+
+        reconcile(&mut a, &mut b, conv());
+        assert_converged(&a, &b);
+        // Both now hold all three events.
+        assert!(a.has(&a_ev.id) && a.has(&b_ev.id));
+        assert!(b.has(&a_ev.id) && b.has(&b_ev.id));
+    }
+
+    #[test]
+    fn subset_peer_catches_up() {
+        let id = DeviceIdentity::generate();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a_ev = ev(&id, 2, vec![root.id], 2, b"a");
+        let b_ev = ev(&id, 3, vec![a_ev.id], 3, b"b");
+
+        // `full` has the whole chain; `partial` has only root.
+        let mut full = EventLog::default();
+        full.append(root.clone()).unwrap();
+        full.append(a_ev.clone()).unwrap();
+        full.append(b_ev.clone()).unwrap();
+
+        let mut partial = EventLog::default();
+        partial.append(root.clone()).unwrap();
+
+        reconcile(&mut partial, &mut full, conv());
+        assert_converged(&partial, &full);
+        assert_eq!(partial.events(&conv()).len(), 3);
+    }
+
+    #[test]
+    fn identical_logs_exchange_nothing() {
+        let id = DeviceIdentity::generate();
+        let root = ev(&id, 1, vec![], 1, b"root");
+
+        let mut a = EventLog::default();
+        a.append(root.clone()).unwrap();
+        let mut b = EventLog::default();
+        b.append(root.clone()).unwrap();
+
+        let (report_a, report_b) = reconcile(&mut a, &mut b, conv());
+        assert_eq!(report_a.applied, 0);
+        assert_eq!(report_b.applied, 0);
+        assert_converged(&a, &b);
+    }
+
+    #[test]
+    fn reconcile_is_idempotent() {
+        let id = DeviceIdentity::generate();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a_ev = ev(&id, 2, vec![root.id], 2, b"a");
+        let b_ev = ev(&id, 3, vec![root.id], 2, b"b");
+
+        let mut a = EventLog::default();
+        a.append(root.clone()).unwrap();
+        a.append(a_ev.clone()).unwrap();
+        let mut b = EventLog::default();
+        b.append(root.clone()).unwrap();
+        b.append(b_ev.clone()).unwrap();
+
+        reconcile(&mut a, &mut b, conv());
+        // A second pass applies nothing new.
+        let (report_a, report_b) = reconcile(&mut a, &mut b, conv());
+        assert_eq!(report_a.applied, 0);
+        assert_eq!(report_b.applied, 0);
+        assert_converged(&a, &b);
+    }
+
+    #[test]
+    fn multi_author_concurrent_dag_converges() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let root = ev(&alice, 1, vec![], 1, b"root");
+        // Alice's branch and Bob's branch from the shared root, then Alice merges.
+        let a1 = ev(&alice, 2, vec![root.id], 2, b"a1");
+        let b1 = Event::new(
+            &bob,
+            conv(),
+            1,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b1".to_vec(),
+        );
+        let merge = ev(&alice, 3, vec![a1.id, b1.id], 3, b"merge");
+
+        // Start divergent: A has Alice's branch, B has Bob's branch.
+        let mut a = EventLog::default();
+        a.append(root.clone()).unwrap();
+        a.append(a1.clone()).unwrap();
+
+        let mut b = EventLog::default();
+        b.append(root.clone()).unwrap();
+        b.append(b1.clone()).unwrap();
+
+        // First reconcile so both have {root, a1, b1}, then Alice can author the merge.
+        reconcile(&mut a, &mut b, conv());
+        assert_converged(&a, &b);
+        a.append(merge.clone()).unwrap();
+
+        // Sync again; B catches the merge.
+        reconcile(&mut b, &mut a, conv());
+        assert_converged(&a, &b);
+        assert!(b.has(&merge.id));
     }
 
     #[test]
