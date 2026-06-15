@@ -27,6 +27,7 @@ pub mod network;
 pub mod notifications;
 pub mod perf;
 pub mod platform;
+pub mod postoffice;
 pub mod services;
 pub mod state;
 pub mod storage;
