@@ -383,4 +383,53 @@ mod tests {
         let opened = open(&bob, &alice.public().x25519_pub, &event.ciphertext).unwrap();
         assert_eq!(opened, b"hi from a dm event");
     }
+
+    #[test]
+    fn envelope_cannot_be_opened_in_reverse_direction() {
+        // Alice seals FOR Bob. The reverse direction (Alice as recipient, Bob as
+        // the claimed sender) must NOT open it — direction is bound into the key.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"one way").unwrap();
+
+        assert!(matches!(
+            open(&alice, &bob.public().x25519_pub, &sealed),
+            Err(DmError::Decrypt)
+        ));
+        // The intended direction still works.
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &sealed).unwrap(),
+            b"one way"
+        );
+    }
+
+    #[test]
+    fn envelope_for_one_recipient_cannot_be_opened_by_another() {
+        // Alice seals the same message separately for Bob and for Carol. Each
+        // opens only their own copy; neither can open the other's.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let carol = DeviceIdentity::generate();
+
+        let for_bob = seal(&alice, &bob.public().x25519_pub, b"per-recipient").unwrap();
+        let for_carol = seal(&alice, &carol.public().x25519_pub, b"per-recipient").unwrap();
+
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &for_bob).unwrap(),
+            b"per-recipient"
+        );
+        assert_eq!(
+            open(&carol, &alice.public().x25519_pub, &for_carol).unwrap(),
+            b"per-recipient"
+        );
+        // Cross-open fails for both.
+        assert!(matches!(
+            open(&carol, &alice.public().x25519_pub, &for_bob),
+            Err(DmError::Decrypt)
+        ));
+        assert!(matches!(
+            open(&bob, &alice.public().x25519_pub, &for_carol),
+            Err(DmError::Decrypt)
+        ));
+    }
 }
