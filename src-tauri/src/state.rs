@@ -11,6 +11,14 @@ use std::sync::{Arc, Mutex};
 pub struct SessionInfo {
     pub token: String,
     pub user: User,
+    /// The user's password, retained in memory for the lifetime of the session.
+    ///
+    /// This is required because data encrypted at rest (the RSA key protecting
+    /// the contacts store, etc.) is keyed off the password, and network-driven
+    /// handlers (incoming contact responses, message persistence) must be able
+    /// to read/write that data without re-prompting. It is never serialized to
+    /// disk — it lives only in the in-memory session.
+    pub password: String,
 }
 
 #[derive(Clone, Default)]
@@ -19,9 +27,13 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn set(&self, token: String, user: User) {
+    pub fn set(&self, token: String, user: User, password: String) {
         let mut guard = self.inner.lock().unwrap();
-        *guard = Some(SessionInfo { token, user });
+        *guard = Some(SessionInfo {
+            token,
+            user,
+            password,
+        });
     }
 
     pub fn clear(&self) {

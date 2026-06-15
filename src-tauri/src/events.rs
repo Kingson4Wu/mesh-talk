@@ -794,7 +794,9 @@ mod tests {
             "local-user".into(),
             "127.0.0.1:7000".into(),
         );
-        app_state.session().set("token".into(), local_user.clone());
+        app_state
+            .session()
+            .set("token".into(), local_user.clone(), "test-password".into());
 
         let event = MessageEvent {
             from_address: "192.168.0.2:9000".into(),

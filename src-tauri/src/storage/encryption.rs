@@ -7,8 +7,8 @@ use pbkdf2::pbkdf2_hmac;
 use rand::RngCore;
 use sha2::Sha256;
 
-const SALT_SIZE: usize = 16;
-const NONCE_SIZE: usize = 12;
+pub const SALT_SIZE: usize = 16;
+pub const NONCE_SIZE: usize = 12;
 const KEY_SIZE: usize = 32;
 const PBKDF2_ROUNDS: u32 = 100_000;
 

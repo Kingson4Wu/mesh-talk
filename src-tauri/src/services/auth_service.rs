@@ -197,7 +197,18 @@ impl AuthService {
         let identity_user = self
             .identity_manager
             .register_user(normalized_name, &password)
-            .map_err(|e| AuthError::StorageError(format!("Failed to register user: {}", e)))?;
+            .map_err(|e| match e {
+                // A user can already exist under a different password, in which
+                // case the authenticate_user pre-check above does not catch it.
+                // register_user is the authoritative existence check.
+                crate::identity::errors::IdentityError::UserAlreadyExists(_) => {
+                    AuthError::UserAlreadyExists
+                }
+                crate::identity::errors::IdentityError::InvalidUsername => {
+                    AuthError::InvalidInput("Invalid username".to_string())
+                }
+                other => AuthError::StorageError(format!("Failed to register user: {}", other)),
+            })?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

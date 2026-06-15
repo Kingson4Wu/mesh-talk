@@ -50,6 +50,20 @@ impl ContactService {
         INSTANCE.get().expect("ContactService not initialized")
     }
 
+    /// Unlock (decrypt + cache) the user's RSA key with their real password.
+    /// Call at login so password-less internal paths can access the contacts
+    /// store, which is encrypted at rest with this key.
+    pub fn unlock_keys(&self, username: &str, password: &str) -> ContactResult<()> {
+        self.contact_manager
+            .unlock_keys(username, password)
+            .map_err(|e| ContactError::StorageError(e.to_string()))
+    }
+
+    /// Lock (evict) the user's cached RSA key. Call at logout.
+    pub fn lock_keys(&self, username: &str) {
+        self.contact_manager.lock_keys(username);
+    }
+
     /// Initialize the global contact service instance
     pub fn init_global(file_manager: FileManager, identity_manager: Arc<IdentityManager>) {
         let contact_manager = Arc::new(ContactManager::new(

@@ -16,7 +16,6 @@ const BROADCAST_PORT: u16 = 9999; // default discovery port
 const BROADCAST_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(12);
 const REGISTRY_CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
 // Message size limits
 const MAX_MESSAGE_SIZE: usize = 65536; // Maximum message size (64KB)
@@ -48,10 +47,6 @@ fn heartbeat_interval() -> Duration {
 
 fn registry_cleanup_interval() -> Duration {
     duration_from_env("MESH_TALK_REGISTRY_CLEANUP_MS", REGISTRY_CLEANUP_INTERVAL)
-}
-
-fn reconnect_interval() -> Duration {
-    duration_from_env("MESH_TALK_RECONNECT_MS", RECONNECT_INTERVAL)
 }
 
 fn bind_udp_socket(addr: SocketAddr) -> MeshTalkResult<UdpSocket> {
@@ -225,7 +220,10 @@ async fn send_message(
     Ok(())
 }
 
-pub async fn start_udp_discovery<F>(connect_callback: F) -> MeshTalkResult<()>
+pub async fn start_udp_discovery<F>(
+    node_registry: Arc<Mutex<NodeRegistry>>,
+    connect_callback: F,
+) -> MeshTalkResult<()>
 where
     F: Fn(SocketAddr, String, Option<String>, u16, Option<String>) + Send + 'static + Clone,
 {
@@ -267,12 +265,16 @@ where
         }
     };
 
-    // Create node registry for tracking discovered nodes
-    let node_registry: Arc<Mutex<NodeRegistry>> = Arc::new(Mutex::new(NodeRegistry::new()));
+    // Use the shared node registry (owned by NodeService) so discovery,
+    // cleanup, and the ReconnectionManager all act on a single source of truth.
+    // Previously this function created its own throwaway registry and ran a
+    // second reconnect loop on it, which diverged from the shared registry the
+    // rest of the app reads — leaving stale peers stuck "Online" forever.
     let registry_cleanup = node_registry.clone();
-    let registry_heartbeat = node_registry.clone();
 
-    // Spawn a task to periodically clean up timed out nodes
+    // Spawn a task to periodically mark timed-out nodes offline on the shared
+    // registry. The ReconnectionManager (which shares this registry) then drives
+    // any reconnection, so we no longer run a duplicate reconnect loop here.
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(registry_cleanup_interval());
         loop {
@@ -281,31 +283,6 @@ where
                 let mut registry = registry_cleanup.lock().unwrap();
                 registry.remove_timed_out_nodes()
             };
-
-            // Don't call the callback for timed out nodes since they should be removed from discovery
-            // The periodic node discovery emission in events.rs will automatically handle that
-            // timed out nodes no longer appear in the discovery list
-        }
-    });
-
-    // Spawn a task to periodically check for nodes that should be reconnected
-    let connect_callback_clone = connect_callback.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(reconnect_interval());
-        loop {
-            interval.tick().await;
-            let registry = registry_heartbeat.lock().unwrap();
-            let nodes_to_reconnect = registry.get_nodes_to_reconnect();
-            for node in nodes_to_reconnect {
-                // Call the connect callback for nodes that should be reconnected
-                connect_callback_clone(
-                    node.addr,
-                    node.name.clone(),
-                    node.username.clone(),
-                    node.listen_port.unwrap_or(node.addr.port()),
-                    node.user_id.clone(), // Include user_id in the reconnect callback
-                );
-            }
         }
     });
 
@@ -332,18 +309,9 @@ where
                                     // println!("[UDP Discovery] Received discovery message from {}:{}\", name, port);
                                     let peer_addr = SocketAddr::new(addr.ip(), port);
 
-                                    // Add or update node in registry
-                                    {
-                                        let mut registry = node_registry.lock().unwrap();
-                                        registry.add_or_update_node(
-                                            peer_addr,
-                                            name.clone(),
-                                            username.clone(),
-                                            Some(port),
-                                            user_id.clone(), // Pass the user_id to the registry
-                                        );
-                                    }
-
+                                    // Registry updates are performed by the callback,
+                                    // which applies the self-filter so we never record
+                                    // ourselves as a peer.
                                     connect_callback(
                                         peer_addr,
                                         name,
@@ -364,18 +332,9 @@ where
                                 {
                                     let peer_addr = SocketAddr::new(addr.ip(), port);
 
-                                    // Update heartbeat in registry
-                                    {
-                                        let mut registry = node_registry.lock().unwrap();
-                                        registry.add_or_update_node(
-                                            peer_addr,
-                                            name.clone(),
-                                            username.clone(),
-                                            Some(port),
-                                            user_id.clone(), // Pass the user_id to the registry
-                                        );
-                                    }
-
+                                    // Registry updates are performed by the callback,
+                                    // which applies the self-filter so we never record
+                                    // ourselves as a peer.
                                     connect_callback(
                                         peer_addr,
                                         name,

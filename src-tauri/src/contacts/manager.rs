@@ -50,6 +50,19 @@ impl ContactManager {
         }
     }
 
+    /// Decrypt and cache the user's RSA key (used at login) so later storage
+    /// operations can read/write the password-encrypted contacts store.
+    pub fn unlock_keys(&self, username: &str, password: &str) -> Result<(), ContactError> {
+        self.public_key_file_manager
+            .unlock_keys(username, password)
+            .map_err(|e| ContactError::StorageError(e.to_string()))
+    }
+
+    /// Drop the user's cached RSA key (used at logout).
+    pub fn lock_keys(&self, username: &str) {
+        self.public_key_file_manager.lock_keys(username);
+    }
+
     pub fn add_contact(
         &self,
         username: &str,

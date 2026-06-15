@@ -380,8 +380,12 @@ impl MessageService {
             cache
                 .values()
                 .filter(|message| {
-                    message.to_user_id == Some(user_id.clone())
-                        && message.status == MessageStatus::Sent
+                    // Unread = a message addressed to me, that I did not send,
+                    // and that I have not yet read. The previous `status == Sent`
+                    // check missed messages already marked Delivered.
+                    message.to_user_id.as_deref() == Some(user_id.as_str())
+                        && message.from_user_id != user_id
+                        && message.status != MessageStatus::Read
                 })
                 .count()
         };
@@ -543,6 +547,37 @@ mod tests {
         assert_eq!(result.unwrap_err(), MessageError::InvalidMessageData);
     }
 
-    // Note: Other tests are commented out because the implementation is not fully complete
-    // They would need to be updated to work with the file-based storage system
+    #[test]
+    fn count_unread_counts_received_unread_messages() {
+        let svc = setup_test_service();
+
+        // A message I received (to me, from someone else) counts as unread.
+        let received = svc
+            .create_message(
+                "me".to_string(),
+                "other".to_string(),
+                "1.2.3.4:7000".to_string(),
+                Some("me".to_string()),
+                Some("127.0.0.1:7000".to_string()),
+                "hello".to_string(),
+            )
+            .expect("create received");
+
+        // A message I sent (from me) must not count toward my unread total.
+        svc.create_message(
+            "me".to_string(),
+            "me".to_string(),
+            "127.0.0.1:7000".to_string(),
+            Some("other".to_string()),
+            Some("1.2.3.4:7000".to_string()),
+            "hi".to_string(),
+        )
+        .expect("create sent");
+
+        assert_eq!(svc.count_unread_for_user("me".to_string()).unwrap(), 1);
+
+        // Reading the received message clears it from the unread count.
+        svc.mark_read(received.id.clone()).expect("mark read");
+        assert_eq!(svc.count_unread_for_user("me".to_string()).unwrap(), 0);
+    }
 }
