@@ -98,6 +98,27 @@ impl SyncStore for EventLog {
     }
 }
 
+/// Build the opening request: the ids this store holds for `conversation`.
+pub fn build_request(store: &impl SyncStore, conversation: ConversationId) -> SyncRequest {
+    SyncRequest {
+        conversation,
+        have: store.event_ids(&conversation),
+    }
+}
+
+/// Answer a request: the events the requester is missing (topological order),
+/// plus this store's own id-set so the requester can reciprocate.
+pub fn handle_request(store: &impl SyncStore, request: &SyncRequest) -> SyncResponse {
+    let have: HashSet<EventId> = request.have.iter().copied().collect();
+    let events = store.events_excluding(&request.conversation, &have);
+    let have = store.event_ids(&request.conversation);
+    SyncResponse {
+        conversation: request.conversation,
+        events,
+        have,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +229,83 @@ mod tests {
             bincode::deserialize(&bincode::serialize(&followup).unwrap()).unwrap();
         assert_eq!(back.conversation, followup.conversation);
         assert_eq!(back.events, followup.events);
+    }
+
+    #[test]
+    fn request_lists_all_local_ids() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let a = ev(&id, 1, vec![], 1, b"a");
+        let b = ev(&id, 2, vec![a.id], 2, b"b");
+        log.append(a.clone()).unwrap();
+        log.append(b.clone()).unwrap();
+
+        let req = build_request(&log, conv());
+        assert_eq!(req.conversation, conv());
+        assert_eq!(req.have.len(), 2);
+    }
+
+    #[test]
+    fn response_sends_exactly_the_requesters_missing_events() {
+        let id = DeviceIdentity::generate();
+        // Responder has root -> a -> b; requester has only root.
+        let mut responder = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a = ev(&id, 2, vec![root.id], 2, b"a");
+        let b = ev(&id, 3, vec![a.id], 3, b"b");
+        responder.append(root.clone()).unwrap();
+        responder.append(a.clone()).unwrap();
+        responder.append(b.clone()).unwrap();
+
+        let req = SyncRequest {
+            conversation: conv(),
+            have: vec![root.id],
+        };
+        let resp = handle_request(&responder, &req);
+
+        // Missing = {a, b}, in topological order (a before b).
+        assert_eq!(resp.events.len(), 2);
+        assert_eq!(resp.events[0].id, a.id);
+        assert_eq!(resp.events[1].id, b.id);
+        // Responder advertises all three of its ids.
+        assert_eq!(resp.have.len(), 3);
+    }
+
+    #[test]
+    fn response_is_empty_when_requester_has_everything() {
+        let id = DeviceIdentity::generate();
+        let mut responder = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        responder.append(root.clone()).unwrap();
+
+        let req = SyncRequest {
+            conversation: conv(),
+            have: vec![root.id],
+        };
+        let resp = handle_request(&responder, &req);
+        assert!(resp.events.is_empty());
+    }
+
+    #[test]
+    fn response_for_disjoint_branches_sends_the_responders_branch() {
+        let id = DeviceIdentity::generate();
+        // Shared root, then responder has branch `b`, requester has branch `a`.
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a = ev(&id, 2, vec![root.id], 2, b"a");
+        let b = ev(&id, 3, vec![root.id], 2, b"b");
+
+        let mut responder = EventLog::default();
+        responder.append(root.clone()).unwrap();
+        responder.append(b.clone()).unwrap();
+
+        // Requester has root + a.
+        let req = SyncRequest {
+            conversation: conv(),
+            have: vec![root.id, a.id],
+        };
+        let resp = handle_request(&responder, &req);
+        // Responder only has root + b; requester is missing b (and has root already).
+        assert_eq!(resp.events.len(), 1);
+        assert_eq!(resp.events[0].id, b.id);
     }
 }
