@@ -15,6 +15,9 @@ const EVENT_DOMAIN: &[u8] = b"mesh-talk-event-v1";
 pub struct EventId([u8; 32]);
 
 impl EventId {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

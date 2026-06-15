@@ -7,8 +7,10 @@
 //! composition). `store`/`persist` are added in later tasks.
 
 pub mod event;
+pub mod store;
 
 pub use event::{Author, ConversationId, Event, EventId, EventKind};
+pub use store::{AppendOutcome, EventLog};
 
 /// Errors from the event log.
 #[derive(Debug)]
