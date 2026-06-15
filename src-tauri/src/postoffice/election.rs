@@ -61,4 +61,35 @@ mod tests {
         let other = ids.iter().find(|p| **p != elected).unwrap();
         assert!(!is_post_office(other, &ids));
     }
+
+    #[test]
+    fn election_uses_the_user_id_predicate() {
+        // Hand-constructed identities with distinct fingerprints, so this verifies
+        // the real user_id comparison rather than just agreeing with min_by_key.
+        let a = PublicIdentity {
+            ed25519_pub: [1u8; 32],
+            x25519_pub: [0u8; 32],
+        };
+        let b = PublicIdentity {
+            ed25519_pub: [2u8; 32],
+            x25519_pub: [0u8; 32],
+        };
+        assert_ne!(a.user_id(), b.user_id()); // guards against a constant/broken fingerprint
+
+        let lower = if a.user_id() < b.user_id() {
+            a.clone()
+        } else {
+            b.clone()
+        };
+        assert_eq!(elect(&[a.clone(), b.clone()]), Some(lower.clone()));
+        // Order-independent: same winner regardless of input order.
+        assert_eq!(elect(&[b, a]), Some(lower));
+    }
+
+    #[test]
+    fn a_peer_absent_from_eligible_is_not_the_post_office() {
+        let ids = identities(3);
+        let outsider = DeviceIdentity::generate().public();
+        assert!(!is_post_office(&outsider, &ids));
+    }
 }
