@@ -130,4 +130,26 @@ mod tests {
         roster.evict_stale(Duration::ZERO);
         assert!(roster.get(&alice.public().user_id()).is_none());
     }
+
+    #[test]
+    fn re_announce_refreshes_addr_for_same_peer() {
+        // A peer that re-announces on a new port overwrites its prior record
+        // (the addr-binding argument relies on this).
+        let alice = DeviceIdentity::generate();
+        let mut roster = Roster::default();
+        roster.update(&Announce::new(&alice, "Alice", 4000), ip(), "self");
+        roster.update(&Announce::new(&alice, "Alice", 5000), ip(), "self");
+
+        let rec = roster
+            .get(&alice.public().user_id())
+            .expect("alice present");
+        assert_eq!(rec.addr.port(), 5000); // refreshed to the new port
+        assert_eq!(roster.peers().len(), 1); // still one peer, not two
+    }
+
+    #[test]
+    fn get_unknown_user_returns_none() {
+        let roster = Roster::default();
+        assert!(roster.get("nonexistent-user-id").is_none());
+    }
 }
