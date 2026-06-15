@@ -43,7 +43,7 @@ impl ConversationId {
 }
 
 /// An event author, identified by their Ed25519 public key (self-certifying).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Author([u8; 32]);
 
 impl Author {
@@ -59,17 +59,28 @@ impl Author {
     }
 }
 
+impl std::fmt::Debug for Author {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Author({}…)", &hex::encode(self.0)[..8])
+    }
+}
+
 /// The kind of an event. The payload itself lives (encrypted) in `ciphertext`.
+///
+/// The variant ORDER is part of the content-address wire format: serde/bincode
+/// encode the positional index, so this enum is **append-only** — never reorder
+/// or remove a variant; only add new ones at the end. The explicit discriminants
+/// document the frozen indices; `event_kind_wire_encoding_is_stable` guards them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum EventKind {
-    Message,
-    Edit,
-    Delete,
-    React,
-    ReadMarker,
-    MembershipChange,
-    KeyRotation,
-    FileManifest,
+    Message = 0,
+    Edit = 1,
+    Delete = 2,
+    React = 3,
+    ReadMarker = 4,
+    MembershipChange = 5,
+    KeyRotation = 6,
+    FileManifest = 7,
 }
 
 /// A single, content-addressed, signed log event.
@@ -106,10 +117,15 @@ fn hash_content(content: &EventContent) -> EventId {
     let mut hasher = Sha256::new();
     hasher.update(EVENT_DOMAIN);
     hasher.update(&bytes);
-    let digest = hasher.finalize();
-    let mut id = [0u8; 32];
-    id.copy_from_slice(&digest);
-    EventId(id)
+    EventId(hasher.finalize().into())
+}
+
+/// The domain-separated message the author signs: `EVENT_DOMAIN || id`.
+fn signing_input(id: &EventId) -> Vec<u8> {
+    let mut input = Vec::with_capacity(EVENT_DOMAIN.len() + 32);
+    input.extend_from_slice(EVENT_DOMAIN);
+    input.extend_from_slice(id.as_bytes());
+    input
 }
 
 impl Event {
@@ -140,7 +156,7 @@ impl Event {
             kind,
             ciphertext: &ciphertext,
         });
-        let sig = identity.sign(id.as_bytes()).to_vec();
+        let sig = identity.sign(&signing_input(&id)).to_vec();
         Event {
             id,
             conversation_id,
@@ -170,6 +186,7 @@ impl Event {
     }
 
     /// True if `id` matches the hash of the content (tamper-evidence).
+    /// Does not check parent canonicalization; see [`Event::is_canonical`].
     pub fn verify_integrity(&self) -> bool {
         self.id == self.recompute_id()
     }
@@ -179,7 +196,18 @@ impl Event {
         let Ok(sig): Result<[u8; 64], _> = self.sig.as_slice().try_into() else {
             return false;
         };
-        DeviceIdentity::verify(self.author.ed25519_pub(), self.id.as_bytes(), &sig)
+        DeviceIdentity::verify(self.author.ed25519_pub(), &signing_input(&self.id), &sig)
+    }
+
+    /// True if `parents` is already canonical (sorted, de-duplicated) — the form
+    /// [`Event::new`] produces. A validly-signed event with non-canonical parents
+    /// hashes differently from its canonical equivalent (a phantom fork), so the
+    /// store layer rejects non-canonical events on ingest.
+    pub fn is_canonical(&self) -> bool {
+        let mut expected = self.parents.clone();
+        expected.sort();
+        expected.dedup();
+        self.parents == expected
     }
 }
 
@@ -331,5 +359,168 @@ mod tests {
             e.author.user_id(),
             PublicIdentity::user_id_from(&id.public().ed25519_pub)
         );
+    }
+
+    #[test]
+    fn event_kind_wire_encoding_is_stable() {
+        // bincode encodes the positional variant index as a u32. These bytes are
+        // part of every event's content-address; fail loudly if reordered.
+        let cases = [
+            (EventKind::Message, 0u32),
+            (EventKind::Edit, 1),
+            (EventKind::Delete, 2),
+            (EventKind::React, 3),
+            (EventKind::ReadMarker, 4),
+            (EventKind::MembershipChange, 5),
+            (EventKind::KeyRotation, 6),
+            (EventKind::FileManifest, 7),
+        ];
+        for (kind, index) in cases {
+            assert_eq!(bincode::serialize(&kind).unwrap(), index.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn id_changes_when_metadata_changes() {
+        let id = DeviceIdentity::generate();
+        let base = Event::new(
+            &id,
+            conv(),
+            1,
+            vec![],
+            1,
+            100,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        let diff_seq = Event::new(
+            &id,
+            conv(),
+            2,
+            vec![],
+            1,
+            100,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        let diff_kind = Event::new(
+            &id,
+            conv(),
+            1,
+            vec![],
+            1,
+            100,
+            EventKind::Edit,
+            b"x".to_vec(),
+        );
+        let diff_conv = Event::new(
+            &id,
+            ConversationId::new([2u8; 32]),
+            1,
+            vec![],
+            1,
+            100,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        assert_ne!(base.id, diff_seq.id);
+        assert_ne!(base.id, diff_kind.id);
+        assert_ne!(base.id, diff_conv.id);
+    }
+
+    #[test]
+    fn different_author_produces_different_id() {
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let ea = Event::new(
+            &a,
+            conv(),
+            1,
+            vec![],
+            1,
+            0,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        let eb = Event::new(
+            &b,
+            conv(),
+            1,
+            vec![],
+            1,
+            0,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        assert_ne!(ea.id, eb.id);
+    }
+
+    #[test]
+    fn duplicate_parents_are_normalized() {
+        let id = DeviceIdentity::generate();
+        let p = EventId([4u8; 32]);
+        let with_dup = Event::new(
+            &id,
+            conv(),
+            1,
+            vec![p, p],
+            1,
+            0,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        let without = Event::new(
+            &id,
+            conv(),
+            1,
+            vec![p],
+            1,
+            0,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        assert_eq!(with_dup.parents, vec![p]);
+        assert_eq!(with_dup.id, without.id);
+        assert!(with_dup.is_canonical());
+    }
+
+    #[test]
+    fn is_canonical_rejects_non_canonical_parents() {
+        let id = DeviceIdentity::generate();
+        let p1 = EventId([3u8; 32]);
+        let p2 = EventId([5u8; 32]);
+        let mut e = Event::new(
+            &id,
+            conv(),
+            2,
+            vec![p1, p2],
+            2,
+            0,
+            EventKind::Message,
+            b"x".to_vec(),
+        );
+        assert!(e.is_canonical());
+        // Hand-craft an unsorted, duplicate-bearing parents list.
+        e.parents = vec![p2, p1, p1];
+        assert!(!e.is_canonical());
+    }
+
+    #[test]
+    fn verify_signature_rejects_wrong_length_sig() {
+        let id = DeviceIdentity::generate();
+        let mut e = Event::new(
+            &id,
+            conv(),
+            1,
+            vec![],
+            1,
+            0,
+            EventKind::Message,
+            b"hi".to_vec(),
+        );
+        e.sig = vec![0u8; 10];
+        assert!(!e.verify_signature());
+        e.sig = vec![];
+        assert!(!e.verify_signature());
     }
 }
