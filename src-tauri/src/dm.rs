@@ -180,6 +180,7 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eventlog::event::{ConversationId, Event, EventKind};
     use crate::identity::device::DeviceIdentity;
 
     #[test]
@@ -262,5 +263,124 @@ mod tests {
             open(&bob, &alice.public().x25519_pub, &sealed).unwrap(),
             big
         );
+    }
+
+    #[test]
+    fn wrong_recipient_cannot_open() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let eve = DeviceIdentity::generate();
+
+        // Sealed for Bob; Eve (using Alice's key as the claimed sender) cannot open.
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"secret").unwrap();
+        assert!(matches!(
+            open(&eve, &alice.public().x25519_pub, &sealed),
+            Err(DmError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn wrong_sender_key_fails_authentication() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let mallory = DeviceIdentity::generate();
+
+        // Sealed by Alice for Bob. Bob tries to open it claiming Mallory is the
+        // sender → the static-static DH mismatches → decryption fails.
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"secret").unwrap();
+        assert!(matches!(
+            open(&bob, &mallory.public().x25519_pub, &sealed),
+            Err(DmError::Decrypt)
+        ));
+        // With the correct sender key it opens.
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &sealed).unwrap(),
+            b"secret"
+        );
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails_to_open() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"secret").unwrap();
+
+        // Flip the last byte (inside the AEAD tag region of the serialized envelope).
+        let mut bytes = sealed.clone();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        assert!(matches!(
+            open(&bob, &alice.public().x25519_pub, &bytes),
+            Err(DmError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn tampered_ephemeral_key_fails_to_open() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"secret").unwrap();
+
+        // Deserialize, corrupt the ephemeral public key, re-serialize.
+        let mut env: SealedEnvelope = bincode::deserialize(&sealed).unwrap();
+        env.ephemeral_pub[0] ^= 0xFF;
+        let tampered = bincode::serialize(&env).unwrap();
+        assert!(matches!(
+            open(&bob, &alice.public().x25519_pub, &tampered),
+            Err(DmError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn each_seal_uses_a_fresh_ephemeral() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Two seals of the same plaintext differ (fresh ephemeral each time) and
+        // both still open correctly.
+        let s1 = seal(&alice, &bob.public().x25519_pub, b"same").unwrap();
+        let s2 = seal(&alice, &bob.public().x25519_pub, b"same").unwrap();
+        assert_ne!(s1, s2);
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &s1).unwrap(),
+            b"same"
+        );
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &s2).unwrap(),
+            b"same"
+        );
+    }
+
+    #[test]
+    fn garbage_envelope_is_rejected_without_panic() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        // Not a valid bincode SealedEnvelope.
+        assert!(open(&bob, &alice.public().x25519_pub, &[0u8; 3]).is_err());
+        // Empty input.
+        assert!(open(&bob, &alice.public().x25519_pub, &[]).is_err());
+    }
+
+    #[test]
+    fn sealed_payload_round_trips_inside_an_event() {
+        // The sealed bytes are what fills an event's `ciphertext`. Seal, place it
+        // in a Message event authored by Alice, then open from the event field.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"hi from a dm event").unwrap();
+        let event = Event::new(
+            &alice,
+            ConversationId::new([1u8; 32]),
+            1,
+            vec![],
+            1,
+            0,
+            EventKind::Message,
+            sealed,
+        );
+
+        let opened = open(&bob, &alice.public().x25519_pub, &event.ciphertext).unwrap();
+        assert_eq!(opened, b"hi from a dm event");
     }
 }
