@@ -222,6 +222,7 @@ impl SyncStore for PersistentEventLog {
 mod tests {
     use super::*;
     use crate::eventlog::event::{ConversationId, EventKind};
+    use crate::eventlog::sync::{reconcile, SyncStore};
     use crate::identity::device::DeviceIdentity;
 
     fn mk(id: &DeviceIdentity, seq: u64, lamport: u64, payload: &[u8]) -> Event {
@@ -490,6 +491,45 @@ mod tests {
         assert_eq!(plog.events(&conv).len(), 3);
         assert_eq!(plog.version_vector(&conv).get(&a.author), Some(&2)); // alice: root(1), a(2)
         assert_eq!(plog.version_vector(&conv).get(&b.author), Some(&1)); // bob: b(1)
+    }
+
+    #[test]
+    fn persistent_store_syncs_and_persists_received_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv = ConversationId::new([1u8; 32]);
+        let id = DeviceIdentity::generate();
+
+        // Source log has a root + child.
+        let root = mk(&id, 1, 1, b"root");
+        let child = Event::new(
+            &id,
+            conv,
+            2,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"child".to_vec(),
+        );
+
+        let src_path = dir.path().join("src.log");
+        let mut source = PersistentEventLog::open(&src_path, "pw").unwrap();
+        source.append(root.clone()).unwrap();
+        source.append(child.clone()).unwrap();
+
+        // Empty destination syncs from the source.
+        let dst_path = dir.path().join("dst.log");
+        {
+            let mut dest = PersistentEventLog::open(&dst_path, "pw").unwrap();
+            reconcile(&mut dest, &mut source, conv);
+            assert!(dest.has(&root.id) && dest.has(&child.id));
+            // Sanity: the SyncStore view agrees.
+            assert_eq!(SyncStore::event_ids(&dest, &conv).len(), 2);
+        }
+
+        // Received events were persisted — they survive reopen.
+        let dest = PersistentEventLog::open(&dst_path, "pw").unwrap();
+        assert_eq!(dest.events(&conv).len(), 2);
     }
 
     #[test]

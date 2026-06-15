@@ -662,6 +662,101 @@ mod tests {
     }
 
     #[test]
+    fn returning_peer_catches_up_after_offline_activity() {
+        // Models Phase-0 offline delivery: A goes offline at the root; B keeps
+        // appending; A returns and syncs everything B accumulated.
+        let id = DeviceIdentity::generate();
+        let root = ev(&id, 1, vec![], 1, b"root");
+
+        let mut online = EventLog::default();
+        online.append(root.clone()).unwrap();
+        // B (online) appends a chain of 5 while A is away.
+        let mut parent = root.id;
+        let mut chain = Vec::new();
+        for i in 0..5u64 {
+            let e = ev(&id, i + 2, vec![parent], i + 2, &[b'm', i as u8]);
+            online.append(e.clone()).unwrap();
+            parent = e.id;
+            chain.push(e);
+        }
+
+        let mut returning = EventLog::default();
+        returning.append(root.clone()).unwrap();
+
+        let (report, _) = reconcile(&mut returning, &mut online, conv());
+        assert_eq!(report.applied, 5);
+        assert_converged(&returning, &online);
+        for e in &chain {
+            assert!(returning.has(&e.id));
+        }
+    }
+
+    #[test]
+    fn random_partitions_converge() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+        use std::collections::HashMap;
+
+        let authors: Vec<DeviceIdentity> = (0..3).map(|_| DeviceIdentity::generate()).collect();
+
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            // Build a valid reference DAG of 12 events using a reference log's
+            // `prepare` for correct parents/lamport, with dense per-author seqs.
+            let mut reference = EventLog::default();
+            let mut all: Vec<Event> = Vec::new();
+            let mut seqs: HashMap<[u8; 32], u64> = HashMap::new();
+            for i in 0..12u64 {
+                let author = &authors[rng.gen_range(0..authors.len())];
+                let (parents, lamport) = reference.prepare(&conv());
+                let pk = author.public().ed25519_pub;
+                let seq = {
+                    let s = seqs.entry(pk).or_insert(0);
+                    *s += 1;
+                    *s
+                };
+                let e = ev(author, seq, parents, lamport, &[i as u8]);
+                reference.append(e.clone()).unwrap();
+                all.push(e);
+            }
+
+            // Causally-closed random partition: only add an event to a side if all
+            // its parents are already there, so each side stays append-valid.
+            let mut a = EventLog::default();
+            let mut b = EventLog::default();
+            let (mut a_ids, mut b_ids): (HashSet<EventId>, HashSet<EventId>) =
+                (HashSet::new(), HashSet::new());
+            for e in &all {
+                if rng.gen_bool(0.7) && e.parents.iter().all(|p| a_ids.contains(p)) {
+                    a.append(e.clone()).unwrap();
+                    a_ids.insert(e.id);
+                }
+                if rng.gen_bool(0.7) && e.parents.iter().all(|p| b_ids.contains(p)) {
+                    b.append(e.clone()).unwrap();
+                    b_ids.insert(e.id);
+                }
+            }
+
+            reconcile(&mut a, &mut b, conv());
+
+            // Both converge to exactly the union of the two partitions.
+            let mut got: Vec<EventId> = a.events(&conv()).iter().map(|e| e.id).collect();
+            let mut got_b: Vec<EventId> = b.events(&conv()).iter().map(|e| e.id).collect();
+            got.sort();
+            got_b.sort();
+            assert_eq!(got, got_b, "seed {seed}: peers did not converge");
+
+            let mut union: Vec<EventId> = a_ids.union(&b_ids).copied().collect();
+            union.sort();
+            assert_eq!(
+                got, union,
+                "seed {seed}: converged set != union of partitions"
+            );
+        }
+    }
+
+    #[test]
     fn all_rejected_batch_changes_nothing() {
         let id = DeviceIdentity::generate();
         let mut store = EventLog::default();
