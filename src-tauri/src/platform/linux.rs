@@ -3,6 +3,7 @@
 use super::{NotificationProvider, PlatformResult, SecureStorage};
 
 /// Linux secure storage implementation using Secret Service API
+#[derive(Default)]
 pub struct LinuxSecureStorage;
 
 impl LinuxSecureStorage {
@@ -47,6 +48,7 @@ impl SecureStorage for LinuxSecureStorage {
 }
 
 /// Linux notification provider implementation
+#[derive(Default)]
 pub struct LinuxNotificationProvider;
 
 impl LinuxNotificationProvider {
