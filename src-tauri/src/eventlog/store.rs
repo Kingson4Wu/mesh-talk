@@ -122,6 +122,41 @@ impl EventLog {
     pub fn get(&self, id: &EventId) -> Option<&Event> {
         self.events.get(id)
     }
+
+    /// All events in a conversation, in deterministic total order `(lamport, id)`.
+    pub fn events(&self, conversation: &ConversationId) -> Vec<&Event> {
+        let mut events: Vec<&Event> = match self.by_conversation.get(conversation) {
+            Some(ids) => ids.iter().filter_map(|id| self.events.get(id)).collect(),
+            None => Vec::new(),
+        };
+        events.sort_by(|a, b| a.lamport.cmp(&b.lamport).then_with(|| a.id.cmp(&b.id)));
+        events
+    }
+
+    /// The current frontier of a conversation: events not referenced as a
+    /// parent by any other event. Sorted for determinism.
+    pub fn heads(&self, conversation: &ConversationId) -> Vec<EventId> {
+        let mut heads: Vec<EventId> = self
+            .heads
+            .get(conversation)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        heads.sort();
+        heads
+    }
+
+    /// Per-author highest sequence number seen in a conversation (for sync).
+    pub fn version_vector(&self, conversation: &ConversationId) -> HashMap<Author, u64> {
+        self.version.get(conversation).cloned().unwrap_or_default()
+    }
+
+    /// The `(parents, lamport)` a new local event should use: the current heads
+    /// and the next Lamport timestamp (one past the highest seen).
+    pub fn prepare(&self, conversation: &ConversationId) -> (Vec<EventId>, u64) {
+        let parents = self.heads(conversation);
+        let lamport = self.max_lamport.get(conversation).copied().unwrap_or(0) + 1;
+        (parents, lamport)
+    }
 }
 
 #[cfg(test)]
@@ -254,5 +289,109 @@ mod tests {
         // Hand-craft an unsorted, duplicate-bearing parents list.
         e.parents = vec![p2, p1, p1];
         assert!(matches!(log.append(e), Err(LogError::NonCanonical)));
+    }
+
+    #[test]
+    fn events_are_returned_in_total_order() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let root = mk(&id, 1, vec![], 1, b"a");
+        let mid = mk(&id, 2, vec![root.id], 2, b"b");
+        let tip = mk(&id, 3, vec![mid.id], 3, b"c");
+        log.append(root.clone()).unwrap();
+        log.append(mid.clone()).unwrap();
+        log.append(tip.clone()).unwrap();
+
+        let ordered = log.events(&conv());
+        let lamports: Vec<u64> = ordered.iter().map(|e| e.lamport).collect();
+        assert_eq!(lamports, vec![1, 2, 3]);
+        assert_eq!(ordered[0].id, root.id);
+        assert_eq!(ordered[2].id, tip.id);
+    }
+
+    #[test]
+    fn heads_track_the_frontier() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let root = mk(&id, 1, vec![], 1, b"root");
+        log.append(root.clone()).unwrap();
+        assert_eq!(log.heads(&conv()), vec![root.id]);
+
+        let child = mk(&id, 2, vec![root.id], 2, b"child");
+        log.append(child.clone()).unwrap();
+        assert_eq!(log.heads(&conv()), vec![child.id]);
+    }
+
+    #[test]
+    fn merge_event_collapses_two_heads_into_one() {
+        // Diamond: root → {a, b} (concurrent) → merge(parents=[a,b]).
+        let id = DeviceIdentity::generate();
+        let other = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let root = mk(&id, 1, vec![], 1, b"root");
+        log.append(root.clone()).unwrap();
+        // Two concurrent children of root (different authors so seqs don't clash).
+        let a = mk(&id, 2, vec![root.id], 2, b"a");
+        let b = Event::new(
+            &other,
+            conv(),
+            1,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b".to_vec(),
+        );
+        log.append(a.clone()).unwrap();
+        log.append(b.clone()).unwrap();
+        // Both a and b are heads now.
+        let mut frontier = log.heads(&conv());
+        frontier.sort();
+        let mut expected = vec![a.id, b.id];
+        expected.sort();
+        assert_eq!(frontier, expected);
+        // A merge referencing both collapses the frontier to itself.
+        let merge = mk(&id, 3, vec![a.id, b.id], 3, b"merge");
+        log.append(merge.clone()).unwrap();
+        assert_eq!(log.heads(&conv()), vec![merge.id]);
+    }
+
+    #[test]
+    fn version_vector_tracks_max_seq_per_author() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let a1 = mk(&alice, 1, vec![], 1, b"a1");
+        log.append(a1.clone()).unwrap();
+        let b1 = Event::new(
+            &bob,
+            conv(),
+            1,
+            vec![a1.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b1".to_vec(),
+        );
+        log.append(b1.clone()).unwrap();
+        let a2 = mk(&alice, 2, vec![b1.id], 3, b"a2");
+        log.append(a2).unwrap();
+
+        let vv = log.version_vector(&conv());
+        assert_eq!(vv.get(&a1.author), Some(&2));
+        assert_eq!(vv.get(&b1.author), Some(&1));
+    }
+
+    #[test]
+    fn prepare_returns_heads_and_next_lamport() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        assert_eq!(log.prepare(&conv()), (vec![], 1));
+
+        let root = mk(&id, 1, vec![], 5, b"root");
+        log.append(root.clone()).unwrap();
+        let (parents, lamport) = log.prepare(&conv());
+        assert_eq!(parents, vec![root.id]);
+        assert_eq!(lamport, 6); // one past the highest lamport (5)
     }
 }
