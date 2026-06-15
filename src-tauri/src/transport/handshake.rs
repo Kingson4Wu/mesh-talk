@@ -68,13 +68,17 @@ impl Handshake {
     /// Finish: capture the binding hash and peer static key, then switch to
     /// transport mode.
     pub fn into_session(self) -> Result<HandshakeOutput, TransportError> {
+        if !self.state.is_handshake_finished() {
+            return Err(TransportError::Noise("handshake not yet finished".into()));
+        }
         let handshake_hash = self.state.get_handshake_hash().to_vec();
         let remote_static: [u8; 32] = self
             .state
             .get_remote_static()
             .ok_or(TransportError::MissingRemoteStatic)?
+            // try_into fails only on a non-32-byte key; unreachable for XX + X25519.
             .try_into()
-            .map_err(|_| TransportError::MissingRemoteStatic)?;
+            .map_err(|_| TransportError::Noise("remote static key is not 32 bytes".into()))?;
         let transport = self.state.into_transport_mode()?;
         Ok(HandshakeOutput {
             session: Session::new(transport),
@@ -158,9 +162,36 @@ mod tests {
         let b = DeviceIdentity::generate();
         let (mut out_a, mut out_b) = run_handshake(&a.secret_bytes().1, &b.secret_bytes().1);
 
+        // Flip a ciphertext-body byte.
         let mut ct = out_a.session.encrypt(b"secret").expect("encrypt");
-        ct[0] ^= 0xFF; // flip a byte -> AEAD tag check must fail
+        ct[0] ^= 0xFF;
         assert!(out_b.session.decrypt(&ct).is_err());
+
+        // Flip a tag byte on a fresh message — must also fail.
+        let mut ct2 = out_a.session.encrypt(b"secret two").expect("encrypt");
+        let last = ct2.len() - 1;
+        ct2[last] ^= 0xFF;
+        assert!(out_b.session.decrypt(&ct2).is_err());
+    }
+
+    #[test]
+    fn replayed_ciphertext_fails_to_decrypt() {
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let (mut out_a, mut out_b) = run_handshake(&a.secret_bytes().1, &b.secret_bytes().1);
+
+        let ct = out_a.session.encrypt(b"hello").expect("encrypt");
+        out_b.session.decrypt(&ct).expect("first decrypt ok");
+        // Replaying the same ciphertext uses a stale nonce → must fail.
+        assert!(out_b.session.decrypt(&ct).is_err());
+    }
+
+    #[test]
+    fn into_session_before_finished_returns_err() {
+        let a = DeviceIdentity::generate();
+        let ini = Handshake::initiator(&a.secret_bytes().1).unwrap();
+        // No messages exchanged — into_session must not succeed.
+        assert!(ini.into_session().is_err());
     }
 
     #[test]
