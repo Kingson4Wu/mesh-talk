@@ -16,6 +16,7 @@ pub mod api;
 pub mod commands;
 pub mod contacts;
 pub mod crypto;
+pub mod discovery;
 pub mod dm;
 pub mod domain;
 pub mod error;
