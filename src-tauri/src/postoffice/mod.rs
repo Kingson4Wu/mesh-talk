@@ -176,4 +176,80 @@ mod tests {
         assert!(po.held_ids(&conv()).is_empty());
         assert!(!po.has(&EventId::new([9u8; 32])));
     }
+
+    #[test]
+    fn offline_dm_delivered_via_post_office() {
+        // The headline scenario: Alice sends Bob a DM while Bob is offline; the
+        // post office holds it; Bob comes online (Alice now offline) and receives
+        // and decrypts it. The post office never could.
+        let dir = tempfile::tempdir().unwrap();
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Keep a second handle to the post office's identity to prove it can't decrypt.
+        let po_identity = DeviceIdentity::generate();
+        let (po_ed, po_x) = po_identity.secret_bytes();
+        let po_identity_copy = DeviceIdentity::from_secret_bytes(po_ed, po_x);
+
+        // Alice seals a DM to Bob and wraps it in a Message event.
+        let sealed = crate::dm::seal(&alice, &bob.public().x25519_pub, b"meet at 5").unwrap();
+        let dm_event = Event::new(&alice, conv(), 1, vec![], 1, 0, EventKind::Message, sealed);
+
+        // Alice pushes it to the post office while Bob is offline.
+        let mut alice_log = EventLog::default();
+        alice_log.append(dm_event.clone()).unwrap();
+        let mut po = PostOffice::open(&dir.path().join("po.log"), "pw", po_identity).unwrap();
+        reconcile(&mut alice_log, &mut po, conv());
+        assert!(po.has(&dm_event.id));
+
+        // Bob comes online and syncs from the post office (Alice may now be offline).
+        let mut bob_log = EventLog::default();
+        reconcile(&mut bob_log, &mut po, conv());
+        let received = bob_log.get(&dm_event.id).expect("bob received the event");
+
+        // Bob opens it; the post office's own identity cannot.
+        let plaintext =
+            crate::dm::open(&bob, &alice.public().x25519_pub, &received.ciphertext).unwrap();
+        assert_eq!(plaintext, b"meet at 5");
+        assert!(crate::dm::open(
+            &po_identity_copy,
+            &alice.public().x25519_pub,
+            &received.ciphertext
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn two_post_offices_converge_after_split_brain() {
+        // Two post offices each saw a different branch of a conversation; after they
+        // reconcile, content-addressed events merge idempotently to identical state.
+        let dir = tempfile::tempdir().unwrap();
+        let alice = DeviceIdentity::generate();
+
+        let root = message(&alice, 1, vec![], 1, b"root");
+        let x = message(&alice, 2, vec![root.id], 2, b"x");
+        let y = message(&alice, 3, vec![root.id], 2, b"y");
+
+        let mut po1 = PostOffice::open(
+            &dir.path().join("po1.log"),
+            "pw",
+            DeviceIdentity::generate(),
+        )
+        .unwrap();
+        let mut po2 = PostOffice::open(
+            &dir.path().join("po2.log"),
+            "pw",
+            DeviceIdentity::generate(),
+        )
+        .unwrap();
+        po1.accept(root.clone()).unwrap();
+        po1.accept(x.clone()).unwrap();
+        po2.accept(root.clone()).unwrap();
+        po2.accept(y.clone()).unwrap();
+
+        reconcile(&mut po1, &mut po2, conv());
+        assert_eq!(po1.held_ids(&conv()), po2.held_ids(&conv()));
+        assert!(po1.has(&x.id) && po1.has(&y.id));
+        assert!(po2.has(&x.id) && po2.has(&y.id));
+    }
 }
