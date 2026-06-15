@@ -66,3 +66,8 @@ Thumbs.db
 .DS_Store
 *.db
 test_data_*
+
+# Coverage artifacts
+lcov.info
+*.info
+coverage/
