@@ -815,4 +815,29 @@ mod tests {
         assert_converged(&a, &b);
         assert!(b.has(&merge.id));
     }
+
+    #[test]
+    fn followup_excludes_events_just_received_from_responder() {
+        // No echo-back: an event the requester ingests from the responder must
+        // not be offered back to the responder in the followup. (Convergence
+        // correctness depends on this — otherwise the round would re-send it.)
+        let id = DeviceIdentity::generate();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a = ev(&id, 2, vec![root.id], 2, b"a"); // responder-only event
+
+        let mut requester = EventLog::default();
+        requester.append(root.clone()).unwrap();
+
+        // Responder advertises {root, a} and sends `a`.
+        let response = SyncResponse {
+            conversation: conv(),
+            events: vec![a.clone()],
+            have: vec![root.id, a.id],
+        };
+        let (report, followup) = handle_response(&mut requester, &response);
+        assert_eq!(report.applied, 1); // `a` ingested
+                                       // Even though the requester now holds `a`, the followup must not echo it
+                                       // back (it is in the responder's `have`).
+        assert!(followup.events.is_empty());
+    }
 }
