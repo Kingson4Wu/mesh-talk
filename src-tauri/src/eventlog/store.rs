@@ -38,7 +38,10 @@ impl EventLog {
     /// or `Err` if it is corrupt, unsigned, non-canonical, causally incomplete,
     /// or an equivocation. Pure — does not mutate the log.
     pub fn validate(&self, event: &Event) -> Result<bool, LogError> {
-        if !event.verify_integrity() || !event.is_canonical() {
+        if !event.is_canonical() {
+            return Err(LogError::NonCanonical);
+        }
+        if !event.verify_integrity() {
             return Err(LogError::CorruptId);
         }
         if !event.verify_signature() {
@@ -74,6 +77,10 @@ impl EventLog {
     /// authenticated at rest on reload). Must be called in causal order:
     /// every parent must already be indexed.
     pub(crate) fn index_trusted(&mut self, event: Event) {
+        debug_assert!(
+            event.parents.iter().all(|p| self.events.contains_key(p)),
+            "index_trusted called out of causal order: a parent is not indexed"
+        );
         let conv = event.conversation_id;
         let id = event.id;
 
@@ -211,5 +218,41 @@ mod tests {
             log.append(b),
             Err(LogError::AuthorEquivocation { seq: 1, .. })
         ));
+    }
+
+    #[test]
+    fn rejects_parent_from_different_conversation() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        // Root lives in conversation A ([1u8;32], the one `mk` uses).
+        let root = mk(&id, 1, vec![], 1, b"a");
+        log.append(root.clone()).unwrap();
+        // A child in conversation B tries to use it as a parent.
+        let child_b = Event::new(
+            &id,
+            ConversationId::new([2u8; 32]),
+            2,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b".to_vec(),
+        );
+        assert!(matches!(
+            log.append(child_b),
+            Err(LogError::MissingParents(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_non_canonical_event() {
+        let id = DeviceIdentity::generate();
+        let mut log = EventLog::default();
+        let p1 = EventId::new([3u8; 32]);
+        let p2 = EventId::new([5u8; 32]);
+        let mut e = mk(&id, 2, vec![p1, p2], 2, b"x");
+        // Hand-craft an unsorted, duplicate-bearing parents list.
+        e.parents = vec![p2, p1, p1];
+        assert!(matches!(log.append(e), Err(LogError::NonCanonical)));
     }
 }

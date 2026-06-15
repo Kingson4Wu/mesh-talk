@@ -19,6 +19,8 @@ pub enum LogError {
     CorruptId,
     /// The author's Ed25519 signature over the event id did not verify.
     BadSignature,
+    /// `parents` are not in canonical (sorted, de-duplicated) form.
+    NonCanonical,
     /// One or more `parents` are not present in the log yet (causally incomplete).
     MissingParents(Vec<EventId>),
     /// The author already has a *different* event at this `seq` (equivocation).
@@ -38,6 +40,7 @@ impl std::fmt::Display for LogError {
         match self {
             LogError::CorruptId => write!(f, "event id does not match its content"),
             LogError::BadSignature => write!(f, "event signature did not verify"),
+            LogError::NonCanonical => write!(f, "event parents are not in canonical form"),
             LogError::MissingParents(p) => write!(f, "missing {} parent event(s)", p.len()),
             LogError::AuthorEquivocation { seq, .. } => {
                 write!(f, "author equivocation at seq {seq}")
