@@ -6,4 +6,5 @@ pub mod manager;
 pub mod public_key_encryption;
 pub mod request;
 pub mod service;
+pub mod signing;
 pub mod tests;

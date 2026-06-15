@@ -207,11 +207,13 @@ impl IdentityManager {
             // will create them when writing files
         }
 
-        // Create initial empty files
-        let empty_contacts: HashMap<String, String> = HashMap::new(); // contact_id -> contact_data
-        self.file_manager
-            .write_encrypted_file(username, "data/contacts.json", &empty_contacts, password)
-            .map_err(|e| IdentityError::StorageError(e.to_string()))?;
+        // Note: data/contacts.json is intentionally NOT pre-created here.
+        // ContactManager owns that file and stores it using public-key (base64)
+        // encryption via PublicKeyFileManager. Pre-creating it with the
+        // password-based binary FileManager format caused a format mismatch
+        // ("stream did not contain valid UTF-8") on the first contact load.
+        // ContactManager.load_contacts() already treats a missing file as an
+        // empty contact list.
 
         let empty_chats: HashMap<String, Vec<String>> = HashMap::new(); // contact_id -> messages
         self.file_manager

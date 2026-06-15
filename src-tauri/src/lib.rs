@@ -1,9 +1,25 @@
+// Pragmatic, intentional lint allowances (the substantive clippy lints stay on):
+//  - module_inception: test modules are `mod tests` inside `*/tests.rs`.
+//  - too_many_arguments: a few service/domain constructors; refactor tracked separately.
+//  - assertions_on_constants: placeholder "can construct" smoke tests.
+//  - single_match: a couple of intentional single-arm matches.
+//  - manual_flatten: a nested `if let Ok` loop kept for readability.
+#![allow(
+    clippy::module_inception,
+    clippy::too_many_arguments,
+    clippy::assertions_on_constants,
+    clippy::single_match,
+    clippy::manual_flatten
+)]
+
 pub mod api;
 pub mod commands;
 pub mod contacts;
 pub mod crypto;
+pub mod dm;
 pub mod domain;
 pub mod error;
+pub mod eventlog;
 pub mod events;
 pub mod identity;
 pub mod logger;
@@ -14,6 +30,7 @@ pub mod platform;
 pub mod services;
 pub mod state;
 pub mod storage;
+pub mod transport;
 pub mod tray;
 pub mod user_friendly_errors;
 pub mod utils;
@@ -147,7 +164,7 @@ pub fn run_tauri() {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             // Initialize logging system
-            if let Err(e) = crate::logger::init_logging(&app.handle()) {
+            if let Err(e) = crate::logger::init_logging(app.handle()) {
                 log::error!("Failed to initialize logging: {}", e);
             }
 
@@ -276,26 +293,44 @@ pub async fn launch_network_with_broadcast(
     log::info!("Setting up UDP discovery...");
     let discovery_service = Arc::clone(&node_service);
     let local_ip = get_preferred_local_ip();
+    // Share the NodeService registry with discovery so cleanup/reconnect act on
+    // a single source of truth (see start_udp_discovery).
+    let discovery_registry = {
+        let service = node_service.lock().await;
+        Arc::clone(&service.node_registry)
+    };
     let udp_discovery_handle: JoinHandle<()> = tokio::spawn({
-        let local_ip = local_ip.clone();
         async move {
             tokio::spawn(crate::network::udp::start_udp_discovery(
+                discovery_registry,
                 move |peer_addr, peer_name, peer_username, peer_port, peer_user_id| {
                     let service_clone = discovery_service.clone();
-                    let local_ip = local_ip.clone();
+                    let local_ip = local_ip;
                     tokio::spawn(async move {
                         // log::info!("[UDP Discovery Callback] Received peer_addr: {}", peer_addr);
-                        let service_port = {
+                        let (service_port, local_user_id) = {
                             let service = service_clone.lock().await;
-                            service.get_port()
+                            (service.get_port(), service.get_user_id())
                         };
 
-                        let is_self = match &local_ip {
-                            Some(ip) => peer_addr.ip() == *ip && peer_addr.port() == service_port,
-                            None => {
-                                peer_addr.ip().is_loopback() && peer_addr.port() == service_port
-                            }
+                        // Primary self-check: a peer advertising our own user_id is
+                        // us, regardless of which interface the packet arrived on.
+                        // This is more reliable than the IP heuristic below, which
+                        // can miss our own broadcast on multi-interface hosts.
+                        let is_self_by_user = match &peer_user_id {
+                            Some(uid) => !local_user_id.is_empty() && uid == &local_user_id,
+                            None => false,
                         };
+
+                        let is_self = is_self_by_user
+                            || match &local_ip {
+                                Some(ip) => {
+                                    peer_addr.ip() == *ip && peer_addr.port() == service_port
+                                }
+                                None => {
+                                    peer_addr.ip().is_loopback() && peer_addr.port() == service_port
+                                }
+                            };
 
                         if is_self {
                             return;

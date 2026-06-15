@@ -20,23 +20,30 @@ const contactsAPI = {
   updateContact: (contactId, data) =>
     invoke("update_contact", { id: contactId, ...data }),
   deleteContact: (contactId) => invoke("delete_contact", { contactId }),
-  sendContactRequest: (targetPublicKey, alias, username, remoteIp, port, userId) => {
+  sendContactRequest: (
+    targetPublicKey,
+    alias,
+    username,
+    remoteIp,
+    port,
+    userId,
+  ) => {
     console.log("[API] Sending contact request with parameters:", {
       targetPublicKey,
       alias,
       username,
       remoteIp,
       port,
-      userId
+      userId,
     });
-    
-    return invoke("send_contact_request", { 
-      targetPublicKey, 
-      alias, 
+
+    return invoke("send_contact_request", {
+      targetPublicKey,
+      alias,
       username,
-      remote_ip: remoteIp, 
-      port, 
-      user_id: userId 
+      remote_ip: remoteIp,
+      port,
+      user_id: userId,
     });
   },
   handleContactRequest: (requestJson, approve) =>

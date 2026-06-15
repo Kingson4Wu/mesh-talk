@@ -140,6 +140,47 @@ mod tests {
     }
 
     #[test]
+    fn rsa_key_encrypted_at_rest_unlock_relock() {
+        let (_temp, _fm, identity_manager, contact_manager) = setup();
+        let username = "owner";
+        let password = "password123";
+        identity_manager
+            .register_user(username, password)
+            .expect("register user");
+
+        // Adding a contact creates + caches the RSA key and encrypts the
+        // contacts store at rest with `password`.
+        contact_manager
+            .add_contact(
+                username,
+                password,
+                "10.0.0.1",
+                7000,
+                "peer",
+                Some("uid-1".into()),
+            )
+            .expect("add contact");
+
+        // Simulate logout: evict the cached key.
+        contact_manager.lock_keys(username);
+
+        // The at-rest key is genuinely password-encrypted: a wrong password
+        // cannot unlock it (and must NOT silently regenerate it).
+        assert!(contact_manager
+            .unlock_keys(username, "wrong-password")
+            .is_err());
+
+        // The correct password unlocks it and the contact is readable again.
+        contact_manager
+            .unlock_keys(username, password)
+            .expect("unlock with correct password");
+        let contact = contact_manager
+            .get_contact(username, password, "10.0.0.1:7000")
+            .expect("get contact");
+        assert_eq!(contact.username, "peer");
+    }
+
+    #[test]
     fn update_contact_username() {
         let (_temp, _fm, identity_manager, contact_manager) = setup();
         let username = "owner";

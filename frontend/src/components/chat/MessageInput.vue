@@ -16,11 +16,7 @@
     >
       📎
     </button>
-    <button
-      type="submit"
-      class="send"
-      :disabled="disabled || !draft.trim()"
-    >
+    <button type="submit" class="send" :disabled="disabled || !draft.trim()">
       Send
     </button>
   </form>

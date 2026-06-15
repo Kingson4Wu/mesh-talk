@@ -1,8 +1,9 @@
 //! Linux-specific platform implementations
 
-use super::{NotificationProvider, PlatformError, PlatformResult, SecureStorage};
+use super::{NotificationProvider, PlatformResult, SecureStorage};
 
 /// Linux secure storage implementation using Secret Service API
+#[derive(Default)]
 pub struct LinuxSecureStorage;
 
 impl LinuxSecureStorage {
@@ -12,7 +13,7 @@ impl LinuxSecureStorage {
 }
 
 impl SecureStorage for LinuxSecureStorage {
-    fn store_secure(&self, key: &str, value: &str) -> PlatformResult<()> {
+    fn store_secure(&self, key: &str, _value: &str) -> PlatformResult<()> {
         // TODO: Implement Linux Secret Service API integration
         // This would use the secret-service crate or direct FFI bindings
         // For now, we'll use a placeholder implementation
@@ -47,6 +48,7 @@ impl SecureStorage for LinuxSecureStorage {
 }
 
 /// Linux notification provider implementation
+#[derive(Default)]
 pub struct LinuxNotificationProvider;
 
 impl LinuxNotificationProvider {

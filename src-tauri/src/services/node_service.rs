@@ -4,8 +4,7 @@ use crate::domain::node::Node;
 use crate::domain::node_registry::NodeRegistry;
 use crate::error::{MeshTalkError, MeshTalkResult, NetworkErrorKind};
 use crate::events::{
-    emit_contact_added, emit_contact_request_received, emit_contact_response_received,
-    with_node_event_app_handle,
+    emit_contact_request_received, emit_contact_response_received, with_node_event_app_handle,
 };
 use crate::network::reconnection::ReconnectionManager;
 use crate::network::tcp::{handle_incoming_connection, send_message_with_retry, ConnectionManager};
@@ -43,8 +42,6 @@ pub trait MessageEventListener: Send + Sync {
 lazy_static::lazy_static! {
     pub static ref NOTIFICATION_SERVICE: crate::services::notification_service::NotificationService = crate::services::notification_service::NotificationService::new();
 }
-
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// NodeService manages the network node and peer connections
 #[derive(Clone)]
@@ -139,6 +136,15 @@ impl NodeService {
                     self.connection_manager
                         .register_user_connection(uid.clone(), source_addr);
                 }
+
+                Self::persist_received_chat_message(
+                    from_user_id.as_deref(),
+                    from_address
+                        .clone()
+                        .unwrap_or_else(|| source_addr.to_string()),
+                    to_user_id.as_deref(),
+                    &content,
+                );
 
                 // Notify message handlers
                 let handlers = message_handlers.read().await;
@@ -304,8 +310,9 @@ impl NodeService {
                 node_name,
                 username,
                 user_id,
-                ip,   // IP from the message data
-                port, // Port from the message data
+                ip: _,   // IP from the message data
+                port: _, // Port from the message data
+                public_key,
             }) => {
                 println!(
                     "Received contact request from '{}' (alias: '{}') at {} (signature bytes: {}) with user_id: {:?}",
@@ -315,6 +322,38 @@ impl NodeService {
                     signature.len(),
                     user_id
                 );
+
+                // Verify the sender's signature over the original request fields
+                // before doing anything else. A present-but-invalid signature is
+                // a forgery/tamper and is dropped; an absent one is accepted for
+                // backward compatibility with unsigned peers.
+                let sig_payload = crate::contacts::signing::contact_request_payload(
+                    user_id.as_deref().unwrap_or(""),
+                    &requester_public_key,
+                    &requester_alias,
+                    timestamp,
+                );
+                match crate::contacts::signing::verify(&public_key, &signature, &sig_payload) {
+                    crate::contacts::signing::SignatureCheck::Invalid => {
+                        warn!(
+                            "Rejecting contact request from {} (user_id {:?}): invalid signature",
+                            requester_public_key, user_id
+                        );
+                        return Ok(());
+                    }
+                    crate::contacts::signing::SignatureCheck::Missing => {
+                        warn!(
+                            "Contact request from {} is unsigned; accepting (legacy peer)",
+                            requester_public_key
+                        );
+                    }
+                    crate::contacts::signing::SignatureCheck::Valid => {
+                        info!(
+                            "Verified contact request signature from {} (user_id {:?})",
+                            requester_public_key, user_id
+                        );
+                    }
+                }
 
                 let requester_public_key_event = requester_public_key.clone();
 
@@ -381,6 +420,7 @@ impl NodeService {
                     user_id,
                     ip: Some(peer_ip.clone()), // Use the actual connection IP
                     port: Some(peer_port),     // Use the actual connection port
+                    public_key,
                 }) {
                     Ok(json) => json,
                     Err(err) => {
@@ -408,12 +448,42 @@ impl NodeService {
                 timestamp,
                 signature,
                 user_id,
-                ..
+                public_key,
             }) => {
                 println!(
                     "Received contact response from '{}' (alias: '{}', approved: {}) at {}",
                     responder_public_key, responder_alias, approved, timestamp
                 );
+
+                // Verify the responder's signature before acting on the response.
+                let sig_payload = crate::contacts::signing::contact_response_payload(
+                    user_id.as_deref().unwrap_or(""),
+                    &responder_public_key,
+                    &responder_alias,
+                    approved,
+                    timestamp,
+                );
+                match crate::contacts::signing::verify(&public_key, &signature, &sig_payload) {
+                    crate::contacts::signing::SignatureCheck::Invalid => {
+                        warn!(
+                            "Rejecting contact response from {} (user_id {:?}): invalid signature",
+                            responder_public_key, user_id
+                        );
+                        return Ok(());
+                    }
+                    crate::contacts::signing::SignatureCheck::Missing => {
+                        warn!(
+                            "Contact response from {} is unsigned; accepting (legacy peer)",
+                            responder_public_key
+                        );
+                    }
+                    crate::contacts::signing::SignatureCheck::Valid => {
+                        info!(
+                            "Verified contact response signature from {} (user_id {:?})",
+                            responder_public_key, user_id
+                        );
+                    }
+                }
 
                 if let Some(uid) = user_id {
                     self.connection_manager
@@ -435,12 +505,13 @@ impl NodeService {
                         let app_state: tauri::State<AppState> = app_handle.state();
                         if let Some(session) = app_state.session().get() {
                             let username = session.user.name.clone();
+                            let password = session.password.clone();
                             let contact_request_service = app_state.contact_request_service();
                             let responder_public_key_cloned =
                                 responder_public_key_for_persist.clone();
                             tauri::async_runtime::spawn(async move {
                                 if let Err(err) = contact_request_service
-                                    .handle_contact_response(&username, "", &response_json)
+                                    .handle_contact_response(&username, &password, &response_json)
                                     .await
                                 {
                                     warn!(
@@ -478,7 +549,7 @@ impl NodeService {
             Err(e) => {
                 eprintln!("Failed to parse message: {}", e);
                 eprintln!("Message content: {}", line);
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -743,6 +814,41 @@ impl NodeService {
     }
 
     /// Handles a received message by parsing it and making basic responses
+    /// Persist a received chat message so it survives restarts and feeds unread
+    /// counts. The message_service is otherwise only populated with messages
+    /// this node sends, so received history and unread badges were always empty.
+    fn persist_received_chat_message(
+        from_user_id: Option<&str>,
+        from_address: String,
+        to_user_id: Option<&str>,
+        content: &str,
+    ) {
+        if content.trim().is_empty() {
+            return;
+        }
+        with_node_event_app_handle(|app_handle| {
+            let app_state: tauri::State<AppState> = app_handle.state();
+            if let Some(session) = app_state.session().get() {
+                // Address the stored copy to the local user so unread counts
+                // (which key off to_user_id == me) work.
+                let recipient = to_user_id
+                    .map(|s| s.to_string())
+                    .filter(|id| !id.trim().is_empty())
+                    .unwrap_or_else(|| session.user.user_id.clone());
+                if let Err(err) = app_state.message_service().create_message(
+                    session.user.name.clone(),
+                    from_user_id.unwrap_or_default().to_string(),
+                    from_address.clone(),
+                    Some(recipient),
+                    Some(session.user.address.clone()),
+                    content.to_string(),
+                ) {
+                    warn!("Failed to persist received chat message: {:?}", err);
+                }
+            }
+        });
+    }
+
     pub async fn handle_message_static(
         line: String,
         _node_name: String,
@@ -763,6 +869,13 @@ impl NodeService {
 Received message from {}: {}
 ",
                     from, content
+                );
+
+                Self::persist_received_chat_message(
+                    from_user_id.as_deref(),
+                    from_address.clone().unwrap_or_default(),
+                    to_user_id.as_deref(),
+                    &content,
                 );
 
                 // Notify message handlers

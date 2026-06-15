@@ -1,0 +1,18 @@
+# Project-wide resource limits to keep cargo from saturating the CPU.
+#
+# Rationale: this project's test suite generates RSA-2048 keys in many tests.
+# cargo runs both compilation and tests in parallel sized to the number of
+# CPU cores by default, which pins all cores. These caps apply to EVERY cargo
+# invocation in this tree (CI, contributors, and AI sessions) automatically.
+#
+# Tuned for an 8-core machine at a "gentle" ~half-cores level. Adjust the two
+# numbers if you change machines.
+
+[build]
+# Cap parallel compilation units (codegen jobs). ~half of logical cores.
+jobs = 4
+
+[env]
+# Cap libtest's parallel test threads so we don't run 8+ RSA keygens at once.
+# Honored by the test harness produced by `cargo test`.
+RUST_TEST_THREADS = "4"

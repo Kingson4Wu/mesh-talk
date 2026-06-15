@@ -293,14 +293,14 @@ async function handleLogin() {
 
   // Log login attempt
   await Logger.auth("login-attempt", {
-    username: loginForm.username.trim()
+    username: loginForm.username.trim(),
   });
 
   const result = await login(loginForm.username.trim(), loginForm.password);
   if (result?.success) {
     await router.push(prepareRedirect());
     await Logger.auth("login-success", {
-      username: loginForm.username.trim()
+      username: loginForm.username.trim(),
     });
     return;
   }
@@ -308,7 +308,7 @@ async function handleLogin() {
   formError.value = error.value ?? "Unable to login";
   await Logger.auth("login-failure", {
     username: loginForm.username.trim(),
-    error: error.value ?? "Unable to login"
+    error: error.value ?? "Unable to login",
   });
 }
 
@@ -346,7 +346,7 @@ async function handleRegister() {
 
   // Log registration attempt
   await Logger.auth("register-attempt", {
-    username: registerForm.username.trim()
+    username: registerForm.username.trim(),
   });
 
   const result = await register(
@@ -360,9 +360,9 @@ async function handleRegister() {
     loginForm.password = registerForm.password;
     registerForm.password = "";
     registerForm.confirm = "";
-    
+
     await Logger.auth("register-success", {
-      username: registerForm.username.trim()
+      username: registerForm.username.trim(),
     });
     return;
   }
@@ -370,7 +370,7 @@ async function handleRegister() {
   formError.value = error.value ?? "Registration failed";
   await Logger.auth("register-failure", {
     username: registerForm.username.trim(),
-    error: error.value ?? "Registration failed"
+    error: error.value ?? "Registration failed",
   });
 }
 

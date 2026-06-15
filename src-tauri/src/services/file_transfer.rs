@@ -311,7 +311,7 @@ impl FileTransferManager {
         let checksum = compute_file_checksum(&path).await?;
         let transfer_id = uuid::Uuid::new_v4().to_string();
 
-        let mut manifest = TransferManifest {
+        let manifest = TransferManifest {
             transfer_id: transfer_id.clone(),
             direction: TransferDirection::Outgoing,
             file_name: file_name.clone(),
@@ -674,7 +674,7 @@ impl FileTransferManager {
 
     async fn wait_for_ack(
         runtime: Arc<Mutex<TransferRuntime>>,
-        transfer_id: &str,
+        _transfer_id: &str,
     ) -> Result<(), FileTransferError> {
         let notify = {
             let mut state = runtime.lock().await;
@@ -861,6 +861,7 @@ impl FileTransferManager {
             let _ = OpenOptions::new()
                 .create(true)
                 .write(true)
+                .truncate(false)
                 .open(Path::new(&temp_path))
                 .await;
         }
@@ -1047,6 +1048,7 @@ impl FileTransferManager {
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&temp_path)
             .await?;
         file.seek(SeekFrom::Start(payload.offset)).await?;
@@ -1095,33 +1097,74 @@ impl FileTransferManager {
         session: &SessionInfo,
         runtime: Arc<Mutex<TransferRuntime>>,
     ) -> Result<(), FileTransferError> {
-        let mut state = runtime.lock().await;
-        let manifest = &mut state.manifest;
-        let temp_path = manifest
-            .temp_path
-            .clone()
-            .ok_or_else(|| FileTransferError::TransferFailed("Missing temp path".into()))?;
-        let final_path = manifest.local_path.clone();
+        // Snapshot the paths and expected checksum without holding the lock
+        // across the (potentially slow) checksum computation below.
+        let (temp_path, final_path, expected_checksum, transfer_id) = {
+            let state = runtime.lock().await;
+            let manifest = &state.manifest;
+            let temp_path = manifest
+                .temp_path
+                .clone()
+                .ok_or_else(|| FileTransferError::TransferFailed("Missing temp path".into()))?;
+            (
+                temp_path,
+                manifest.local_path.clone(),
+                manifest.checksum.clone(),
+                manifest.transfer_id.clone(),
+            )
+        };
+
+        // Verify the received bytes against the sender-provided checksum before
+        // accepting the file. Without this, a corrupted or truncated transfer
+        // would be silently delivered as if it were intact.
+        if let Some(expected) = expected_checksum.as_deref() {
+            if !verify_file_checksum(Path::new(&temp_path), expected).await? {
+                let message = "Checksum mismatch: received file is corrupted".to_string();
+                {
+                    let mut state = runtime.lock().await;
+                    state.manifest.status = TransferStatus::Failed;
+                    state.manifest.touch();
+                    state.error = Some(message.clone());
+                }
+                let _ = fs::remove_file(&temp_path).await;
+                self.persist_manifest(session, &runtime.lock().await.manifest)
+                    .await?;
+                emit_file_transfer_status(
+                    &transfer_id,
+                    TransferStatus::Failed,
+                    Some(message.clone()),
+                    TransferDirection::Incoming,
+                );
+                emit_file_transfer_complete(
+                    &transfer_id,
+                    final_path,
+                    TransferDirection::Incoming,
+                    false,
+                );
+                {
+                    let mut guard = self.incoming.write().await;
+                    guard.remove(&transfer_id);
+                }
+                return Err(FileTransferError::TransferFailed(message));
+            }
+        }
+
         fs::rename(&temp_path, &final_path).await?;
-        manifest.status = TransferStatus::Completed;
-        manifest.touch();
-        drop(state);
+        {
+            let mut state = runtime.lock().await;
+            state.manifest.status = TransferStatus::Completed;
+            state.manifest.touch();
+        }
 
         self.persist_manifest(session, &runtime.lock().await.manifest)
             .await?;
         emit_file_transfer_status(
-            &runtime.lock().await.manifest.transfer_id,
+            &transfer_id,
             TransferStatus::Completed,
             None,
             TransferDirection::Incoming,
         );
-        emit_file_transfer_complete(
-            &runtime.lock().await.manifest.transfer_id,
-            final_path,
-            TransferDirection::Incoming,
-            true,
-        );
-        let transfer_id = runtime.lock().await.manifest.transfer_id.clone();
+        emit_file_transfer_complete(&transfer_id, final_path, TransferDirection::Incoming, true);
         {
             let mut guard = self.incoming.write().await;
             guard.remove(&transfer_id);
@@ -1142,7 +1185,12 @@ impl FileTransferManager {
             if let Some(pending) = state.pending_ack.take() {
                 state.manifest.bytes_confirmed = payload.received_offset;
                 state.manifest.touch();
-                pending.notifier.notify_waiters();
+                // Use notify_one (not notify_waiters): if the ACK arrives in the
+                // window after wait_for_ack drops the lock but before it awaits
+                // notified(), notify_waiters would be lost and the chunk would be
+                // needlessly retransmitted. notify_one stores a permit so the
+                // pending waiter completes immediately.
+                pending.notifier.notify_one();
             }
         }
 
@@ -1309,6 +1357,12 @@ async fn compute_file_checksum(path: &Path) -> Result<String, FileTransferError>
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Returns true when the file at `path` hashes to `expected` (SHA-256, hex).
+async fn verify_file_checksum(path: &Path, expected: &str) -> Result<bool, FileTransferError> {
+    let actual = compute_file_checksum(path).await?;
+    Ok(actual == expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1349,7 +1403,7 @@ mod tests {
 
         tokio::spawn(async move {
             sleep(TokioDuration::from_millis(10)).await;
-            notifier.notify_waiters();
+            notifier.notify_one();
         });
 
         FileTransferManager::wait_for_ack(runtime.clone(), "test")
@@ -1383,7 +1437,7 @@ mod tests {
                         };
                         tokio::spawn(async move {
                             sleep(TokioDuration::from_millis(10)).await;
-                            notifier.notify_waiters();
+                            notifier.notify_one();
                         });
                     }
                     Ok(())
@@ -1423,5 +1477,46 @@ mod tests {
 
         assert!(matches!(result, Err(FileTransferError::AckTimeout)));
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn verify_file_checksum_accepts_matching_contents() {
+        let dir =
+            std::env::temp_dir().join(format!("mesh-talk-checksum-ok-{}", std::process::id()));
+        fs::create_dir_all(&dir).await.expect("create temp dir");
+        let path = dir.join("payload.bin");
+        fs::write(&path, b"mesh-talk integrity payload")
+            .await
+            .expect("write file");
+
+        let checksum = compute_file_checksum(&path).await.expect("checksum");
+        assert!(verify_file_checksum(&path, &checksum)
+            .await
+            .expect("verify"));
+
+        fs::remove_dir_all(&dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn verify_file_checksum_rejects_corrupted_contents() {
+        let dir =
+            std::env::temp_dir().join(format!("mesh-talk-checksum-bad-{}", std::process::id()));
+        fs::create_dir_all(&dir).await.expect("create temp dir");
+        let path = dir.join("payload.bin");
+        fs::write(&path, b"original contents").await.expect("write");
+
+        let checksum = compute_file_checksum(&path).await.expect("checksum");
+
+        // Simulate corruption in transit: the bytes on disk no longer match the
+        // sender-advertised checksum.
+        fs::write(&path, b"tampered contents")
+            .await
+            .expect("overwrite");
+
+        assert!(!verify_file_checksum(&path, &checksum)
+            .await
+            .expect("verify"));
+
+        fs::remove_dir_all(&dir).await.ok();
     }
 }

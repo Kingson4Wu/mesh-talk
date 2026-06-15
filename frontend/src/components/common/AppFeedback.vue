@@ -38,20 +38,35 @@
     </Transition>
 
     <Transition name="scale-fade">
-      <section v-if="dialog.visible" class="dialog-backdrop" role="dialog" aria-modal="true">
+      <section
+        v-if="dialog.visible"
+        class="dialog-backdrop"
+        role="dialog"
+        aria-modal="true"
+      >
         <div class="dialog" :data-tone="dialog.tone">
           <header class="dialog__header">
             <h2 class="dialog__title">{{ dialog.title }}</h2>
           </header>
           <main class="dialog__body">
             <p class="dialog__message">{{ dialog.message }}</p>
-            <pre v-if="dialog.detail" class="dialog__detail">{{ dialog.detail }}</pre>
+            <pre v-if="dialog.detail" class="dialog__detail">{{
+              dialog.detail
+            }}</pre>
           </main>
           <footer class="dialog__actions">
-            <button type="button" class="btn btn-outline" @click="resolve(false)">
+            <button
+              type="button"
+              class="btn btn-outline"
+              @click="resolve(false)"
+            >
               {{ dialog.cancelText }}
             </button>
-            <button type="button" class="btn btn-primary" @click="resolve(true)">
+            <button
+              type="button"
+              class="btn btn-primary"
+              @click="resolve(true)"
+            >
               {{ dialog.confirmText }}
             </button>
           </footer>
@@ -181,7 +196,9 @@ const resolve = (result) => feedback.resolveDialog(result);
 
 .scale-fade-enter-active,
 .scale-fade-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
 }
 
 .scale-fade-enter-from,
@@ -204,7 +221,11 @@ const resolve = (result) => feedback.resolveDialog(result);
 
 .dialog {
   width: min(420px, 90vw);
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(17, 24, 39, 0.92));
+  background: linear-gradient(
+    180deg,
+    rgba(15, 23, 42, 0.95),
+    rgba(17, 24, 39, 0.92)
+  );
   border-radius: 20px;
   border: 1px solid rgba(94, 234, 212, 0.25);
   box-shadow: 0 28px 55px rgba(15, 23, 42, 0.35);
@@ -266,7 +287,9 @@ const resolve = (result) => feedback.resolveDialog(result);
   letter-spacing: 0.02em;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .btn:focus-visible {
@@ -285,7 +308,11 @@ const resolve = (result) => feedback.resolveDialog(result);
 }
 
 .btn.btn-primary {
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.92), rgba(6, 182, 212, 0.95));
+  background: linear-gradient(
+    135deg,
+    rgba(14, 165, 233, 0.92),
+    rgba(6, 182, 212, 0.95)
+  );
   color: #0f172a;
   box-shadow: 0 12px 30px rgba(6, 182, 212, 0.35);
 }

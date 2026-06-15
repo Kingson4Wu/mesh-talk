@@ -708,6 +708,78 @@ fn compute_peer_status_deltas(
     (changes, new_status_map)
 }
 
+pub fn emit_file_transfer_status(
+    transfer_id: &str,
+    status: TransferStatus,
+    error: Option<String>,
+    direction: TransferDirection,
+) {
+    with_node_event_app_handle(|handle| {
+        let _ = handle.emit(
+            EVENT_FILE_TRANSFER_STATUS,
+            serde_json::json!({
+                "transferId": transfer_id,
+                "status": format!("{status:?}").to_lowercase(),
+                "direction": match direction {
+                    TransferDirection::Incoming => "incoming",
+                    TransferDirection::Outgoing => "outgoing",
+                },
+                "error": error,
+            }),
+        );
+    });
+}
+
+pub fn emit_file_transfer_progress(
+    transfer_id: &str,
+    bytes: u64,
+    total: u64,
+    direction: TransferDirection,
+) {
+    with_node_event_app_handle(|handle| {
+        let _ = handle.emit(
+            EVENT_FILE_TRANSFER_PROGRESS,
+            serde_json::json!({
+                "transferId": transfer_id,
+                "bytes": bytes,
+                "total": total,
+                "direction": match direction {
+                    TransferDirection::Incoming => "incoming",
+                    TransferDirection::Outgoing => "outgoing",
+                }
+            }),
+        );
+    });
+}
+
+pub fn emit_file_transfer_complete(
+    transfer_id: &str,
+    path: String,
+    direction: TransferDirection,
+    checksum_valid: bool,
+) {
+    with_node_event_app_handle(|handle| {
+        let _ = handle.emit(
+            EVENT_FILE_TRANSFER_COMPLETE,
+            serde_json::json!({
+                "transferId": transfer_id,
+                "path": path,
+                "direction": match direction {
+                    TransferDirection::Incoming => "incoming",
+                    TransferDirection::Outgoing => "outgoing",
+                },
+                "checksumValid": checksum_valid,
+            }),
+        );
+    });
+}
+
+pub fn emit_file_transfer_offer(event: FileTransferOfferEvent) {
+    with_node_event_app_handle(|handle| {
+        let _ = handle.emit(EVENT_FILE_TRANSFER_OFFER, event);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,7 +866,9 @@ mod tests {
             "local-user".into(),
             "127.0.0.1:7000".into(),
         );
-        app_state.session().set("token".into(), local_user.clone());
+        app_state
+            .session()
+            .set("token".into(), local_user.clone(), "test-password".into());
 
         let event = MessageEvent {
             from_address: "192.168.0.2:9000".into(),
@@ -821,76 +895,4 @@ mod tests {
             .expect("message persisted");
         assert_eq!(persisted.content, "Hello from the network");
     }
-}
-
-pub fn emit_file_transfer_status(
-    transfer_id: &str,
-    status: TransferStatus,
-    error: Option<String>,
-    direction: TransferDirection,
-) {
-    with_node_event_app_handle(|handle| {
-        let _ = handle.emit(
-            EVENT_FILE_TRANSFER_STATUS,
-            serde_json::json!({
-                "transferId": transfer_id,
-                "status": format!("{status:?}").to_lowercase(),
-                "direction": match direction {
-                    TransferDirection::Incoming => "incoming",
-                    TransferDirection::Outgoing => "outgoing",
-                },
-                "error": error,
-            }),
-        );
-    });
-}
-
-pub fn emit_file_transfer_progress(
-    transfer_id: &str,
-    bytes: u64,
-    total: u64,
-    direction: TransferDirection,
-) {
-    with_node_event_app_handle(|handle| {
-        let _ = handle.emit(
-            EVENT_FILE_TRANSFER_PROGRESS,
-            serde_json::json!({
-                "transferId": transfer_id,
-                "bytes": bytes,
-                "total": total,
-                "direction": match direction {
-                    TransferDirection::Incoming => "incoming",
-                    TransferDirection::Outgoing => "outgoing",
-                }
-            }),
-        );
-    });
-}
-
-pub fn emit_file_transfer_complete(
-    transfer_id: &str,
-    path: String,
-    direction: TransferDirection,
-    checksum_valid: bool,
-) {
-    with_node_event_app_handle(|handle| {
-        let _ = handle.emit(
-            EVENT_FILE_TRANSFER_COMPLETE,
-            serde_json::json!({
-                "transferId": transfer_id,
-                "path": path,
-                "direction": match direction {
-                    TransferDirection::Incoming => "incoming",
-                    TransferDirection::Outgoing => "outgoing",
-                },
-                "checksumValid": checksum_valid,
-            }),
-        );
-    });
-}
-
-pub fn emit_file_transfer_offer(event: FileTransferOfferEvent) {
-    with_node_event_app_handle(|handle| {
-        let _ = handle.emit(EVENT_FILE_TRANSFER_OFFER, event);
-    });
 }

@@ -6,9 +6,6 @@ mod tests {
     use crate::crypto::storage::SecureStorageManager;
 
     // RSA dependencies for the encryption/decryption tests
-    use rand::rngs::OsRng;
-    use rsa::traits::PublicKeyParts;
-    use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 
     #[test]
     fn test_crypto_module_compilation() {
@@ -26,7 +23,7 @@ mod tests {
     fn test_rsa_encryption_decryption() {
         // Test RSA public key encryption and private key decryption
         use rand::rngs::OsRng;
-        use rsa::traits::PublicKeyParts;
+
         use rsa::Pkcs1v15Encrypt;
         use rsa::{RsaPrivateKey, RsaPublicKey};
 

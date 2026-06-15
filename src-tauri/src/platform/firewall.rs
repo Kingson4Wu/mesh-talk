@@ -1,4 +1,6 @@
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -14,24 +16,23 @@ pub struct FirewallCheckResult {
     pub message: Option<String>,
 }
 
-pub fn check_firewall(port: u16) -> FirewallCheckResult {
+pub fn check_firewall(_port: u16) -> FirewallCheckResult {
     #[cfg(target_os = "windows")]
     {
-        return check_windows_firewall(port);
+        check_windows_firewall(_port)
     }
 
     #[cfg(target_os = "macos")]
     {
-        return check_macos_firewall();
+        check_macos_firewall()
     }
 
     #[cfg(target_os = "linux")]
     {
-        let _ = port;
-        return FirewallCheckResult {
+        FirewallCheckResult {
             status: FirewallStatus::Unsupported,
             message: Some("Automatic firewall detection is not supported on Linux.".into()),
-        };
+        }
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -43,21 +44,20 @@ pub fn check_firewall(port: u16) -> FirewallCheckResult {
     }
 }
 
-pub fn allow_firewall(port: u16) -> Result<(), String> {
+pub fn allow_firewall(_port: u16) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        return allow_windows_firewall(port);
+        allow_windows_firewall(_port)
     }
 
     #[cfg(target_os = "macos")]
     {
-        return allow_macos_firewall();
+        allow_macos_firewall()
     }
 
     #[cfg(target_os = "linux")]
     {
-        let _ = port;
-        return Err("Automatic firewall configuration is not supported on Linux.".into());
+        Err("Automatic firewall configuration is not supported on Linux.".into())
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

@@ -226,7 +226,7 @@ pub async fn get_node_info(
 
     Ok(NodeInfo {
         name: node_name,
-        user_id: user_id,
+        user_id,
         port,
         username,
         status,
@@ -514,10 +514,25 @@ fn login_impl(
 
     match app_state
         .auth_service()
-        .login(normalized_username.clone(), normalized_password)
+        .login(normalized_username.clone(), normalized_password.clone())
     {
         Ok((user, token)) => {
-            app_state.session().set(token.clone(), user.clone());
+            // Unlock the user's at-rest RSA key so contact storage paths
+            // (including password-less network handlers) can read/write the
+            // encrypted contacts store for this session.
+            if let Err(err) = app_state
+                .contact_service()
+                .unlock_keys(&normalized_username, &normalized_password)
+            {
+                log::warn!(
+                    "Failed to unlock encryption keys for {}: {:?}",
+                    normalized_username,
+                    err
+                );
+            }
+            app_state
+                .session()
+                .set(token.clone(), user.clone(), normalized_password);
             refresh_unread_count(app_state, user.user_id.clone())?;
             Ok(LoginResult {
                 success: true,
@@ -553,6 +568,9 @@ fn logout_impl(app_state: &AppState) -> CommandResult<LogoutResult> {
         .auth_service()
         .logout(session.token.clone())
         .map_err(|e| CommandError::Service(format!("Failed to logout: {e:?}")))?;
+
+    // Evict the user's cached RSA key from the in-memory keyring.
+    app_state.contact_service().lock_keys(&session.user.name);
 
     app_state.session().clear();
     stop_network_impl(app_state)?;
@@ -639,7 +657,7 @@ fn get_contacts_impl(app_state: &AppState) -> CommandResult<ContactResult> {
         session.user.name.clone(),    // Pass the actual username
         session.user.user_id.clone(), // Pass the user_id as well
     );
-    contacts.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    contacts.sort_by_key(|a| a.name.to_lowercase());
 
     // Log the retrieved contacts as JSON
     println!(
@@ -796,11 +814,15 @@ fn mark_all_messages_read_impl(app_state: &AppState) -> CommandResult<()> {
 
 fn ensure_message_access(message: &ChatMessage, session: &SessionInfo) -> CommandResult<()> {
     let is_sender = message.from_user_id == session.user.user_id;
+    // Deny by default when there is no explicit recipient: a message the caller
+    // did not send and that is not addressed to them must not be modifiable.
+    // Previously this defaulted to `true`, letting any user mark read/delivered
+    // any message with `to_user_id == None`.
     let is_recipient = message
         .to_user_id
         .as_ref()
         .map(|id| id == &session.user.user_id)
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     if is_sender || is_recipient {
         Ok(())
@@ -1039,9 +1061,7 @@ mod tests {
     use super::*;
     use crate::services::auth_service::AuthService;
     use crate::services::contact_service::ContactService;
-    use crate::services::file_transfer::{
-        FileTransferHandle, FileTransferManager, TransferManifest,
-    };
+
     use crate::services::message_service::MessageService;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -1061,6 +1081,7 @@ mod tests {
     struct TestHarness {
         app_state: AppState,
         node_service: Arc<Mutex<NodeService>>,
+        test_data_path: String,
     }
 
     impl TestHarness {
@@ -1070,7 +1091,7 @@ mod tests {
 
             // Initialize file manager
             let file_manager =
-                crate::storage::file_manager::FileManager::new(test_data_path.into());
+                crate::storage::file_manager::FileManager::new(test_data_path.clone().into());
 
             // Initialize services with file manager
             let auth_service = AuthService::new(Arc::new(
@@ -1096,14 +1117,15 @@ mod tests {
             Self {
                 app_state,
                 node_service,
+                test_data_path,
             }
         }
     }
 
     impl Drop for TestHarness {
         fn drop(&mut self) {
-            // Clean up test data directory
-            let _ = std::fs::remove_dir_all("./test_data");
+            // Clean up the unique test data directory that was actually created.
+            let _ = std::fs::remove_dir_all(&self.test_data_path);
         }
     }
 
@@ -1270,6 +1292,73 @@ mod tests {
         assert!(app_state.session().get().is_none());
     }
 
+    fn session_for(user_id: &str) -> SessionInfo {
+        SessionInfo {
+            token: "test-token".into(),
+            user: User {
+                user_id: user_id.into(),
+                name: user_id.into(),
+                address: "127.0.0.1:7000".into(),
+                created_at: 0,
+                last_seen: 0,
+                is_online: false,
+            },
+            password: "test-password".into(),
+        }
+    }
+
+    #[test]
+    fn ensure_message_access_enforces_participants() {
+        let session = session_for("me");
+
+        // Sender may access their own message.
+        let mine = ChatMessage::new(
+            "me".into(),
+            "127.0.0.1:7000".into(),
+            Some("other".into()),
+            None,
+            "hi".into(),
+        );
+        assert!(ensure_message_access(&mine, &session).is_ok());
+
+        // Explicit recipient may access.
+        let to_me = ChatMessage::new(
+            "someone".into(),
+            "1.2.3.4:7000".into(),
+            Some("me".into()),
+            None,
+            "hi".into(),
+        );
+        assert!(ensure_message_access(&to_me, &session).is_ok());
+
+        // Third party (neither sender nor recipient) is denied.
+        let theirs = ChatMessage::new(
+            "someone".into(),
+            "1.2.3.4:7000".into(),
+            Some("other".into()),
+            None,
+            "hi".into(),
+        );
+        assert!(matches!(
+            ensure_message_access(&theirs, &session),
+            Err(CommandError::Authorization(_))
+        ));
+
+        // Message with no explicit recipient that the caller did not send is
+        // now denied (previously incorrectly allowed for everyone).
+        let no_recipient = ChatMessage::new(
+            "someone".into(),
+            "1.2.3.4:7000".into(),
+            None,
+            None,
+            "hi".into(),
+        );
+        assert!(matches!(
+            ensure_message_access(&no_recipient, &session),
+            Err(CommandError::Authorization(_))
+        ));
+    }
+
     #[tokio::test]
     async fn send_message_requires_auth() {
         let harness = TestHarness::new();
@@ -1293,10 +1382,32 @@ mod tests {
         register_impl("bob".into(), "secret123".into(), app_state).expect("register");
         login_impl("bob".into(), "secret123".into(), app_state).expect("login");
 
+        // Stand up a real TCP listener on an ephemeral port that accepts the
+        // peer connection and drains incoming bytes, so the send path can
+        // actually deliver the message instead of hitting connection refused.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let peer_addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = [0u8; 1024];
+                    // Drain until the peer closes the connection.
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
         let message = send_message_impl(
             "hi there".into(),
             None,
-            Some("127.0.0.1:7000".into()),
+            Some(peer_addr.to_string()),
             &harness.node_service,
             app_state,
         )
@@ -1338,7 +1449,7 @@ async fn send_contact_request_impl(
     username: Option<String>,
     remote_ip: Option<String>,
     port: Option<u16>,
-    user_id: Option<String>,
+    _user_id: Option<String>,
     app_state: &AppState,
 ) -> CommandResult<ContactRequestResult> {
     let session = require_session(app_state)?;
@@ -1355,7 +1466,7 @@ async fn send_contact_request_impl(
     match contact_request_service
         .send_contact_request_with_user_id(
             &session.user.name,
-            &session.user.name, // Using username as password placeholder - the service should handle this differently
+            &session.password, // real password so the request can be signed
             &target_public_key,
             alias.as_deref(),
             session.user.user_id.clone(), // Use provided user_id or fallback to session user_id
@@ -1426,11 +1537,7 @@ async fn handle_contact_request_impl(
         // Handle the contact request (this will also send auto-approval response)
         log::info!("Calling contact_request_service.handle_contact_request...");
         let handle_result = contact_request_service
-            .handle_contact_request(
-                &session.user.name,
-                "", // Empty password placeholder - the service should get credentials differently
-                &request_json,
-            )
+            .handle_contact_request(&session.user.name, &session.password, &request_json)
             .await;
 
         match &handle_result {
@@ -1479,7 +1586,7 @@ async fn handle_contact_request_impl(
             contact_request_service
                 .send_contact_response(
                     &session.user.name,
-                    "", // Empty password placeholder - the service should get credentials differently
+                    &session.password, // real password so the response can be signed
                     &contact_request.requester_public_key,
                     false, // not approved
                     None,

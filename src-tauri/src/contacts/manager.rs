@@ -32,9 +32,10 @@ impl ContactList {
 
 #[derive(Clone)]
 pub struct ContactManager {
-    // Keep the original file manager for other operations
+    // Retained for non-contact file operations / API symmetry.
+    #[allow(dead_code)]
     file_manager: FileManager,
-    // Add the public key encryption file manager for contacts
+    // The public key encryption file manager used for the contacts store.
     public_key_file_manager: PublicKeyFileManager,
 }
 
@@ -48,6 +49,19 @@ impl ContactManager {
             file_manager,
             public_key_file_manager,
         }
+    }
+
+    /// Decrypt and cache the user's RSA key (used at login) so later storage
+    /// operations can read/write the password-encrypted contacts store.
+    pub fn unlock_keys(&self, username: &str, password: &str) -> Result<(), ContactError> {
+        self.public_key_file_manager
+            .unlock_keys(username, password)
+            .map_err(|e| ContactError::StorageError(e.to_string()))
+    }
+
+    /// Drop the user's cached RSA key (used at logout).
+    pub fn lock_keys(&self, username: &str) {
+        self.public_key_file_manager.lock_keys(username);
     }
 
     pub fn add_contact(
@@ -182,7 +196,7 @@ impl ContactManager {
 
         // Check if the contact exists and get its current state
         if let Some(contact) = contact_list.contacts.get(contact_address) {
-            let contact_clone = contact.clone();
+            let _contact_clone = contact.clone();
 
             // Remove the contact
             contact_list.contacts.remove(contact_address);
@@ -389,7 +403,7 @@ impl ContactManager {
         );
 
         match result {
-            Ok(mut contacts) => {
+            Ok(contacts) => {
                 log::info!(
                     "Successfully loaded {} contacts for user '{}'",
                     contacts.contacts.len(),

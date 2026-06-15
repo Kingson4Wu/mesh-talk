@@ -118,7 +118,9 @@ describe("appStore real-time messaging integration", () => {
     expect(store.peerCount).toBe(2);
 
     await store.teardownEventListeners();
-    expect(unlistenSpy).toHaveBeenCalledTimes(11);
+    // Every listener that was registered must be torn down — assert against the
+    // actual registration count rather than a brittle hard-coded number.
+    expect(unlistenSpy).toHaveBeenCalledTimes(mockListen.mock.calls.length);
   });
 
   it("updates node info when the port changes", async () => {

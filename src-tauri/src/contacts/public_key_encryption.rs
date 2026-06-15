@@ -1,4 +1,7 @@
 use crate::identity::manager::IdentityManager;
+use crate::storage::encryption::{
+    decrypt_data, encrypt_data, generate_salt, EncryptionKey, NONCE_SIZE, SALT_SIZE,
+};
 use crate::storage::errors::StorageError;
 use crate::storage::serialization::{deserialize_data, serialize_data};
 use base64::{engine::general_purpose, Engine as _};
@@ -6,17 +9,33 @@ use rsa::pkcs1v15::Pkcs1v15Encrypt;
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// In-memory keyring of decrypted RSA private keys, keyed by username.
+///
+/// The on-disk key is encrypted at rest with the user's password. Decrypting it
+/// requires the password, but several internal storage paths (incoming contact
+/// responses, auto-discovery) historically run without it. We therefore decrypt
+/// the key once at login (via [`PublicKeyFileManager::unlock_keys`]) and cache
+/// the result here so those paths can reuse it. Cleared on logout.
+static RSA_KEY_CACHE: OnceLock<Mutex<HashMap<String, RsaPrivateKey>>> = OnceLock::new();
+
+fn rsa_key_cache() -> &'static Mutex<HashMap<String, RsaPrivateKey>> {
+    RSA_KEY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// A specialized file manager that uses public key encryption instead of password-based encryption
 #[derive(Clone)]
 pub struct PublicKeyFileManager {
     base_path: PathBuf,
+    // Retained for future identity-aware key operations.
+    #[allow(dead_code)]
     identity_manager: Arc<IdentityManager>,
 }
 
@@ -337,51 +356,85 @@ impl PublicKeyFileManager {
         Ok(deserialized_data)
     }
 
+    /// Cache key scoped to this manager's storage location, so two users with
+    /// the same name but different data roots (e.g. parallel tests) never share
+    /// a cached key. In production the base path is fixed, so this reduces to a
+    /// per-username entry.
+    fn cache_key(&self, username: &str) -> String {
+        format!("{}::{}", self.base_path.display(), username)
+    }
+
+    /// Decrypt (or create) the user's RSA key with the real password and cache
+    /// it in the in-memory keyring. Call once at login so later password-less
+    /// storage paths can reuse the key. Idempotent.
+    pub fn unlock_keys(&self, username: &str, password: &str) -> Result<(), StorageError> {
+        self.get_or_create_rsa_key_pair(username, password)?;
+        Ok(())
+    }
+
+    /// Drop the cached key for a user (e.g. on logout).
+    pub fn lock_keys(&self, username: &str) {
+        rsa_key_cache()
+            .lock()
+            .unwrap()
+            .remove(&self.cache_key(username));
+    }
+
     /// Get or create RSA key pair for the user for encryption purposes
     fn get_or_create_rsa_key_pair(
         &self,
         username: &str,
         password: &str,
     ) -> Result<(RsaPublicKey, RsaPrivateKey), StorageError> {
-        // Try to load existing RSA keys
-        if let Ok(rsa_private_key_der_b64) = self.load_rsa_private_key(username, password) {
-            let rsa_private_key_der = general_purpose::STANDARD
-                .decode(&rsa_private_key_der_b64)
-                .map_err(|e| StorageError::Decryption(e.to_string()))?;
+        let cache_key = self.cache_key(username);
 
-            let rsa_private_key = rsa::RsaPrivateKey::from_pkcs8_der(&rsa_private_key_der)
-                .map_err(|e| StorageError::Decryption(e.to_string()))?;
-
+        // Fast path: reuse the key unlocked at login. This decouples key access
+        // from the (historically inconsistent) password string each call site
+        // passes.
+        if let Some(rsa_private_key) = rsa_key_cache().lock().unwrap().get(&cache_key).cloned() {
             let rsa_public_key = rsa_private_key.to_public_key();
             return Ok((rsa_public_key, rsa_private_key));
         }
 
-        // If no existing keys, generate a new pair
-        let mut rng = rand::rngs::OsRng;
-        let rsa_bits = 2048;
-        let rsa_private_key = RsaPrivateKey::new(&mut rng, rsa_bits)
-            .map_err(|e| StorageError::Encryption(e.to_string()))?;
-        let rsa_public_key = RsaPublicKey::from(&rsa_private_key);
+        // Load the existing key. Distinguish "no key yet" (generate one) from
+        // "decryption failed" (wrong password) — the latter must NOT silently
+        // regenerate the key, which would orphan all existing encrypted data.
+        let rsa_private_key = match self.load_rsa_private_key(username, password) {
+            Ok(rsa_private_key_der) => rsa::RsaPrivateKey::from_pkcs8_der(&rsa_private_key_der)
+                .map_err(|e| StorageError::Decryption(e.to_string()))?,
+            Err(StorageError::FileNotFound(_)) => {
+                // No key yet: generate one and persist it encrypted at rest with
+                // the user's password.
+                let mut rng = rand::rngs::OsRng;
+                let key = RsaPrivateKey::new(&mut rng, 2048)
+                    .map_err(|e| StorageError::Encryption(e.to_string()))?;
+                let der = key
+                    .to_pkcs8_der()
+                    .map_err(|e| StorageError::Encryption(e.to_string()))?;
+                self.save_rsa_private_key(username, password, der.as_bytes())?;
+                key
+            }
+            Err(e) => return Err(e),
+        };
 
-        // Store the private key encrypted with the user's password
-        let rsa_private_key_der = rsa_private_key
-            .to_pkcs8_der()
-            .map_err(|e| StorageError::Encryption(e.to_string()))?;
-        let rsa_private_key_der_b64 =
-            general_purpose::STANDARD.encode(rsa_private_key_der.as_bytes());
+        rsa_key_cache()
+            .lock()
+            .unwrap()
+            .insert(cache_key, rsa_private_key.clone());
 
-        self.save_rsa_private_key(username, password, &rsa_private_key_der_b64)
-            .map_err(|e| StorageError::Encryption(e.to_string()))?;
-
+        let rsa_public_key = rsa_private_key.to_public_key();
         Ok((rsa_public_key, rsa_private_key))
     }
 
-    /// Load RSA private key for the user
+    /// Load and decrypt the user's RSA private key (PKCS#8 DER bytes).
+    ///
+    /// On-disk format: salt(16) || nonce(12) || AES-256-GCM ciphertext, with the
+    /// key derived from the password via PBKDF2 (see `storage::encryption`).
     fn load_rsa_private_key(
         &self,
         username: &str,
-        _password: &str,
-    ) -> Result<String, StorageError> {
+        password: &str,
+    ) -> Result<Vec<u8>, StorageError> {
         let full_path = self
             .user_data_path(username)
             .join("meta/rsa_private_key.enc");
@@ -390,30 +443,49 @@ impl PublicKeyFileManager {
             return Err(StorageError::FileNotFound(full_path));
         }
 
-        let content = std::fs::read_to_string(&full_path)
-            .map_err(|e| StorageError::Decryption(format!("Failed to read RSA key file: {}", e)))?;
+        let content = std::fs::read(&full_path)?;
+        if content.len() < SALT_SIZE + NONCE_SIZE {
+            return Err(StorageError::Decryption(
+                "RSA key file too short to contain salt and nonce".to_string(),
+            ));
+        }
 
-        Ok(content)
+        let salt: [u8; SALT_SIZE] = content[0..SALT_SIZE].try_into().unwrap();
+        let nonce: [u8; NONCE_SIZE] = content[SALT_SIZE..SALT_SIZE + NONCE_SIZE]
+            .try_into()
+            .unwrap();
+        let ciphertext = &content[SALT_SIZE + NONCE_SIZE..];
+
+        let key = EncryptionKey::from_password(password, &salt)?;
+        decrypt_data(ciphertext, &nonce, &key)
     }
 
-    /// Save RSA private key for the user
+    /// Encrypt and persist the user's RSA private key (PKCS#8 DER bytes).
     fn save_rsa_private_key(
         &self,
         username: &str,
-        _password: &str, // This parameter is kept for compatibility but not used
-        key_b64: &str,
-    ) -> Result<(), std::io::Error> {
+        password: &str,
+        der_bytes: &[u8],
+    ) -> Result<(), StorageError> {
         let full_path = self
             .user_data_path(username)
             .join("meta/rsa_private_key.enc");
 
-        // Create parent directory if needed
         if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .map_err(|_| StorageError::DirectoryCreationFailed(parent.to_path_buf()))?;
         }
 
-        std::fs::write(&full_path, key_b64.as_bytes())?;
+        let salt = generate_salt();
+        let key = EncryptionKey::from_password(password, &salt)?;
+        let (ciphertext, nonce) = encrypt_data(der_bytes, &key)?;
 
+        let mut out = Vec::with_capacity(SALT_SIZE + NONCE_SIZE + ciphertext.len());
+        out.extend_from_slice(&salt);
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+
+        std::fs::write(&full_path, out)?;
         Ok(())
     }
 }

@@ -18,7 +18,7 @@ mod tests {
         let mut settings = NotificationSettings::new();
         assert_eq!(settings.level, NotificationLevel::All);
         assert_eq!(settings.sound, SoundSetting::Default);
-        assert_eq!(settings.show_in_tray, true);
+        assert!(settings.show_in_tray);
 
         settings.set_level(NotificationLevel::None);
         assert_eq!(settings.level, NotificationLevel::None);
@@ -27,6 +27,6 @@ mod tests {
         assert_eq!(settings.sound, SoundSetting::None);
 
         settings.set_show_in_tray(false);
-        assert_eq!(settings.show_in_tray, false);
+        assert!(!settings.show_in_tray);
     }
 }
