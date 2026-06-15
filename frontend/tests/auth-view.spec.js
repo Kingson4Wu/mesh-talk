@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { createTestingPinia } from "@pinia/testing";
 import { nextTick } from "vue";
 import { useAppStore } from "../src/stores/appStore";
@@ -78,9 +78,7 @@ describe("LoginView.vue", () => {
       "Please fill in the highlighted fields",
     );
 
-    await wrapper
-      .find('[data-test="login-username"]')
-      .setValue("alice");
+    await wrapper.find('[data-test="login-username"]').setValue("alice");
     await wrapper.find('[data-test="login-form"]').trigger("submit.prevent");
 
     expect(wrapper.find('[data-test="form-error"]').text()).toContain(
@@ -89,32 +87,26 @@ describe("LoginView.vue", () => {
   });
 
   it("submits login form successfully", async () => {
-    const loginMock = vi.fn().mockResolvedValue({ success: true });
-    store.login = loginMock;
+    const loginSpy = vi
+      .spyOn(store, "login")
+      .mockResolvedValue({ success: true });
 
-    await wrapper
-      .find('[data-test="login-username"]')
-      .setValue("alice");
-    await wrapper
-      .find('[data-test="login-password"]')
-      .setValue("password123");
+    await wrapper.find('[data-test="login-username"]').setValue("alice");
+    await wrapper.find('[data-test="login-password"]').setValue("password123");
     await wrapper.find('[data-test="login-form"]').trigger("submit.prevent");
+    await flushPromises();
 
-    expect(loginMock).toHaveBeenCalledWith("alice", "password123");
+    expect(loginSpy).toHaveBeenCalledWith("alice", "password123");
     wrapper.unmount();
   });
 
   it("handles login failure", async () => {
-    const loginMock = vi.fn().mockResolvedValue({ success: false });
-    store.login = loginMock;
+    vi.spyOn(store, "login").mockResolvedValue({ success: false });
 
-    await wrapper
-      .find('[data-test="login-username"]')
-      .setValue("alice");
-    await wrapper
-      .find('[data-test="login-password"]')
-      .setValue("password123");
+    await wrapper.find('[data-test="login-username"]').setValue("alice");
+    await wrapper.find('[data-test="login-password"]').setValue("password123");
     await wrapper.find('[data-test="login-form"]').trigger("submit.prevent");
+    await flushPromises();
 
     expect(wrapper.find('[data-test="form-error"]').text()).toBe(
       "Unable to login",
@@ -137,12 +129,11 @@ describe("LoginView.vue", () => {
     await wrapper.find('[data-test="mode-register"]').trigger("click");
     await nextTick();
 
-    const registerMock = vi.fn().mockResolvedValue({ success: true });
-    store.register = registerMock;
+    const registerSpy = vi
+      .spyOn(store, "register")
+      .mockResolvedValue({ success: true });
 
-    await wrapper
-      .find('[data-test="register-username"]')
-      .setValue("carol");
+    await wrapper.find('[data-test="register-username"]').setValue("carol");
     await wrapper
       .find('[data-test="register-password"]')
       .setValue("password123");
@@ -150,8 +141,9 @@ describe("LoginView.vue", () => {
       .find('[data-test="register-confirm"]')
       .setValue("password123");
     await wrapper.find('[data-test="register-form"]').trigger("submit.prevent");
+    await flushPromises();
 
-    expect(registerMock).toHaveBeenCalledWith("carol", "password123");
+    expect(registerSpy).toHaveBeenCalledWith("carol", "password123");
     await nextTick();
     expect(wrapper.find('[data-test="login-form"]').exists()).toBe(true);
     wrapper.unmount();
