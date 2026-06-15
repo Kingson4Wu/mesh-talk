@@ -138,6 +138,10 @@ impl LogFile {
 /// A durable event log: an in-memory [`EventLog`] backed by an encrypted,
 /// append-only [`LogFile`]. On append it validates, persists, then indexes —
 /// so a write failure never leaves an unpersisted event in memory.
+///
+/// Invariant: every event in `log` has a record in `file`; after an interrupted
+/// write `file` may hold at most one extra (torn) record, which is dropped on
+/// the next [`PersistentEventLog::open`].
 pub struct PersistentEventLog {
     log: EventLog,
     file: LogFile,
@@ -148,8 +152,13 @@ impl PersistentEventLog {
     pub fn open(path: &Path, password: &str) -> Result<Self, LogError> {
         let (file, events) = LogFile::open(path, password)?;
         let mut log = EventLog::default();
-        // Records were validated when first appended and are AES-GCM
-        // authenticated at rest, so replay them as trusted, in file (causal) order.
+        // File order IS causal order: `append` validates that all parents are
+        // already indexed before writing, so a child can only appear in the file
+        // after its parents — exactly what `index_trusted` requires. (Records are
+        // also validated on first write and AEAD-authenticated at rest, so we
+        // replay them as trusted.) Writing records via `LogFile` directly, or an
+        // adversary reordering the file, breaks this; per the module trust
+        // boundary, the sync layer heals any resulting stale state.
         for event in events {
             log.index_trusted(event);
         }
@@ -405,7 +414,96 @@ mod tests {
             assert_eq!(plog.append(e.clone()).unwrap(), AppendOutcome::Duplicate);
         }
         // Reopen: the duplicate was not written a second time.
-        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
         assert_eq!(plog.events(&conv).len(), 1);
+        // Re-appending the same event after reopen is still a Duplicate.
+        assert_eq!(plog.append(e.clone()).unwrap(), AppendOutcome::Duplicate);
+    }
+
+    #[test]
+    fn concurrent_events_survive_reopen_with_both_heads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let conv = ConversationId::new([1u8; 32]);
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        let root = mk(&alice, 1, 1, b"root");
+        // Two concurrent children of root, from different authors → two heads.
+        let a = Event::new(
+            &alice,
+            conv,
+            2,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"a".to_vec(),
+        );
+        let b = Event::new(
+            &bob,
+            conv,
+            1,
+            vec![root.id],
+            2,
+            0,
+            EventKind::Message,
+            b"b".to_vec(),
+        );
+        {
+            let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+            plog.append(root.clone()).unwrap();
+            plog.append(a.clone()).unwrap();
+            plog.append(b.clone()).unwrap();
+        }
+
+        // Reopen: the two-head frontier and per-author version vector are restored.
+        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        let mut frontier = plog.heads(&conv);
+        frontier.sort();
+        let mut expected = vec![a.id, b.id];
+        expected.sort();
+        assert_eq!(frontier, expected);
+        assert_eq!(plog.events(&conv).len(), 3);
+        assert_eq!(plog.version_vector(&conv).get(&a.author), Some(&2)); // alice: root(1), a(2)
+        assert_eq!(plog.version_vector(&conv).get(&b.author), Some(&1)); // bob: b(1)
+    }
+
+    #[test]
+    fn append_after_reopen_uses_replayed_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let conv = ConversationId::new([1u8; 32]);
+        let id = DeviceIdentity::generate();
+
+        let root = mk(&id, 1, 1, b"root");
+        {
+            let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+            plog.append(root.clone()).unwrap();
+        }
+
+        // Reopen, derive the next event from the replayed state via `prepare`.
+        let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+        let (parents, lamport) = plog.prepare(&conv);
+        assert_eq!(parents, vec![root.id]);
+        assert_eq!(lamport, 2);
+        let child = Event::new(
+            &id,
+            conv,
+            2,
+            parents,
+            lamport,
+            0,
+            EventKind::Message,
+            b"child".to_vec(),
+        );
+        plog.append(child.clone()).unwrap();
+        assert_eq!(plog.heads(&conv), vec![child.id]);
+
+        // The appended-after-reopen event persists across another reopen.
+        drop(plog);
+        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        assert_eq!(plog.events(&conv).len(), 2);
+        assert_eq!(plog.heads(&conv), vec![child.id]);
     }
 }
