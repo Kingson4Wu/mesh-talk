@@ -207,7 +207,9 @@ mod tests {
         reconcile(&mut bob_log, &mut po, conv());
         let received = bob_log.get(&dm_event.id).expect("bob received the event");
 
-        // Bob opens it; the post office's own identity cannot.
+        // Bob opens it; the post office's own identity cannot. (That `open`
+        // succeeds only for the true recipient is established in `dm.rs`'s
+        // round-trip / wrong-recipient tests; here we assert the relay is blind.)
         let plaintext =
             crate::dm::open(&bob, &alice.public().x25519_pub, &received.ciphertext).unwrap();
         assert_eq!(plaintext, b"meet at 5");
@@ -246,6 +248,10 @@ mod tests {
         po1.accept(x.clone()).unwrap();
         po2.accept(root.clone()).unwrap();
         po2.accept(y.clone()).unwrap();
+
+        // Premise: the two post offices genuinely start divergent.
+        assert!(po1.has(&x.id) && !po1.has(&y.id));
+        assert!(po2.has(&y.id) && !po2.has(&x.id));
 
         reconcile(&mut po1, &mut po2, conv());
         assert_eq!(po1.held_ids(&conv()), po2.held_ids(&conv()));
