@@ -56,8 +56,14 @@ impl std::fmt::Display for DmError {
 impl std::error::Error for DmError {}
 
 /// Derive the AEAD key and nonce from the two DH outputs and the public context.
-/// `info` binds the key to the sender, recipient, and ephemeral public keys so a
-/// ciphertext cannot be reinterpreted under a different triple.
+///
+/// - `dh1` = `DH(sender_static, recipient_static)` — authenticates the sender.
+/// - `dh2` = `DH(ephemeral, recipient_static)` — fresh per message.
+///
+/// `info` binds the key to the sender, recipient, and ephemeral public keys (in
+/// that fixed order, so direction matters) so a ciphertext cannot be
+/// reinterpreted under a different triple. Callers MUST pass `dh1`/`dh2` in this
+/// order on both the seal and open sides or the keys will not match.
 // Task 2 (seal/open) will call this — suppress dead_code until then.
 #[allow(dead_code)]
 fn derive_key_nonce(
@@ -71,17 +77,21 @@ fn derive_key_nonce(
     ikm[..32].copy_from_slice(dh1);
     ikm[32..].copy_from_slice(dh2);
 
-    let mut info = Vec::with_capacity(DM_DOMAIN.len() + 96);
+    let mut info = Vec::with_capacity(DM_DOMAIN.len() + 32 * 3); // sender|recipient|ephemeral
     info.extend_from_slice(DM_DOMAIN);
     info.extend_from_slice(sender_x25519_pub);
     info.extend_from_slice(recipient_x25519_pub);
     info.extend_from_slice(ephemeral_pub);
 
+    // No salt: both DH outputs are already uniformly random, so HKDF-Extract
+    // with a zero-length salt is sound (RFC 5869 §2.2).
     let hk = Hkdf::<Sha256>::new(None, &ikm);
     let mut okm = [0u8; KEY_LEN + NONCE_LEN];
     hk.expand(&info, &mut okm)
         .expect("hkdf okm length is valid");
 
+    // Phase-1 hardening: the derived key/nonce and `ikm`/`okm` are not zeroized
+    // on drop yet (consistent with the keystore's current handling).
     let mut key = [0u8; KEY_LEN];
     let mut nonce = [0u8; NONCE_LEN];
     key.copy_from_slice(&okm[..KEY_LEN]);
@@ -114,6 +124,11 @@ mod tests {
         // Swapping sender/recipient context changes the key (direction matters).
         let (k5, _) = derive_key_nonce(&dh1, &dh2, &b, &a, &e);
         assert_ne!(k1, k5);
+        // dh2 (the ephemeral-static DH) must independently affect the key.
+        let (k6, _) = derive_key_nonce(&dh1, &[9u8; 32], &a, &b, &e);
+        assert_ne!(k1, k6);
+        // Key and nonce are distinct derivations, not the same bytes copied twice.
+        assert_ne!(&k1[..NONCE_LEN], &n1[..]);
     }
 
     #[test]
