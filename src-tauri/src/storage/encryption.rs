@@ -10,7 +10,8 @@ use sha2::Sha256;
 pub const SALT_SIZE: usize = 16;
 pub const NONCE_SIZE: usize = 12;
 const KEY_SIZE: usize = 32;
-const PBKDF2_ROUNDS: u32 = 100_000;
+// OWASP 2023 minimum for PBKDF2-HMAC-SHA256 protecting long-term keys.
+const PBKDF2_ROUNDS: u32 = 600_000;
 
 pub struct EncryptionKey([u8; KEY_SIZE]);
 

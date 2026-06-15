@@ -42,7 +42,9 @@ pub fn save(path: &Path, password: &str, identity: &DeviceIdentity) -> Result<()
         std::fs::create_dir_all(parent)
             .map_err(|_| StorageError::DirectoryCreationFailed(parent.to_path_buf()))?;
     }
-    std::fs::write(path, out)?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &out)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -54,10 +56,12 @@ pub fn load(path: &Path, password: &str) -> Result<DeviceIdentity, StorageError>
             "keystore file too short".to_string(),
         ));
     }
-    let salt: [u8; SALT_SIZE] = content[0..SALT_SIZE].try_into().unwrap();
+    let salt: [u8; SALT_SIZE] = content[0..SALT_SIZE]
+        .try_into()
+        .expect("length checked above");
     let nonce: [u8; NONCE_SIZE] = content[SALT_SIZE..SALT_SIZE + NONCE_SIZE]
         .try_into()
-        .unwrap();
+        .expect("length checked above");
     let ciphertext = &content[SALT_SIZE + NONCE_SIZE..];
 
     let key = EncryptionKey::from_password(password, &salt)?;
@@ -117,5 +121,51 @@ mod tests {
         let first = load_or_create(&path, "pw").expect("first");
         let second = load_or_create(&path, "pw").expect("second");
         assert_eq!(first.user_id(), second.user_id());
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails_to_load() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("keystore.enc");
+        let id = DeviceIdentity::generate();
+        save(&path, "pw", &id).expect("save");
+
+        let mut bytes = std::fs::read(&path).expect("read");
+        // Flip a byte in the ciphertext region (after salt+nonce = 28 bytes).
+        bytes[28] ^= 0xFF;
+        std::fs::write(&path, &bytes).expect("write tampered");
+
+        assert!(load(&path, "pw").is_err());
+    }
+
+    #[test]
+    fn truncated_file_fails_to_load() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("keystore.enc");
+
+        // Fewer than 28 bytes — must return Err, not panic.
+        std::fs::write(&path, &[0u8; 10]).expect("write short");
+        assert!(load(&path, "pw").is_err());
+
+        // Exactly 28 bytes — empty ciphertext — must also return Err.
+        std::fs::write(&path, &[0u8; 28]).expect("write 28-byte");
+        assert!(load(&path, "pw").is_err());
+    }
+
+    #[test]
+    fn loaded_identity_can_sign_and_verify() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("keystore.enc");
+        let original = DeviceIdentity::generate();
+        save(&path, "pw", &original).expect("save");
+
+        let loaded = load(&path, "pw").expect("load");
+        let msg = b"roundtrip msg";
+        let sig = loaded.sign(msg);
+        assert!(DeviceIdentity::verify(
+            &loaded.public().ed25519_pub,
+            msg,
+            &sig
+        ));
     }
 }

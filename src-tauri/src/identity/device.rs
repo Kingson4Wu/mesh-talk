@@ -118,6 +118,27 @@ mod tests {
     }
 
     #[test]
+    fn verify_rejects_signature_from_different_identity() {
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let msg = b"test message";
+        let sig_from_a = a.sign(msg);
+
+        // Verifying with A's own key succeeds.
+        assert!(DeviceIdentity::verify(
+            &a.public().ed25519_pub,
+            msg,
+            &sig_from_a
+        ));
+        // Verifying with B's key rejects A's signature.
+        assert!(!DeviceIdentity::verify(
+            &b.public().ed25519_pub,
+            msg,
+            &sig_from_a
+        ));
+    }
+
+    #[test]
     fn user_id_is_stable_and_derived_from_signing_key() {
         let pid = PublicIdentity {
             ed25519_pub: [7u8; 32],
