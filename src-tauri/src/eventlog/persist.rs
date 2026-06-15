@@ -2,6 +2,21 @@
 //! Body: a sequence of length-prefixed AES-256-GCM records, one per event:
 //! `[u32 be record_len][nonce(12)][ciphertext]`, where `ciphertext` is the
 //! AES-GCM encryption of `bincode(Event)`. Reuses `storage::encryption`.
+//!
+//! ## Trust boundary
+//!
+//! Each record is independently AEAD-authenticated, so an event's *content*
+//! cannot be forged or altered on disk without the tampered record failing to
+//! decrypt (→ [`LogError::CorruptFile`]). What this layer does NOT provide is
+//! truncation/reorder resistance: the length prefixes are not authenticated, so
+//! a corrupted mid-file frame causes the remainder to be treated as a torn tail
+//! and dropped, and an attacker who knows the password could reorder records.
+//!
+//! That is by design. The file is a local *cache*, not the source of truth.
+//! Truncation and reordering are recovered by the higher layers: events are
+//! content-addressed and signed, so on re-ingest via [`crate::eventlog::EventLog`]
+//! any altered event is rejected, and the sync engine re-fetches missing events
+//! from peers. A dropped or reordered local record is therefore self-healing.
 
 use crate::eventlog::event::Event;
 use crate::eventlog::LogError;
@@ -24,28 +39,28 @@ impl LogFile {
     /// Open the log at `path`, creating it (with a fresh random salt) if absent.
     /// Returns the writer plus every event already stored, in file order.
     pub fn open(path: &Path, password: &str) -> Result<(Self, Vec<Event>), LogError> {
-        if path.exists() {
-            Self::load(path, password)
-        } else {
-            Self::create(path, password)
-        }
-    }
-
-    fn create(path: &Path, password: &str) -> Result<(Self, Vec<Event>), LogError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let salt = generate_salt();
-        let key = EncryptionKey::from_password(password, &salt)?;
-        let mut file = OpenOptions::new()
+        // Atomically create-or-detect: `create_new` fails if the file exists,
+        // so there is no exists()-then-create race.
+        match OpenOptions::new()
             .read(true)
             .append(true)
-            .create(true)
-            .open(path)?;
-        file.write_all(MAGIC)?;
-        file.write_all(&salt)?;
-        file.flush()?;
-        Ok((Self { file, key }, Vec::new()))
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut file) => {
+                let salt = generate_salt();
+                let key = EncryptionKey::from_password(password, &salt)?;
+                file.write_all(MAGIC)?;
+                file.write_all(&salt)?;
+                file.flush()?;
+                Ok((Self { file, key }, Vec::new()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Self::load(path, password),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn load(path: &Path, password: &str) -> Result<(Self, Vec<Event>), LogError> {
@@ -105,7 +120,8 @@ impl LogFile {
         let plaintext =
             bincode::serialize(event).map_err(|e| LogError::Serialization(e.to_string()))?;
         let (ciphertext, nonce) = encrypt_data(&plaintext, &self.key)?;
-        let record_len = (NONCE_SIZE + ciphertext.len()) as u32;
+        let record_len = u32::try_from(NONCE_SIZE + ciphertext.len())
+            .map_err(|_| LogError::Serialization("event record exceeds u32 length".into()))?;
 
         let mut buf = Vec::with_capacity(4 + NONCE_SIZE + ciphertext.len());
         buf.extend_from_slice(&record_len.to_be_bytes());
@@ -221,5 +237,53 @@ mod tests {
             LogFile::open(&path, "pw"),
             Err(LogError::CorruptFile(_))
         ));
+    }
+
+    #[test]
+    fn torn_length_prefix_is_tolerated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let id = DeviceIdentity::generate();
+        {
+            let (mut f, _) = LogFile::open(&path, "pw").unwrap();
+            f.append_record(&mk(&id, 1, 1, b"good")).unwrap();
+        }
+        // A crash mid-length-prefix: only 2 of the 4 prefix bytes were written.
+        {
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&[0xAB, 0xCD]).unwrap();
+        }
+        let (_f, events) = LogFile::open(&path, "pw").unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn multiple_reopen_append_cycles_accumulate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let id = DeviceIdentity::generate();
+        {
+            let (mut f, _) = LogFile::open(&path, "pw").unwrap();
+            f.append_record(&mk(&id, 1, 1, b"one")).unwrap();
+        }
+        {
+            let (mut f, events) = LogFile::open(&path, "pw").unwrap();
+            assert_eq!(events.len(), 1);
+            f.append_record(&mk(&id, 2, 2, b"two")).unwrap();
+        }
+        let (_f, events) = LogFile::open(&path, "pw").unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn header_only_log_reopens_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        {
+            let (_f, events) = LogFile::open(&path, "pw").unwrap(); // writes header, no records
+            assert!(events.is_empty());
+        }
+        let (_f, events) = LogFile::open(&path, "pw").unwrap();
+        assert!(events.is_empty());
     }
 }
