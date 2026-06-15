@@ -16,9 +16,9 @@ pub struct HandshakeOutput {
     pub session: Session,
     /// The peer's X25519 static public key (what Noise authenticated).
     pub remote_static: [u8; 32],
-    /// The Noise channel-binding hash — identical on both ends, unique per
-    /// session. Signed during identity auth.
-    pub handshake_hash: Vec<u8>,
+    /// The Noise channel-binding hash (32 bytes for BLAKE2s) — identical on
+    /// both ends, unique per session. Signed during identity auth.
+    pub handshake_hash: [u8; 32],
 }
 
 impl Handshake {
@@ -71,7 +71,11 @@ impl Handshake {
         if !self.state.is_handshake_finished() {
             return Err(TransportError::Noise("handshake not yet finished".into()));
         }
-        let handshake_hash = self.state.get_handshake_hash().to_vec();
+        let handshake_hash: [u8; 32] = self
+            .state
+            .get_handshake_hash()
+            .try_into()
+            .map_err(|_| TransportError::Noise("handshake hash is not 32 bytes".into()))?;
         let remote_static: [u8; 32] = self
             .state
             .get_remote_static()
@@ -124,7 +128,7 @@ mod tests {
 
         // Both ends derive the identical channel-binding hash.
         assert_eq!(out_a.handshake_hash, out_b.handshake_hash);
-        assert!(!out_a.handshake_hash.is_empty());
+        assert_eq!(out_a.handshake_hash.len(), 32);
 
         // Each side authenticated the other's real X25519 static key.
         assert_eq!(out_a.remote_static, b.public().x25519_pub);

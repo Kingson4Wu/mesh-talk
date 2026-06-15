@@ -28,7 +28,7 @@ fn signing_input(handshake_hash: &[u8]) -> Vec<u8> {
 }
 
 /// Build our auth message for a completed handshake.
-pub fn build_auth(identity: &DeviceIdentity, handshake_hash: &[u8]) -> AuthMessage {
+pub fn build_auth(identity: &DeviceIdentity, handshake_hash: &[u8; 32]) -> AuthMessage {
     let signature = identity.sign(&signing_input(handshake_hash)).to_vec();
     AuthMessage {
         public: identity.public(),
@@ -40,7 +40,7 @@ pub fn build_auth(identity: &DeviceIdentity, handshake_hash: &[u8]) -> AuthMessa
 /// X25519 static key Noise authenticated. Returns the verified [`PublicIdentity`].
 pub fn verify_auth(
     msg: &AuthMessage,
-    handshake_hash: &[u8],
+    handshake_hash: &[u8; 32],
     remote_static: &[u8; 32],
 ) -> Result<PublicIdentity, TransportError> {
     // The advertised X25519 key must be the one Noise actually authenticated.
@@ -122,6 +122,22 @@ mod tests {
         msg.signature.truncate(10);
         assert!(matches!(
             verify_auth(&msg, &hh, &id.public().x25519_pub),
+            Err(TransportError::IdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_sig_from_a_presented_as_identity_b() {
+        // A valid signature from A, but the advertised identity is swapped to B.
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let hh = [5u8; 32];
+        let mut msg = build_auth(&a, &hh);
+        msg.public = b.public();
+        // Verifying against B's static key: the signature was made by A's
+        // ed25519 key, so verification under B's advertised ed25519 key fails.
+        assert!(matches!(
+            verify_auth(&msg, &hh, &b.public().x25519_pub),
             Err(TransportError::IdentityMismatch)
         ));
     }
