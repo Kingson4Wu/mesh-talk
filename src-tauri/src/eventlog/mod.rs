@@ -7,6 +7,7 @@
 //! composition). `store`/`persist` are added in later tasks.
 
 pub mod event;
+pub mod persist;
 pub mod store;
 
 pub use event::{Author, ConversationId, Event, EventId, EventKind};
