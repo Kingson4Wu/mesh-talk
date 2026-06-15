@@ -55,6 +55,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureChannel<S> {
     }
 
     /// Accept: perform the XX handshake as responder, then authenticate.
+    ///
+    /// Unlike [`connect`](Self::connect), this accepts ANY peer that
+    /// authenticates successfully — the responder does not know the caller in
+    /// advance. Callers that care which peer connected must inspect
+    /// [`peer_identity`](Self::peer_identity) after this returns.
     pub async fn accept(mut stream: S, identity: &DeviceIdentity) -> Result<Self, TransportError> {
         let x_secret = identity.secret_bytes().1;
         let mut hs = Handshake::responder(&x_secret)?;
@@ -96,7 +101,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureChannel<S> {
     }
 }
 
-/// Whether this side sends or receives its auth message first (prevents deadlock).
+/// Whether this side sends or receives its auth message first.
+///
+/// The initiator sends first and the responder receives first, so the two
+/// ends are always in complementary states — neither can block on a read while
+/// the other also blocks on a read. Noise tracks send/receive nonce counters
+/// independently per direction, so this single shared [`Session`] stays in sync.
 enum AuthOrder {
     SendFirst,
     ReceiveFirst,
@@ -243,5 +253,21 @@ mod tests {
         a.flush().await.expect("flush");
         let result = read_frame(&mut b).await;
         assert!(matches!(result, Err(TransportError::FrameTooLarge(_))));
+    }
+
+    #[tokio::test]
+    async fn connect_fails_when_peer_drops_mid_handshake() {
+        let (client_io, mut server_io) = tokio::io::duplex(64 * 1024);
+        let a = DeviceIdentity::generate();
+
+        let server = tokio::spawn(async move {
+            // Read the initiator's first handshake message, then drop the
+            // stream — the client's next read must hit EOF, not hang or panic.
+            let _ = read_frame(&mut server_io).await;
+        });
+
+        let result = SecureChannel::connect(client_io, &a, None).await;
+        assert!(matches!(result, Err(TransportError::Io(_))));
+        let _ = server.await;
     }
 }
