@@ -11,17 +11,17 @@
 //! Ed25519-signed over its content (Plan 3), which binds the ciphertext to its
 //! conversation and author, so this module does not bind those itself.
 
+use crate::identity::device::DeviceIdentity;
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
 /// Domain separator for DM key derivation.
-// Task 2 (seal/open) will use these — suppress dead_code until then.
-#[allow(dead_code)]
 const DM_DOMAIN: &[u8] = b"mesh-talk-dm-v1";
-#[allow(dead_code)]
 const KEY_LEN: usize = 32;
-#[allow(dead_code)]
 const NONCE_LEN: usize = 12;
 
 /// A recipient-sealed message: the sender's per-message ephemeral X25519 public
@@ -64,8 +64,6 @@ impl std::error::Error for DmError {}
 /// that fixed order, so direction matters) so a ciphertext cannot be
 /// reinterpreted under a different triple. Callers MUST pass `dh1`/`dh2` in this
 /// order on both the seal and open sides or the keys will not match.
-// Task 2 (seal/open) will call this — suppress dead_code until then.
-#[allow(dead_code)]
 fn derive_key_nonce(
     dh1: &[u8; 32],
     dh2: &[u8; 32],
@@ -99,9 +97,83 @@ fn derive_key_nonce(
     (key, nonce)
 }
 
+/// Seal `plaintext` so only the holder of `recipient_x25519_pub`'s secret can
+/// read it. Returns the serialized [`SealedEnvelope`] (goes into an event's
+/// `ciphertext`). The recipient authenticates the sender via the static-static
+/// DH, so they must know which sender key to expect when opening.
+pub fn seal(
+    sender: &DeviceIdentity,
+    recipient_x25519_pub: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, DmError> {
+    let sender_static = StaticSecret::from(sender.secret_bytes().1);
+    let sender_x_pub = sender.public().x25519_pub;
+    let recipient_pub = PublicKey::from(*recipient_x25519_pub);
+
+    // Fresh per-message ephemeral; compute its public key before the DH consumes it.
+    let ephemeral = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+    let ephemeral_pub = PublicKey::from(&ephemeral);
+
+    let dh1 = sender_static.diffie_hellman(&recipient_pub).to_bytes();
+    let dh2 = ephemeral.diffie_hellman(&recipient_pub).to_bytes();
+
+    let (key, nonce) = derive_key_nonce(
+        &dh1,
+        &dh2,
+        &sender_x_pub,
+        recipient_x25519_pub,
+        &ephemeral_pub.to_bytes(),
+    );
+
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| DmError::Encrypt)?;
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext)
+        .map_err(|_| DmError::Encrypt)?;
+
+    let envelope = SealedEnvelope {
+        ephemeral_pub: ephemeral_pub.to_bytes(),
+        ciphertext,
+    };
+    bincode::serialize(&envelope).map_err(|e| DmError::Serialization(e.to_string()))
+}
+
+/// Open a sealed envelope addressed to `recipient`, authenticating it came from
+/// `sender_x25519_pub`. Returns the plaintext, or [`DmError::Decrypt`] if the
+/// sender key is wrong or the envelope was tampered.
+pub fn open(
+    recipient: &DeviceIdentity,
+    sender_x25519_pub: &[u8; 32],
+    envelope_bytes: &[u8],
+) -> Result<Vec<u8>, DmError> {
+    let envelope: SealedEnvelope =
+        bincode::deserialize(envelope_bytes).map_err(|e| DmError::Serialization(e.to_string()))?;
+
+    let recipient_static = StaticSecret::from(recipient.secret_bytes().1);
+    let recipient_x_pub = recipient.public().x25519_pub;
+    let sender_pub = PublicKey::from(*sender_x25519_pub);
+    let ephemeral_pub = PublicKey::from(envelope.ephemeral_pub);
+
+    let dh1 = recipient_static.diffie_hellman(&sender_pub).to_bytes();
+    let dh2 = recipient_static.diffie_hellman(&ephemeral_pub).to_bytes();
+
+    let (key, nonce) = derive_key_nonce(
+        &dh1,
+        &dh2,
+        sender_x25519_pub,
+        &recipient_x_pub,
+        &envelope.ephemeral_pub,
+    );
+
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| DmError::Decrypt)?;
+    cipher
+        .decrypt(Nonce::from_slice(&nonce), envelope.ciphertext.as_ref())
+        .map_err(|_| DmError::Decrypt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::device::DeviceIdentity;
 
     #[test]
     fn derivation_is_deterministic_and_input_sensitive() {
@@ -140,5 +212,36 @@ mod tests {
         let bytes = bincode::serialize(&env).unwrap();
         let back: SealedEnvelope = bincode::deserialize(&bytes).unwrap();
         assert_eq!(env, back);
+    }
+
+    #[test]
+    fn seal_then_open_round_trips() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"hello bob").unwrap();
+        let opened = open(&bob, &alice.public().x25519_pub, &sealed).unwrap();
+        assert_eq!(opened, b"hello bob");
+    }
+
+    #[test]
+    fn round_trips_empty_and_large_plaintexts() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Empty payload.
+        let sealed = seal(&alice, &bob.public().x25519_pub, b"").unwrap();
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &sealed).unwrap(),
+            b""
+        );
+
+        // Large payload.
+        let big = vec![0x5au8; 100_000];
+        let sealed = seal(&alice, &bob.public().x25519_pub, &big).unwrap();
+        assert_eq!(
+            open(&bob, &alice.public().x25519_pub, &sealed).unwrap(),
+            big
+        );
     }
 }
