@@ -119,6 +119,44 @@ pub fn handle_request(store: &impl SyncStore, request: &SyncRequest) -> SyncResp
     }
 }
 
+/// Ingest a batch of received events through the store's validation gate,
+/// tallying outcomes. An invalid event is rejected and recorded, not fatal —
+/// the rest of the batch still applies.
+fn ingest_all(store: &mut impl SyncStore, events: &[Event]) -> ApplyReport {
+    let mut report = ApplyReport::default();
+    for event in events {
+        match store.ingest(event.clone()) {
+            Ok(AppendOutcome::Appended) => report.applied += 1,
+            Ok(AppendOutcome::Duplicate) => report.duplicates += 1,
+            Err(e) => report.rejected.push((event.id, e.to_string())),
+        }
+    }
+    report
+}
+
+/// Apply a responder's reply: ingest the events it sent, then compute the
+/// events IT is missing (so the caller can send a [`SyncFollowup`]).
+pub fn handle_response(
+    store: &mut impl SyncStore,
+    response: &SyncResponse,
+) -> (ApplyReport, SyncFollowup) {
+    let report = ingest_all(store, &response.events);
+    let remote_have: HashSet<EventId> = response.have.iter().copied().collect();
+    let events = store.events_excluding(&response.conversation, &remote_have);
+    (
+        report,
+        SyncFollowup {
+            conversation: response.conversation,
+            events,
+        },
+    )
+}
+
+/// Apply the requester's follow-up: ingest the events it sent.
+pub fn handle_followup(store: &mut impl SyncStore, followup: &SyncFollowup) -> ApplyReport {
+    ingest_all(store, &followup.events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +381,95 @@ mod tests {
         let resp = handle_request(&empty, &req);
         assert!(resp.events.is_empty());
         assert!(resp.have.is_empty());
+    }
+
+    #[test]
+    fn handle_response_applies_events_and_builds_followup() {
+        let id = DeviceIdentity::generate();
+        // Requester has only root; responder sent it a + b.
+        let root = ev(&id, 1, vec![], 1, b"root");
+        let a = ev(&id, 2, vec![root.id], 2, b"a");
+        let b = ev(&id, 3, vec![a.id], 3, b"b");
+        // Requester also has a local-only event c that the responder lacks.
+        let c = ev(&id, 4, vec![root.id], 2, b"c");
+
+        let mut requester = EventLog::default();
+        requester.append(root.clone()).unwrap();
+        requester.append(c.clone()).unwrap();
+
+        // Responder advertised {root, a, b}; the followup should offer c.
+        let response = SyncResponse {
+            conversation: conv(),
+            events: vec![a.clone(), b.clone()],
+            have: vec![root.id, a.id, b.id],
+        };
+        let (report, followup) = handle_response(&mut requester, &response);
+
+        assert_eq!(report.applied, 2);
+        assert!(report.rejected.is_empty());
+        assert!(requester.has(&a.id) && requester.has(&b.id));
+        // Responder is missing c.
+        assert_eq!(followup.events.len(), 1);
+        assert_eq!(followup.events[0].id, c.id);
+    }
+
+    #[test]
+    fn ingest_rejects_a_forged_event_but_keeps_the_rest() {
+        let id = DeviceIdentity::generate();
+        let mut requester = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        requester.append(root.clone()).unwrap();
+
+        // A valid event a, and a forged event with a broken signature.
+        let a = ev(&id, 2, vec![root.id], 2, b"a");
+        let mut forged = ev(&id, 3, vec![root.id], 2, b"forged");
+        forged.sig[0] ^= 0xFF;
+
+        let response = SyncResponse {
+            conversation: conv(),
+            events: vec![a.clone(), forged.clone()],
+            have: vec![],
+        };
+        let (report, _followup) = handle_response(&mut requester, &response);
+
+        assert_eq!(report.applied, 1); // only `a`
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.rejected[0].0, forged.id);
+        assert!(requester.has(&a.id));
+        assert!(!requester.has(&forged.id));
+    }
+
+    #[test]
+    fn ingesting_known_events_counts_as_duplicates() {
+        let id = DeviceIdentity::generate();
+        let mut requester = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        requester.append(root.clone()).unwrap();
+
+        let response = SyncResponse {
+            conversation: conv(),
+            events: vec![root.clone()], // requester already has root
+            have: vec![root.id],
+        };
+        let (report, _followup) = handle_response(&mut requester, &response);
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.duplicates, 1);
+    }
+
+    #[test]
+    fn handle_followup_applies_events() {
+        let id = DeviceIdentity::generate();
+        let mut responder = EventLog::default();
+        let root = ev(&id, 1, vec![], 1, b"root");
+        responder.append(root.clone()).unwrap();
+
+        let c = ev(&id, 2, vec![root.id], 2, b"c");
+        let followup = SyncFollowup {
+            conversation: conv(),
+            events: vec![c.clone()],
+        };
+        let report = handle_followup(&mut responder, &followup);
+        assert_eq!(report.applied, 1);
+        assert!(responder.has(&c.id));
     }
 }
