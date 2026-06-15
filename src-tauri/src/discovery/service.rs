@@ -28,6 +28,9 @@ pub fn handle_datagram(
 
 /// Listen for announces on `socket`, feeding the roster, until the socket errors
 /// (e.g. the task is aborted on shutdown).
+/// Phase-1: a single socket error currently ends the loop silently; production
+/// needs transient-error retry, supervision/restart, and error surfacing to a
+/// caller. The same applies to [`run_broadcast`].
 pub async fn run_listen(socket: Arc<UdpSocket>, roster: Arc<Mutex<Roster>>, self_user_id: String) {
     let mut buf = vec![0u8; 2048];
     while let Ok((n, source)) = socket.recv_from(&mut buf).await {
@@ -76,6 +79,22 @@ mod tests {
             .unwrap()
             .get(&alice.public().user_id())
             .is_some());
+    }
+
+    #[test]
+    fn handle_datagram_self_filters_own_announce() {
+        // A datagram carrying our OWN user_id is dropped (not recorded), even
+        // though it is a valid announce.
+        let me = DeviceIdentity::generate();
+        let roster = Mutex::new(Roster::default());
+        let bytes = encode(&Announce::new(&me, "Me", 4000));
+        assert!(!handle_datagram(
+            &roster,
+            &bytes,
+            source(),
+            &me.public().user_id()
+        ));
+        assert!(roster.lock().unwrap().get(&me.public().user_id()).is_none());
     }
 
     #[test]
