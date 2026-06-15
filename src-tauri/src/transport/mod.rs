@@ -79,13 +79,4 @@ impl From<snow::Error> for TransportError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn noise_params_are_valid() {
-        // Proves snow is linked and our pattern string parses.
-        let parsed: Result<snow::params::NoiseParams, _> = NOISE_PARAMS.parse();
-        assert!(parsed.is_ok(), "NOISE_PARAMS must be a valid Noise pattern");
-    }
-}
+mod tests;
