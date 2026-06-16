@@ -4,5 +4,8 @@
 //! layer, sync driver, and node API arrive in the next plan.
 
 pub mod conversation;
+pub mod node;
 pub mod session;
 pub mod transport;
+
+pub use node::{Node, NodeError, ReceivedDm};
