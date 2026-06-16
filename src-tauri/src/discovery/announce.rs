@@ -53,7 +53,7 @@ impl Announce {
         Self::new_with_role(identity, name, tcp_port, false)
     }
 
-    /// Build and sign an announce that advertises the post-office role.
+    /// Build and sign a post-office announce for `identity`.
     pub fn new_post_office(
         identity: &DeviceIdentity,
         name: impl Into<String>,
@@ -251,6 +251,9 @@ mod tests {
         let normal = Announce::new(&id, "Node", 4000);
         assert!(!normal.post_office);
         assert!(normal.verify());
+        // A normal announce wire-round-trips with the flag still false.
+        let back_normal = decode(&encode(&normal)).expect("decodes normal");
+        assert!(!back_normal.post_office);
 
         let po = Announce::new_post_office(&id, "Relay", 4000);
         assert!(po.post_office);
