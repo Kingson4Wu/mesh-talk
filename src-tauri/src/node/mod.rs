@@ -4,4 +4,5 @@
 //! layer, sync driver, and node API arrive in the next plan.
 
 pub mod conversation;
+pub mod session;
 pub mod transport;
