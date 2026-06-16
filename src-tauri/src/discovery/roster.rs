@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 /// A peer's stable fingerprint id.
 pub type UserId = String;
 
-/// What we know about a discovered peer: its keys, where to reach it, and when
-/// we last heard from it.
+/// What we know about a discovered peer: its keys, where to reach it, whether it
+/// serves as a post office, and when we last heard from it.
 #[derive(Debug, Clone)]
 pub struct PeerRecord {
     pub public: PublicIdentity,
     pub addr: SocketAddr,
     pub name: String,
+    pub post_office: bool,
     pub last_seen: Instant,
 }
 
@@ -43,6 +44,7 @@ impl Roster {
                 public: announce.public(),
                 addr: SocketAddr::new(source_ip, announce.tcp_port),
                 name: announce.name.clone(),
+                post_office: announce.post_office,
                 last_seen: Instant::now(),
             },
         );
@@ -55,6 +57,15 @@ impl Roster {
 
     pub fn peers(&self) -> Vec<PeerRecord> {
         self.peers.values().cloned().collect()
+    }
+
+    /// The known peers that advertise the post-office role.
+    pub fn post_offices(&self) -> Vec<PeerRecord> {
+        self.peers
+            .values()
+            .filter(|r| r.post_office)
+            .cloned()
+            .collect()
     }
 
     /// Drop peers not seen within `ttl`.
@@ -151,5 +162,27 @@ mod tests {
     fn get_unknown_user_returns_none() {
         let roster = Roster::default();
         assert!(roster.get("nonexistent-user-id").is_none());
+    }
+
+    #[test]
+    fn post_offices_lists_only_flagged_peers() {
+        let alice = DeviceIdentity::generate();
+        let relay = DeviceIdentity::generate();
+        let mut roster = Roster::default();
+        roster.update(&Announce::new(&alice, "Alice", 4000), ip(), "self");
+        roster.update(
+            &Announce::new_post_office(&relay, "Relay", 4001),
+            ip(),
+            "self",
+        );
+
+        // Both peers are present; only the relay is a post office.
+        assert_eq!(roster.peers().len(), 2);
+        let pos = roster.post_offices();
+        assert_eq!(pos.len(), 1);
+        assert_eq!(pos[0].public, relay.public());
+        assert!(pos[0].post_office);
+        // The normal peer's record carries the flag too (false).
+        assert!(!roster.get(&alice.public().user_id()).unwrap().post_office);
     }
 }
