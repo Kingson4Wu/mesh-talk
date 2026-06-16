@@ -14,6 +14,7 @@ use crate::eventlog::sync::{
     SyncRequest, SyncResponse, SyncStore,
 };
 use crate::transport::{SecureChannel, TransportError};
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -56,11 +57,19 @@ impl From<TransportError> for SessionError {
 }
 
 fn encode(wire: &SyncWire) -> Result<Vec<u8>, SessionError> {
-    bincode::serialize(wire).map_err(|e| SessionError::Serialization(e.to_string()))
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .serialize(wire)
+        .map_err(|e| SessionError::Serialization(e.to_string()))
 }
 
 fn decode(bytes: &[u8]) -> Result<SyncWire, SessionError> {
-    bincode::deserialize(bytes).map_err(|e| SessionError::Serialization(e.to_string()))
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .deserialize(bytes)
+        .map_err(|e| SessionError::Serialization(e.to_string()))
 }
 
 /// Run one reconciliation round as the REQUESTER over `channel`, for
@@ -98,6 +107,7 @@ where
 }
 
 /// The outcome of serving one inbound wire message.
+#[derive(Debug)]
 pub enum Served {
     /// Handled a message for this conversation (the caller may surface new events).
     Handled(ConversationId),
@@ -208,5 +218,72 @@ mod tests {
             "B received A's event via the sync round"
         );
         assert!(a_store.lock().unwrap().has(&event_id));
+    }
+
+    #[tokio::test]
+    async fn round_pulls_events_from_the_responder_too() {
+        // B (responder) has an event A lacks; one requester round must pull it to A.
+        let a_id = DeviceIdentity::generate();
+        let b_id = DeviceIdentity::generate();
+        let (a_io, b_io) = tokio::io::duplex(64 * 1024);
+
+        let event = Event::new(
+            &b_id,
+            conv(),
+            1,
+            vec![],
+            1,
+            0,
+            EventKind::Message,
+            b"y".to_vec(),
+        );
+        let event_id = event.id;
+
+        let server = tokio::spawn(async move {
+            let mut b_ch = SecureChannel::accept(b_io, &b_id).await.unwrap();
+            let b_store = Mutex::new({
+                let mut log = EventLog::default();
+                log.append(event.clone()).unwrap();
+                log
+            });
+            // Request → Response (this Response carries B's event to A)
+            assert!(matches!(
+                serve_one(&mut b_ch, &b_store).await.unwrap(),
+                Served::Handled(_)
+            ));
+            // Followup (A has nothing new for B)
+            assert!(matches!(
+                serve_one(&mut b_ch, &b_store).await.unwrap(),
+                Served::Handled(_)
+            ));
+        });
+
+        let a_store = Mutex::new(EventLog::default());
+        let mut a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
+        request_round(&mut a_ch, &a_store, conv()).await.unwrap();
+        server.await.unwrap();
+
+        assert!(
+            a_store.lock().unwrap().has(&event_id),
+            "A pulled B's event in one round"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_one_reports_closed_when_peer_hangs_up() {
+        let a_id = DeviceIdentity::generate();
+        let b_id = DeviceIdentity::generate();
+        let (a_io, b_io) = tokio::io::duplex(64 * 1024);
+
+        let server = tokio::spawn(async move {
+            let mut b_ch = SecureChannel::accept(b_io, &b_id).await.unwrap();
+            let b_store = Mutex::new(EventLog::default());
+            // The requester connects then drops without sending — recv sees EOF.
+            serve_one(&mut b_ch, &b_store).await.unwrap()
+        });
+
+        let a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
+        drop(a_ch); // hang up immediately
+        assert!(matches!(server.await.unwrap(), Served::Closed));
     }
 }
