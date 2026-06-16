@@ -6,11 +6,12 @@
 //! module provides the pieces and proves them with an in-process two-node
 //! exchange over loopback TCP.
 
-use crate::discovery::roster::{Roster, UserId};
+use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::eventlog::store::EventLog;
 use crate::identity::device::DeviceIdentity;
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
+use crate::node::postbox::elected_post_office;
 use crate::node::session::{request_round, serve_one, Served, SessionError};
 use crate::node::transport::{accept, dial};
 use crate::transport::SecureChannel;
@@ -86,7 +87,11 @@ impl Node {
     }
 
     /// Send a DM to `recipient` (a known peer): seal it, append the Message event
-    /// to the local log, dial the peer, and run one sync round to deliver it.
+    /// locally, then deliver it. Delivery is best-effort DIRECT (the recipient may
+    /// be offline) plus ALWAYS replicating to the elected post office (so an
+    /// offline recipient can retrieve it later). Succeeds if EITHER the direct
+    /// delivery or a post office accepted the event; errors only if the recipient
+    /// is unreachable and no post office is available.
     pub async fn send_dm(&self, recipient: &str, text: &[u8]) -> Result<(), NodeError> {
         let peer = self
             .roster
@@ -122,15 +127,52 @@ impl Node {
             log.append(event).map_err(NodeError::Log)?;
         }
 
+        // Best-effort direct delivery (the recipient may be offline) plus always
+        // replicating to the elected post office (store-and-forward).
+        let direct = self.deliver_direct(&peer, conv).await;
+        let replicated = self.replicate_to_post_office(conv).await;
+        // Either round may also have pulled events back to us.
+        self.emit_new_messages(conv);
+
+        match (direct, replicated) {
+            (Ok(()), _) => Ok(()),                             // delivered directly
+            (Err(_), Ok(true)) => Ok(()),                      // a post office holds it
+            (Err(e), Ok(false)) => Err(NodeError::Session(e)), // offline peer, no PO
+            (Err(_), Err(e)) => Err(NodeError::Session(e)),    // both paths failed
+        }
+    }
+
+    /// Dial `peer` directly and run one sync round for `conv`. Best-effort: the
+    /// peer may be offline, in which case the dial fails.
+    async fn deliver_direct(
+        &self,
+        peer: &PeerRecord,
+        conv: ConversationId,
+    ) -> Result<(), SessionError> {
         let mut channel = dial(peer.addr, &self.identity, Some(&peer.public))
             .await
-            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+            .map_err(SessionError::Transport)?;
         request_round(&mut channel, &self.log, conv)
             .await
-            .map_err(NodeError::Session)?;
-        // The round may also have pulled events from the peer.
-        self.emit_new_messages(conv);
-        Ok(())
+            .map(|_| ())
+    }
+
+    /// Replicate `conv` to the elected post office, if one is known. Returns
+    /// `Ok(true)` if a post office accepted a round, `Ok(false)` if no post office
+    /// is known.
+    async fn replicate_to_post_office(&self, conv: ConversationId) -> Result<bool, SessionError> {
+        let po = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            elected_post_office(&roster)
+        };
+        let Some(po) = po else {
+            return Ok(false);
+        };
+        let mut channel = dial(po.addr, &self.identity, Some(&po.public))
+            .await
+            .map_err(SessionError::Transport)?;
+        request_round(&mut channel, &self.log, conv).await?;
+        Ok(true)
     }
 
     /// Accept inbound connections on `listener` and serve each on its own task,
@@ -156,6 +198,31 @@ impl Node {
     /// any newly-received DMs, until the peer disconnects.
     pub async fn serve_connection(&self, mut channel: SecureChannel<TcpStream>) {
         while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
+            self.emit_new_messages(conv);
+        }
+    }
+
+    /// Pull any DMs held for this node from the elected post office: dial it once,
+    /// then run a sync round for each known peer's DM conversation, surfacing
+    /// anything new. A no-op if no post office is known. Best-effort and
+    /// fail-soft — a dial/round error just ends this drain; the next one retries.
+    pub async fn drain_from_post_office(&self) {
+        let (post_office, peers) = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            (elected_post_office(&roster), roster.peers())
+        };
+        let Some(po) = post_office else {
+            return;
+        };
+        let mut channel = match dial(po.addr, &self.identity, Some(&po.public)).await {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        for peer in peers {
+            let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+            if request_round(&mut channel, &self.log, conv).await.is_err() {
+                return; // channel broke; the next drain re-dials
+            }
             self.emit_new_messages(conv);
         }
     }
@@ -208,7 +275,9 @@ fn now_millis() -> u64 {
 mod tests {
     use super::*;
     use crate::discovery::announce::Announce;
-    use std::net::{IpAddr, Ipv4Addr};
+    use crate::node::postbox::run_relay_accept_loop;
+    use crate::postoffice::PostOffice;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
     fn seed_roster(
@@ -274,5 +343,98 @@ mod tests {
         assert_eq!(received.from, alice_uid);
         assert_eq!(received.from_name, "Alice");
         assert_eq!(received.text, b"meet at 5");
+    }
+
+    #[tokio::test]
+    async fn offline_dm_delivered_via_post_office_over_loopback() {
+        // Alice sends Bob a DM while Bob is offline; a post office holds it; Bob
+        // drains it and decrypts — all in-process over loopback TCP.
+        let dir = tempfile::tempdir().unwrap();
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let po_id = DeviceIdentity::generate();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+
+        // Post office relay on loopback. Keep extra identity copies (open() moves one).
+        let po_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let po_addr = po_listener.local_addr().unwrap();
+        let (po_ed, po_x) = po_id.secret_bytes();
+        let po_transport = DeviceIdentity::from_secret_bytes(po_ed, po_x);
+        let po_seed = DeviceIdentity::from_secret_bytes(po_ed, po_x);
+        let po_store = Arc::new(Mutex::new(
+            PostOffice::open(&dir.path().join("po.log"), "pw", po_id).unwrap(),
+        ));
+        tokio::spawn(run_relay_accept_loop(
+            po_transport,
+            po_listener,
+            Arc::clone(&po_store),
+        ));
+
+        // A closed port stands in for offline Bob — Alice's direct dial fails fast.
+        let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+
+        // Seed a roster entry whose addr/keys/role we control (addr = (ip, port)).
+        fn seed(
+            roster: &Arc<Mutex<Roster>>,
+            id: &DeviceIdentity,
+            name: &str,
+            addr: SocketAddr,
+            post_office: bool,
+            self_uid: &str,
+        ) {
+            let announce = if post_office {
+                Announce::new_post_office(id, name, addr.port())
+            } else {
+                Announce::new(id, name, addr.port())
+            };
+            roster
+                .lock()
+                .unwrap()
+                .update(&announce, addr.ip(), self_uid);
+        }
+
+        // Alice knows offline-Bob (dead addr) + the PO (real addr).
+        let alice_roster = Arc::new(Mutex::new(Roster::default()));
+        seed(&alice_roster, &bob, "Bob", bob_dead_addr, false, &alice_uid);
+        seed(&alice_roster, &po_seed, "PO", po_addr, true, &alice_uid);
+        // Bob knows Alice (real keys, for decryption) + the PO (to drain).
+        let bob_roster = Arc::new(Mutex::new(Roster::default()));
+        seed(
+            &bob_roster,
+            &alice,
+            "Alice",
+            "127.0.0.1:4000".parse().unwrap(),
+            false,
+            &bob_uid,
+        );
+        seed(&bob_roster, &po_seed, "PO", po_addr, true, &bob_uid);
+
+        let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
+        let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
+        let alice_node = Node::new(alice, alice_roster, alice_tx);
+        let bob_node = Node::new(bob, bob_roster, bob_tx);
+
+        // Alice sends while Bob is offline: direct fails, PO replication succeeds.
+        alice_node
+            .send_dm(&bob_uid, b"held-hello")
+            .await
+            .expect("send_dm succeeds via the post office despite offline recipient");
+
+        // Bob drains from the PO (retry to absorb the relay's async ingest).
+        let mut received = None;
+        for _ in 0..25 {
+            bob_node.drain_from_post_office().await;
+            if let Ok(dm) = tokio::time::timeout(Duration::from_millis(200), bob_rx.recv()).await {
+                received = dm;
+                break;
+            }
+        }
+        let received = received.expect("Bob received the held DM from the post office");
+        assert_eq!(received.from, alice_uid);
+        assert_eq!(received.from_name, "Alice");
+        assert_eq!(received.text, b"held-hello");
     }
 }
