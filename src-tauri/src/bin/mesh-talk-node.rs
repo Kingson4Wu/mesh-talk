@@ -208,6 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handle_msg(&node, &roster, rest);
         } else if let Some(rest) = line.strip_prefix("/history ") {
             handle_history(&node, &roster, rest);
+        } else if line == "/history" {
+            emit("usage: /history <user_id-prefix> [n]");
         } else if !line.is_empty() {
             emit("commands: /peers, /msg <user_id-prefix> <text>, /history <user_id-prefix> [n], /quit");
         }
