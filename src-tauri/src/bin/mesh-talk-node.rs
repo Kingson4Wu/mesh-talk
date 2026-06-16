@@ -189,6 +189,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Run as a post office: load the identity, advertise the post-office role,
 /// serve a durable `PostOffice` relay. No DM send/drain — a pure relay. Runs the
 /// accept loop forever (stop with Ctrl-C / kill).
+///
+/// Note: cold start does TWO password-KDF unlocks back to back — the keystore
+/// (`load_or_create`) and the relay log (`PostOffice::open`) — so the startup
+/// line can take ~15s to appear on first run. Tooling that waits for a relay to
+/// come up should poll for the startup line, not fixed-sleep.
 async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let identity = mesh_talk::identity::keystore::load_or_create(
         std::path::Path::new(&args.keystore),
@@ -237,7 +242,8 @@ async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         args.discovery_port
     ));
 
-    // Serve relay connections until killed.
+    // Serve relay connections until killed. This loop never returns; the trailing
+    // Ok(()) is unreachable in practice (the process is stopped by a signal).
     run_relay_accept_loop(transport_identity, listener, store).await;
     Ok(())
 }
