@@ -109,9 +109,20 @@ mod tests {
     }
 
     #[test]
+    fn full_user_id_as_prefix_resolves() {
+        // Users often paste a complete user_id; an exact match must still resolve.
+        let p = peer("Alice");
+        let full = p.public.user_id();
+        let peers = vec![p];
+        assert_eq!(resolve_recipient(&peers, &full), Ok(full));
+    }
+
+    #[test]
     fn ambiguous_prefix_reports_the_count() {
         let peers = vec![peer("Alice"), peer("Bob"), peer("Carol")];
-        // The empty prefix matches every peer.
+        // The empty prefix matches every peer (random fingerprints share no
+        // deterministic non-empty prefix, so "" is the portable way to force a
+        // multi-way match); the REPL guards against an empty prefix separately.
         assert_eq!(
             resolve_recipient(&peers, ""),
             Err(ResolveError::Ambiguous(3))
