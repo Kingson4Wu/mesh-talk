@@ -218,7 +218,8 @@ impl Node {
             Ok(c) => c,
             Err(_) => return,
         };
-        for peer in peers {
+        // Drain a DM conversation per non-PO peer (we never DM a post office).
+        for peer in peers.iter().filter(|p| !p.post_office) {
             let conv = dm_conversation_id(&self.identity.public(), &peer.public);
             if request_round(&mut channel, &self.log, conv).await.is_err() {
                 return; // channel broke; the next drain re-dials
@@ -418,6 +419,9 @@ mod tests {
         let bob_node = Node::new(bob, bob_roster, bob_tx);
 
         // Alice sends while Bob is offline: direct fails, PO replication succeeds.
+        // Delivery is provably PO-only here: Alice's direct dial targets a closed
+        // port pinned to Bob's identity (cannot succeed), and Bob never dials Alice
+        // (his drain only dials the PO) — so anything Bob receives transited the PO.
         alice_node
             .send_dm(&bob_uid, b"held-hello")
             .await
