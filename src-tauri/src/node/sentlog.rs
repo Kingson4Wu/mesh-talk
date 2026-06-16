@@ -221,4 +221,25 @@ mod tests {
         let s = SentLog::open(&path, "pw").unwrap();
         assert!(s.entries(&conv(1)).is_empty());
     }
+
+    #[test]
+    fn torn_trailing_record_is_dropped() {
+        // Mirrors LogFile: a crash mid-append (a length prefix claiming more bytes
+        // than follow) drops the torn record; earlier good records survive.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sent.log");
+        {
+            let mut s = SentLog::open(&path, "pw").unwrap();
+            s.record(conv(1), 1, 1000, b"good").unwrap();
+        }
+        {
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&100u32.to_be_bytes()).unwrap(); // claims 100 bytes
+            file.write_all(&[0u8; 10]).unwrap(); // only 10 present
+        }
+        let s = SentLog::open(&path, "pw").unwrap();
+        let c1 = s.entries(&conv(1));
+        assert_eq!(c1.len(), 1); // the torn record is dropped, the good one survives
+        assert_eq!(c1[0].plaintext, b"good");
+    }
 }
