@@ -8,14 +8,17 @@
 
 use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
-use crate::eventlog::store::EventLog;
+use crate::eventlog::persist::PersistentEventLog;
+use crate::eventlog::LogError;
 use crate::identity::device::DeviceIdentity;
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
 use crate::node::postbox::elected_post_office;
+use crate::node::sentlog::SentLog;
 use crate::node::session::{request_round, serve_one, Served, SessionError};
 use crate::node::transport::{accept, dial};
 use crate::transport::SecureChannel;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -55,30 +58,40 @@ impl std::fmt::Display for NodeError {
 impl std::error::Error for NodeError {}
 
 /// The node: identity + event log + shared roster + an outbound stream of
-/// received DMs. Construct with [`Node::new`]; share as `Arc<Node>`.
+/// received DMs. Construct with [`Node::open`]; share as `Arc<Node>`.
 pub struct Node {
     identity: DeviceIdentity,
-    log: Mutex<EventLog>,
+    log: Mutex<PersistentEventLog>,
+    sentlog: Mutex<SentLog>,
     roster: Arc<Mutex<Roster>>,
     incoming: mpsc::UnboundedSender<ReceivedDm>,
     emitted: Mutex<HashSet<EventId>>,
 }
 
 impl Node {
-    /// Build a node over an existing (shared) roster, emitting received DMs to
-    /// `incoming`.
-    pub fn new(
+    /// Open a node backed by a durable event log at `log_path` and a sent-plaintext
+    /// sidecar at `sent_path` (both encrypted with `password`). Restored history is
+    /// seeded into the already-emitted set so it is NOT re-streamed — only events
+    /// received after open are surfaced live.
+    pub fn open(
         identity: DeviceIdentity,
         roster: Arc<Mutex<Roster>>,
         incoming: mpsc::UnboundedSender<ReceivedDm>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+        log_path: &Path,
+        sent_path: &Path,
+        password: &str,
+    ) -> Result<Arc<Self>, LogError> {
+        let log = PersistentEventLog::open(log_path, password)?;
+        let sentlog = SentLog::open(sent_path, password)?;
+        let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
+        Ok(Arc::new(Self {
             identity,
-            log: Mutex::new(EventLog::default()),
+            log: Mutex::new(log),
+            sentlog: Mutex::new(sentlog),
             roster,
             incoming,
-            emitted: Mutex::new(HashSet::new()),
-        })
+            emitted: Mutex::new(emitted),
+        }))
     }
 
     /// This node's own user-id fingerprint.
@@ -103,11 +116,12 @@ impl Node {
 
         let conv = dm_conversation_id(&self.identity.public(), &peer.public);
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
-
+        let wall_clock = now_millis();
+        let seq;
         {
             let mut log = self.log.lock().expect("log mutex not poisoned");
             let (parents, lamport) = log.prepare(&conv);
-            let seq = log
+            seq = log
                 .version_vector(&conv)
                 .get(&self_author)
                 .copied()
@@ -120,12 +134,21 @@ impl Node {
                 seq,
                 parents,
                 lamport,
-                now_millis(),
+                wall_clock,
                 text,
             )
             .map_err(NodeError::Seal)?;
             log.append(event).map_err(NodeError::Log)?;
         }
+
+        // Keep a local plaintext copy of what we sent (sealed events aren't
+        // self-decryptable). Best-effort: a sidecar write error doesn't fail a
+        // message that was sealed, appended, and about to be delivered.
+        let _ = self
+            .sentlog
+            .lock()
+            .expect("sentlog mutex not poisoned")
+            .record(conv, seq, wall_clock, text);
 
         // Best-effort direct delivery (the recipient may be offline) plus always
         // replicating to the elected post office (store-and-forward).
@@ -298,10 +321,19 @@ mod tests {
 
     #[tokio::test]
     async fn send_dm_to_unknown_peer_errors() {
+        let dir = tempfile::tempdir().unwrap();
         let me = DeviceIdentity::generate();
         let roster = Arc::new(Mutex::new(Roster::default())); // empty
         let (tx, _rx) = mpsc::unbounded_channel();
-        let node = Node::new(me, roster, tx);
+        let node = Node::open(
+            me,
+            roster,
+            tx,
+            &dir.path().join("me.log"),
+            &dir.path().join("me-sent.log"),
+            "pw",
+        )
+        .unwrap();
         let err = node.send_dm("nope", b"hi").await.unwrap_err();
         assert!(matches!(err, NodeError::UnknownPeer(u) if u == "nope"));
     }
@@ -322,10 +354,27 @@ mod tests {
         let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
         let bob_roster = seed_roster(&alice, "Alice", 4000, &bob_uid);
 
+        let dir = tempfile::tempdir().unwrap();
         let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
-        let alice_node = Node::new(alice, alice_roster, alice_tx);
-        let bob_node = Node::new(bob, bob_roster, bob_tx);
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            alice_tx,
+            &dir.path().join("alice.log"),
+            &dir.path().join("alice-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            bob_tx,
+            &dir.path().join("bob.log"),
+            &dir.path().join("bob-sent.log"),
+            "pw",
+        )
+        .unwrap();
 
         // Bob accepts and serves connections.
         tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
@@ -415,8 +464,24 @@ mod tests {
 
         let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
-        let alice_node = Node::new(alice, alice_roster, alice_tx);
-        let bob_node = Node::new(bob, bob_roster, bob_tx);
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            alice_tx,
+            &dir.path().join("alice.log"),
+            &dir.path().join("alice-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            bob_tx,
+            &dir.path().join("bob.log"),
+            &dir.path().join("bob-sent.log"),
+            "pw",
+        )
+        .unwrap();
 
         // Alice sends while Bob is offline: direct fails, PO replication succeeds.
         // Delivery is provably PO-only here: Alice's direct dial targets a closed
@@ -440,5 +505,65 @@ mod tests {
         assert_eq!(received.from, alice_uid);
         assert_eq!(received.from_name, "Alice");
         assert_eq!(received.text, b"held-hello");
+    }
+
+    #[tokio::test]
+    async fn reopen_seeds_emitted_so_history_is_not_restreamed() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = DeviceIdentity::generate();
+        let alice = DeviceIdentity::generate();
+        let me_pub = me.public();
+        let conv = crate::node::conversation::dm_conversation_id(&me_pub, &alice.public());
+        let log_path = dir.path().join("me.log");
+        let sent_path = dir.path().join("me-sent.log");
+
+        // Prior session: a received DM from Alice is already in the persistent log.
+        let old = crate::node::conversation::build_dm_event(
+            &alice,
+            &me_pub,
+            conv,
+            1,
+            vec![],
+            1,
+            1000,
+            b"old",
+        )
+        .unwrap();
+        {
+            let mut log =
+                crate::eventlog::persist::PersistentEventLog::open(&log_path, "pw").unwrap();
+            log.append(old.clone()).unwrap();
+        }
+
+        // Roster knows Alice (so decryption is possible if it were attempted).
+        let roster = Arc::new(Mutex::new(Roster::default()));
+        roster.lock().unwrap().update(
+            &Announce::new(&alice, "Alice", 4000),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &me_pub.user_id(),
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let node = Node::open(me, roster, tx, &log_path, &sent_path, "pw").unwrap();
+
+        // Restored history must NOT be re-streamed.
+        node.emit_new_messages(conv);
+        assert!(rx.try_recv().is_err(), "restored history was re-streamed");
+
+        // A genuinely-new received event (not present at open) IS surfaced.
+        let fresh = crate::node::conversation::build_dm_event(
+            &alice,
+            &me_pub,
+            conv,
+            2,
+            vec![old.id],
+            2,
+            2000,
+            b"new",
+        )
+        .unwrap();
+        node.log.lock().unwrap().append(fresh).unwrap();
+        node.emit_new_messages(conv);
+        let got = rx.try_recv().expect("a new message is emitted");
+        assert_eq!(got.text, b"new");
     }
 }

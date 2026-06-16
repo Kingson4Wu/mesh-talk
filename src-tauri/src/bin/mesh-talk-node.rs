@@ -126,7 +126,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shared roster (discovery writes it; the node + REPL read it) and the node.
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
     let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
-    let node = Node::new(identity, Arc::clone(&roster), incoming_tx);
+    // Derive log paths from the keystore path (sibling files, same directory).
+    let keystore_path = std::path::Path::new(&args.keystore);
+    let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
+    let log_path = data_dir.join("events.log");
+    let sent_path = data_dir.join("sent.log");
+    let node = Node::open(
+        identity,
+        Arc::clone(&roster),
+        incoming_tx,
+        &log_path,
+        &sent_path,
+        &args.password,
+    )?;
 
     // Discovery: one shared reuse+broadcast socket drives both loops.
     let socket = Arc::new(discovery_socket(args.discovery_port)?);
