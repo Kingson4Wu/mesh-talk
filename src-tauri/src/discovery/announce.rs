@@ -10,8 +10,9 @@ const ANNOUNCE_DOMAIN: &[u8] = b"mesh-talk-announce-v1";
 const MAGIC: &[u8; 4] = b"MTAN";
 const VERSION: u8 = 1;
 
-/// A peer's self-announcement: its identity keys, display name, and TCP listen
-/// port, signed by its Ed25519 key. `user_id` is the fingerprint of `ed25519_pub`.
+/// A peer's self-announcement: its identity keys, display name, TCP listen port,
+/// and whether it serves as a post office, signed by its Ed25519 key. `user_id`
+/// is the fingerprint of `ed25519_pub`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Announce {
     pub user_id: String,
@@ -19,6 +20,7 @@ pub struct Announce {
     pub x25519_pub: [u8; 32],
     pub name: String,
     pub tcp_port: u16,
+    pub post_office: bool,
     pub sig: Vec<u8>,
 }
 
@@ -30,6 +32,7 @@ fn signing_input(
     x25519_pub: &[u8; 32],
     name: &str,
     tcp_port: u16,
+    post_office: bool,
 ) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(ANNOUNCE_DOMAIN);
@@ -40,12 +43,31 @@ fn signing_input(
     v.extend_from_slice(&(name.len() as u32).to_be_bytes());
     v.extend_from_slice(name.as_bytes());
     v.extend_from_slice(&tcp_port.to_be_bytes());
+    v.push(post_office as u8);
     v
 }
 
 impl Announce {
-    /// Build and sign an announce for `identity`.
+    /// Build and sign a normal (non-post-office) announce for `identity`.
     pub fn new(identity: &DeviceIdentity, name: impl Into<String>, tcp_port: u16) -> Self {
+        Self::new_with_role(identity, name, tcp_port, false)
+    }
+
+    /// Build and sign an announce that advertises the post-office role.
+    pub fn new_post_office(
+        identity: &DeviceIdentity,
+        name: impl Into<String>,
+        tcp_port: u16,
+    ) -> Self {
+        Self::new_with_role(identity, name, tcp_port, true)
+    }
+
+    fn new_with_role(
+        identity: &DeviceIdentity,
+        name: impl Into<String>,
+        tcp_port: u16,
+        post_office: bool,
+    ) -> Self {
         let public = identity.public();
         let user_id = public.user_id();
         let name = name.into();
@@ -56,6 +78,7 @@ impl Announce {
                 &public.x25519_pub,
                 &name,
                 tcp_port,
+                post_office,
             ))
             .to_vec();
         Announce {
@@ -64,12 +87,14 @@ impl Announce {
             x25519_pub: public.x25519_pub,
             name,
             tcp_port,
+            post_office,
             sig,
         }
     }
 
     /// True if the announce is internally consistent and authentically signed:
-    /// `user_id` is the fingerprint of `ed25519_pub`, and `sig` verifies.
+    /// `user_id` is the fingerprint of `ed25519_pub`, and `sig` verifies (over all
+    /// fields including `post_office`).
     pub fn verify(&self) -> bool {
         if self.user_id != PublicIdentity::user_id_from(&self.ed25519_pub) {
             return false;
@@ -85,6 +110,7 @@ impl Announce {
                 &self.x25519_pub,
                 &self.name,
                 self.tcp_port,
+                self.post_office,
             ),
             &sig,
         )
@@ -192,6 +218,7 @@ mod tests {
             x25519_pub: a_announce.x25519_pub,
             name: a_announce.name.clone(),
             tcp_port: a_announce.tcp_port,
+            post_office: a_announce.post_office,
             sig: a_announce.sig.clone(),
         };
         assert!(!spoofed.verify());
@@ -216,5 +243,30 @@ mod tests {
         let mut bytes = encode(&Announce::new(&id, "Alice", 4000));
         bytes.push(0xAB); // junk appended after a valid announce
         assert!(decode(&bytes).is_none());
+    }
+
+    #[test]
+    fn post_office_role_round_trips_and_is_signed() {
+        let id = DeviceIdentity::generate();
+        let normal = Announce::new(&id, "Node", 4000);
+        assert!(!normal.post_office);
+        assert!(normal.verify());
+
+        let po = Announce::new_post_office(&id, "Relay", 4000);
+        assert!(po.post_office);
+        assert!(po.verify());
+
+        // The role survives the wire round-trip.
+        let back = decode(&encode(&po)).expect("decodes");
+        assert!(back.post_office);
+        assert!(back.verify());
+    }
+
+    #[test]
+    fn flipping_the_post_office_bit_fails_verify() {
+        let id = DeviceIdentity::generate();
+        let mut a = Announce::new(&id, "Node", 4000);
+        a.post_office = true; // not what was signed
+        assert!(!a.verify());
     }
 }
