@@ -578,6 +578,9 @@ mod tests {
         let bob = DeviceIdentity::generate();
         let me_pub = me.public();
         let conv = crate::node::conversation::dm_conversation_id(&me_pub, &bob.public());
+        // A signing copy of our identity (the original is moved into the node below).
+        let (me_ed, me_x) = me.secret_bytes();
+        let me_signer = DeviceIdentity::from_secret_bytes(me_ed, me_x);
 
         let roster = Arc::new(Mutex::new(Roster::default()));
         roster.lock().unwrap().update(
@@ -615,9 +618,24 @@ mod tests {
             .unwrap()
             .record(conv, 1, 2000, b"hi from me")
             .unwrap();
+        // Our OWN sent event is also in the durable log (sealed); history must take
+        // its plaintext from the sidecar and suppress the self-authored log event —
+        // otherwise it would double-list. This event must NOT appear in history.
+        let self_in_log = crate::node::conversation::build_dm_event(
+            &me_signer,
+            &bob.public(),
+            conv,
+            1,
+            vec![],
+            1,
+            2000,
+            b"hi from me",
+        )
+        .unwrap();
+        node.log.lock().unwrap().append(self_in_log).unwrap();
 
         let hist = node.dm_history(&bob.public(), 10);
-        assert_eq!(hist.len(), 2);
+        assert_eq!(hist.len(), 2); // self-authored log event suppressed (not 3)
         assert!(!hist[0].from_me && hist[0].text == b"hi from bob"); // t=1000 first
         assert!(hist[1].from_me && hist[1].who == "you" && hist[1].text == b"hi from me");
 
