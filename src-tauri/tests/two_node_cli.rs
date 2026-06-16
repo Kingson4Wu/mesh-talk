@@ -59,7 +59,7 @@ impl CliNode {
 
     fn send(&mut self, line: &str) {
         writeln!(self.stdin, "{line}").expect("write to child stdin");
-        self.stdin.flush().ok();
+        self.stdin.flush().expect("flush child stdin");
     }
 
     /// Block until a line satisfying `pred` arrives, or `timeout` elapses.
@@ -109,6 +109,10 @@ fn await_discovery(node: &mut CliNode, want_uid: &str, who: &str) {
         {
             return;
         }
+        // Pace the poll: without this, a roster full of non-matching lines (a
+        // stray node on the shared port) would let `wait_for` return instantly
+        // and spin this loop at full CPU until the deadline.
+        std::thread::sleep(Duration::from_millis(300));
     }
     panic!("{who} never discovered peer {want_uid}");
 }
@@ -117,9 +121,10 @@ fn await_discovery(node: &mut CliNode, want_uid: &str, who: &str) {
 #[ignore = "spawns two real processes using UDP broadcast; run with --ignored"]
 fn two_cli_nodes_exchange_a_dm() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // An uncommon shared discovery port for the rig (avoid the 47474 default so a
-    // real node running on the dev machine can't interfere).
-    let discovery_port = 47600;
+    // An uncommon shared discovery port for the rig, perturbed per-run by the
+    // process id so overlapping runs (or a stray node on a fixed port) can't
+    // cross-talk. Both children use this same value, so they still find each other.
+    let discovery_port = 47600 + (std::process::id() % 1000) as u16;
 
     let mut alpha = CliNode::spawn(&dir.path().join("alpha.keystore"), "Alpha", discovery_port);
     let mut bravo = CliNode::spawn(&dir.path().join("bravo.keystore"), "Bravo", discovery_port);
