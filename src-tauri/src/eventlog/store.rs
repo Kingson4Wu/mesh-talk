@@ -121,6 +121,11 @@ impl EventLog {
         self.events.contains_key(id)
     }
 
+    /// All event ids currently held, in arbitrary order.
+    pub fn all_event_ids(&self) -> Vec<EventId> {
+        self.events.keys().copied().collect()
+    }
+
     pub fn get(&self, id: &EventId) -> Option<&Event> {
         self.events.get(id)
     }

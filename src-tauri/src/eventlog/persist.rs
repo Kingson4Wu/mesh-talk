@@ -194,6 +194,11 @@ impl PersistentEventLog {
     pub fn prepare(&self, conversation: &ConversationId) -> (Vec<EventId>, u64) {
         self.log.prepare(conversation)
     }
+
+    /// All event ids currently held (used to seed an already-emitted set).
+    pub fn all_event_ids(&self) -> Vec<EventId> {
+        self.log.all_event_ids()
+    }
 }
 
 // NOTE: this impl is structurally identical to `impl SyncStore for EventLog`
