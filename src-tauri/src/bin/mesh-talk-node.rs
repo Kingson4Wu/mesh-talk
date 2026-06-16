@@ -6,7 +6,10 @@
 use clap::Parser;
 use mesh_talk::discovery::service::{run_broadcast, run_listen};
 use mesh_talk::discovery::{Announce, PeerRecord, Roster, UserId};
+use mesh_talk::identity::device::DeviceIdentity;
+use mesh_talk::node::postbox::run_relay_accept_loop;
 use mesh_talk::node::{Node, ReceivedDm};
+use mesh_talk::postoffice::PostOffice;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -39,6 +42,10 @@ struct Args {
     /// UDP port for signed-announce discovery (must match across peers).
     #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT)]
     discovery_port: u16,
+    /// Run as a post office: a durable store-and-forward relay that advertises
+    /// the post-office role (no DM REPL — it only relays).
+    #[arg(long)]
+    post_office: bool,
 }
 
 /// Why a `/msg` prefix did not resolve to exactly one peer.
@@ -94,6 +101,10 @@ fn discovery_socket(discovery_port: u16) -> std::io::Result<UdpSocket> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    if args.post_office {
+        return run_post_office(args).await;
+    }
 
     // Persistent identity (created on first run).
     let identity = mesh_talk::identity::keystore::load_or_create(
@@ -172,6 +183,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             emit("commands: /peers, /msg <user_id-prefix> <text>, /quit");
         }
     }
+    Ok(())
+}
+
+/// Run as a post office: load the identity, advertise the post-office role,
+/// serve a durable `PostOffice` relay. No DM send/drain — a pure relay. Runs the
+/// accept loop forever (stop with Ctrl-C / kill).
+async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    let identity = mesh_talk::identity::keystore::load_or_create(
+        std::path::Path::new(&args.keystore),
+        &args.password,
+    )?;
+    let user_id = identity.public().user_id();
+
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
+    let tcp_port = listener.local_addr()?.port();
+
+    // The relay advertises the post-office role.
+    let announce = Announce::new_post_office(&identity, args.name.clone(), tcp_port);
+
+    // Two identity copies: one is moved into the durable PostOffice, one is used
+    // for the Noise handshake in the accept loop (same keypair, different owner).
+    let (ed, x) = identity.secret_bytes();
+    let transport_identity = DeviceIdentity::from_secret_bytes(ed, x);
+    let relay_path = std::path::Path::new(&args.keystore)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("relay.log");
+    let store = Arc::new(Mutex::new(PostOffice::open(
+        &relay_path,
+        &args.password,
+        identity,
+    )?));
+
+    // Discovery: advertise ourselves (and harmlessly track peers) on the shared socket.
+    let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
+    let socket = Arc::new(discovery_socket(args.discovery_port)?);
+    let target: SocketAddr = (Ipv4Addr::BROADCAST, args.discovery_port).into();
+    tokio::spawn(run_listen(
+        Arc::clone(&socket),
+        Arc::clone(&roster),
+        user_id.clone(),
+    ));
+    tokio::spawn(run_broadcast(
+        Arc::clone(&socket),
+        announce,
+        target,
+        Duration::from_secs(2),
+    ));
+
+    emit(&format!(
+        "post-office {user_id} listening on tcp/{tcp_port}, discovery udp/{}",
+        args.discovery_port
+    ));
+
+    // Serve relay connections until killed.
+    run_relay_accept_loop(transport_identity, listener, store).await;
     Ok(())
 }
 
