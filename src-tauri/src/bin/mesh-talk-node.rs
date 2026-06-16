@@ -21,6 +21,9 @@ use tokio::sync::mpsc;
 /// the legacy plaintext discovery port so the two protocols never collide.
 const DEFAULT_DISCOVERY_PORT: u16 = 47474;
 
+/// How often a normal node drains held DMs from the elected post office.
+const DRAIN_INTERVAL_SECS: u64 = 3;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "mesh-talk-node",
@@ -151,6 +154,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             emit(&format!("from {} ({}): {}", dm.from, dm.from_name, text));
         }
     });
+
+    // Periodically pull DMs held for us by the elected post office (delivered
+    // while we were offline / unreachable). Runs once now, then every interval.
+    {
+        let node = Arc::clone(&node);
+        tokio::spawn(async move {
+            loop {
+                node.drain_from_post_office().await;
+                tokio::time::sleep(Duration::from_secs(DRAIN_INTERVAL_SECS)).await;
+            }
+        });
+    }
 
     emit(&format!(
         "node {user_id} listening on tcp/{tcp_port}, discovery udp/{}",
