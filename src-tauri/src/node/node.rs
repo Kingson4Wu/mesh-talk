@@ -142,7 +142,12 @@ impl Node {
                     let node = Arc::clone(&self);
                     tokio::spawn(async move { node.serve_connection(channel).await });
                 }
-                Err(_) => continue, // a failed handshake shouldn't stop accepting
+                Err(_e) => {
+                    // A failed accept (handshake failure, or a listener-level error such
+                    // as fd exhaustion) shouldn't stop the loop; back off briefly so a
+                    // persistent error can't become a busy-spin.
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
         }
     }
@@ -219,6 +224,16 @@ mod tests {
             self_user_id,
         );
         roster
+    }
+
+    #[tokio::test]
+    async fn send_dm_to_unknown_peer_errors() {
+        let me = DeviceIdentity::generate();
+        let roster = Arc::new(Mutex::new(Roster::default())); // empty
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let node = Node::new(me, roster, tx);
+        let err = node.send_dm("nope", b"hi").await.unwrap_err();
+        assert!(matches!(err, NodeError::UnknownPeer(u) if u == "nope"));
     }
 
     #[tokio::test]
