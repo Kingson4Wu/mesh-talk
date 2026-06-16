@@ -1,7 +1,7 @@
-//! `mesh-talk-node`: a thin CLI over the redesign `node` API — a persistent
-//! identity, signed-announce LAN discovery, a TCP listener, and a line-based
-//! REPL for 1:1 DMs. The runtime wiring lands in the next task; this skeleton
-//! parses args, loads the identity, and proves the recipient resolver.
+//! `mesh-talk-node`: a thin CLI over the redesign `node` API — loads a
+//! persistent identity, runs signed-announce LAN discovery and a TCP listener,
+//! and drives 1:1 DMs from a line-based REPL (`/peers`, `/msg <prefix> <text>`,
+//! `/quit`), printing inbound DMs as they arrive.
 
 use clap::Parser;
 use mesh_talk::discovery::service::{run_broadcast, run_listen};
@@ -135,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print received DMs as they arrive.
     tokio::spawn(async move {
         while let Some(dm) = incoming_rx.recv().await {
+            // DMs are text-only in this CLI; lossy decode is safe here.
             let text = String::from_utf8_lossy(&dm.text);
             emit(&format!("from {} ({}): {}", dm.from, dm.from_name, text));
         }
