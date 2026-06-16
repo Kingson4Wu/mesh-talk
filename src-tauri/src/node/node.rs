@@ -10,7 +10,7 @@ use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::eventlog::persist::PersistentEventLog;
 use crate::eventlog::LogError;
-use crate::identity::device::DeviceIdentity;
+use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
 use crate::node::postbox::elected_post_office;
 use crate::node::sentlog::SentLog;
@@ -29,6 +29,15 @@ pub struct ReceivedDm {
     pub from: UserId,
     pub from_name: String,
     pub text: Vec<u8>,
+}
+
+/// A merged conversation-history entry (sent or received), for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub from_me: bool,
+    pub who: String,
+    pub text: Vec<u8>,
+    pub wall_clock: u64,
 }
 
 /// Errors from node operations.
@@ -249,6 +258,61 @@ impl Node {
             }
             self.emit_new_messages(conv);
         }
+    }
+
+    /// The last `limit` messages of the DM with `peer`, both directions, in time
+    /// order. Convenience wrapper that derives the conversation id.
+    pub fn dm_history(&self, peer: &PublicIdentity, limit: usize) -> Vec<HistoryEntry> {
+        let conv = dm_conversation_id(&self.identity.public(), peer);
+        self.history(conv, limit)
+    }
+
+    /// The last `limit` messages of `conversation`, both directions, sorted by
+    /// wall-clock: peer-authored events decrypted from the durable log, plus our
+    /// own sent plaintext from the local sidecar.
+    pub fn history(&self, conversation: ConversationId, limit: usize) -> Vec<HistoryEntry> {
+        let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
+        // Snapshot the conversation's events, then release the log lock.
+        let events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conversation).into_iter().cloned().collect()
+        };
+
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+        {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            for event in &events {
+                if event.kind != EventKind::Message || event.author == self_author {
+                    continue; // our own sent events come from the sidecar (below)
+                }
+                if let Some((_uid, name, text)) = open_dm_event(&self.identity, &roster, event) {
+                    entries.push(HistoryEntry {
+                        from_me: false,
+                        who: name,
+                        text,
+                        wall_clock: event.wall_clock,
+                    });
+                }
+            }
+        }
+        for sent in self
+            .sentlog
+            .lock()
+            .expect("sentlog mutex not poisoned")
+            .entries(&conversation)
+        {
+            entries.push(HistoryEntry {
+                from_me: true,
+                who: "you".to_string(),
+                text: sent.plaintext,
+                wall_clock: sent.wall_clock,
+            });
+        }
+        entries.sort_by_key(|e| e.wall_clock);
+        if entries.len() > limit {
+            entries.drain(0..entries.len() - limit);
+        }
+        entries
     }
 
     /// Decrypt and emit any not-yet-emitted, non-self `Message` events in `conv`.
@@ -505,6 +569,62 @@ mod tests {
         assert_eq!(received.from, alice_uid);
         assert_eq!(received.from_name, "Alice");
         assert_eq!(received.text, b"held-hello");
+    }
+
+    #[tokio::test]
+    async fn history_merges_sent_and_received_in_time_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let me_pub = me.public();
+        let conv = crate::node::conversation::dm_conversation_id(&me_pub, &bob.public());
+
+        let roster = Arc::new(Mutex::new(Roster::default()));
+        roster.lock().unwrap().update(
+            &Announce::new(&bob, "Bob", 4000),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &me_pub.user_id(),
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let node = Node::open(
+            me,
+            roster,
+            tx,
+            &dir.path().join("me.log"),
+            &dir.path().join("me-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        // Bob sent us a message at t=1000 (a received event in our durable log).
+        let recv = crate::node::conversation::build_dm_event(
+            &bob,
+            &me_pub,
+            conv,
+            1,
+            vec![],
+            1,
+            1000,
+            b"hi from bob",
+        )
+        .unwrap();
+        node.log.lock().unwrap().append(recv).unwrap();
+        // We sent one at t=2000 (recorded in the sidecar).
+        node.sentlog
+            .lock()
+            .unwrap()
+            .record(conv, 1, 2000, b"hi from me")
+            .unwrap();
+
+        let hist = node.dm_history(&bob.public(), 10);
+        assert_eq!(hist.len(), 2);
+        assert!(!hist[0].from_me && hist[0].text == b"hi from bob"); // t=1000 first
+        assert!(hist[1].from_me && hist[1].who == "you" && hist[1].text == b"hi from me");
+
+        // `limit` keeps the most-recent entries.
+        let last1 = node.dm_history(&bob.public(), 1);
+        assert_eq!(last1.len(), 1);
+        assert!(last1[0].from_me); // the newer (t=2000) one
     }
 
     #[tokio::test]
