@@ -11,7 +11,8 @@ const DM_CONV_DOMAIN: &[u8] = b"mesh-talk-dm-conversation-v1";
 
 /// The deterministic conversation id for the 1:1 DM between two peers — a hash of
 /// the SORTED pair of Ed25519 keys, so both peers compute the same id regardless
-/// of who is "a" and who is "b".
+/// of who is "a" and who is "b". A self-DM (`a == b`) yields a well-defined,
+/// unique id (it hashes the key twice); it never collides with a two-party pair.
 pub fn dm_conversation_id(a: &PublicIdentity, b: &PublicIdentity) -> ConversationId {
     let (lo, hi) = if a.ed25519_pub <= b.ed25519_pub {
         (a.ed25519_pub, b.ed25519_pub)
@@ -55,7 +56,8 @@ pub fn build_dm_event(
 /// Try to open a received `Message` event as a DM addressed to us: look up the
 /// author's X25519 key in the roster and decrypt. Returns `(author_user_id,
 /// author_name, plaintext)`, or `None` if the event isn't a Message, the author
-/// is unknown to us, or it fails to decrypt (e.g. it wasn't sealed for us).
+/// is unknown to us, or `dm::open` fails — whether because it wasn't sealed for
+/// us or because the envelope is malformed (both are collapsed to `None` here).
 pub fn open_dm_event(
     recipient: &DeviceIdentity,
     roster: &Roster,
