@@ -135,7 +135,10 @@ fn await_peer(node: &mut CliNode, want_uid: &str, who: &str) {
 #[ignore = "three real processes incl. a slow post office + UDP broadcast; run with --ignored"]
 fn offline_dm_delivered_via_post_office() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dp = 47820;
+    // Perturb the shared discovery port per-run, in a range disjoint from
+    // two_node_cli's (47600..48599), so concurrent `--ignored` rigs can't
+    // cross-talk. All three processes here use this same value.
+    let dp = 48700 + (std::process::id() % 100) as u16;
 
     // Post office first (it is slow to cold-start: two KDFs). Wait for its line.
     let po = CliNode::post_office(&dir.path().join("po.keystore"), "Relay", dp);
@@ -161,7 +164,10 @@ fn offline_dm_delivered_via_post_office() {
 
     // Alice DMs offline Bob: direct dial fails, the event is replicated to the PO.
     alice.send(&format!("/msg {} held-hello", &bob_uid[..8]));
-    std::thread::sleep(Duration::from_secs(3)); // let replication reach the PO
+    // Best-effort wait for Alice's spawned send (direct-fail + PO replication) to
+    // land at the relay. Not synchronised — there is no PO inbox-count command to
+    // poll yet; generous for loopback. Bob's final wait_for is the real backstop.
+    std::thread::sleep(Duration::from_secs(3));
 
     // Bob comes back (same keystore → same identity); his drain pulls from the PO.
     let bob = CliNode::node(&bob_keystore, "Bob", dp);
