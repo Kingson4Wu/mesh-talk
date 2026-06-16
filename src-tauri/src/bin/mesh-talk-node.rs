@@ -129,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Derive log paths from the keystore path (sibling files, same directory).
     let keystore_path = std::path::Path::new(&args.keystore);
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
-    let log_path = data_dir.join("events.log");
+    let log_path = data_dir.join("messages.log");
     let sent_path = data_dir.join("sent.log");
     let node = Node::open(
         identity,
@@ -206,8 +206,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         } else if let Some(rest) = line.strip_prefix("/msg ") {
             handle_msg(&node, &roster, rest);
+        } else if let Some(rest) = line.strip_prefix("/history ") {
+            handle_history(&node, &roster, rest);
         } else if !line.is_empty() {
-            emit("commands: /peers, /msg <user_id-prefix> <text>, /quit");
+            emit("commands: /peers, /msg <user_id-prefix> <text>, /history <user_id-prefix> [n], /quit");
         }
     }
     Ok(())
@@ -300,6 +302,48 @@ fn handle_msg(node: &Arc<Node>, roster: &Arc<Mutex<Roster>>, rest: &str) {
         Err(ResolveError::Ambiguous(n)) => {
             emit(&format!("'{prefix}' matches {n} peers; be more specific"))
         }
+    }
+}
+
+/// Parse and dispatch `/history <peer-prefix> [n]`: resolve the peer, then print
+/// the last n (default 20) messages of that DM, both directions, oldest first.
+fn handle_history(node: &Arc<Node>, roster: &Arc<Mutex<Roster>>, rest: &str) {
+    let mut parts = rest.split_whitespace();
+    let prefix = parts.next().unwrap_or("");
+    let limit: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(20);
+    if prefix.is_empty() {
+        emit("usage: /history <user_id-prefix> [n]");
+        return;
+    }
+    // Resolve the peer under the roster lock, then DROP the lock before calling
+    // into the node (which locks the roster again — std Mutex is not reentrant).
+    let peer = {
+        let roster = roster.lock().expect("roster mutex not poisoned");
+        let peers = roster.peers();
+        match resolve_recipient(&peers, prefix) {
+            Ok(uid) => roster.get(&uid).cloned(),
+            Err(ResolveError::NotFound) => {
+                emit(&format!("no peer matches prefix '{prefix}'"));
+                return;
+            }
+            Err(ResolveError::Ambiguous(n)) => {
+                emit(&format!("'{prefix}' matches {n} peers; be more specific"));
+                return;
+            }
+        }
+    };
+    let Some(peer) = peer else {
+        emit("peer vanished from roster");
+        return;
+    };
+    let entries = node.dm_history(&peer.public, limit);
+    if entries.is_empty() {
+        emit("(no history)");
+        return;
+    }
+    for e in entries {
+        let text = String::from_utf8_lossy(&e.text);
+        emit(&format!("[{}] {}: {text}", e.wall_clock, e.who));
     }
 }
 
