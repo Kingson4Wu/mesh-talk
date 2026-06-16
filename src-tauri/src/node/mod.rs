@@ -6,6 +6,7 @@
 pub mod conversation;
 pub mod node;
 pub mod postbox;
+pub mod sentlog;
 pub mod session;
 pub mod transport;
 
