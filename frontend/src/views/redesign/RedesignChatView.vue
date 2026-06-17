@@ -96,10 +96,15 @@ async function selectPeer(p) {
 }
 
 async function loadHistory() {
-  if (!activePeer.value) return;
+  const target = activePeer.value;
+  if (!target) return;
   error.value = "";
   try {
-    messages.value = await API.redesign.history(activePeer.value.user_id, 100);
+    const items = await API.redesign.history(target.user_id, 100);
+    // Bail if the user switched peers while this history was loading, so we
+    // never render one peer's history under another's header.
+    if (activePeer.value?.user_id !== target.user_id) return;
+    messages.value = items;
     await scrollDown();
   } catch (e) {
     error.value = String(e);
@@ -130,7 +135,7 @@ function onInbound(payload) {
       text: payload.text,
       wall_clock: Date.now(),
     });
-    scrollDown();
+    void scrollDown();
   } else if (from) {
     unread[from] = (unread[from] || 0) + 1;
   }
