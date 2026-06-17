@@ -3,6 +3,7 @@
 //! only [`transport`] (authenticated channel dial/accept); the conversation
 //! layer, sync driver, and node API arrive in the next plan.
 
+pub mod channel;
 pub mod conversation;
 pub mod net;
 pub mod node;
