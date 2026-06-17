@@ -105,6 +105,12 @@ impl ChannelBook {
     /// Updates membership + keys and returns the channel `Message`s that are newly
     /// decryptable and authored by someone other than `me`. Events we can't act on
     /// (a key we don't have, a membership we're not in) are skipped.
+    ///
+    /// Call with the channel's FULL event log, not a delta: an event skipped because
+    /// its prerequisite hasn't been applied yet (e.g. a `KeyRotation` seen before its
+    /// `MembershipChange` under out-of-order delivery) is recovered on the next
+    /// full-log replay, where the prerequisite is processed first. The caller dedups
+    /// the returned messages across calls (the live node uses an emitted-id set).
     pub fn process(
         &mut self,
         me: &DeviceIdentity,
