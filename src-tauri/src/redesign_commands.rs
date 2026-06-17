@@ -24,7 +24,7 @@ impl Default for RedesignState {
 }
 
 /// A peer as shown in the redesign roster.
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 pub struct PeerInfo {
     pub user_id: String,
     pub name: String,
@@ -33,7 +33,7 @@ pub struct PeerInfo {
 }
 
 /// One merged history line (sent or received) for display.
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 pub struct HistoryItem {
     pub from_me: bool,
     pub who: String,
@@ -91,6 +91,9 @@ pub async fn redesign_history(
     peer: String,
     limit: usize,
 ) -> Result<Vec<HistoryItem>, String> {
+    // Cap the page size so a frontend accident (e.g. a huge JS number) can't
+    // request an unbounded scan; the node truncates to this anyway.
+    let limit = limit.min(500);
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     let public = rt
