@@ -4,6 +4,7 @@
 //! layer, sync driver, and node API arrive in the next plan.
 
 pub mod conversation;
+pub mod net;
 pub mod node;
 pub mod postbox;
 pub mod sentlog;
