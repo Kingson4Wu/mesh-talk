@@ -296,7 +296,6 @@ pub async fn login(
             let pw = password.clone();
             tauri::async_runtime::spawn(async move {
                 let base_dir = redesign_data_dir();
-                let emit_handle = app_handle_for_dm.clone();
                 match crate::node::runtime::RedesignRuntime::start(
                     &base_dir,
                     &account_id,
@@ -305,7 +304,7 @@ pub async fn login(
                     crate::node::net::DEFAULT_DISCOVERY_PORT,
                     move |dm| {
                         crate::events::emit_redesign_dm_received(
-                            &emit_handle,
+                            &app_handle_for_dm,
                             dm.from,
                             dm.from_name,
                             dm.text,
