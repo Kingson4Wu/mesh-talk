@@ -230,4 +230,19 @@ mod tests {
         let state = ChannelState::from_meta(new_channel_id(), meta("general", &[&a], 2));
         assert!(state.seal_message(b"x").is_err());
     }
+
+    #[test]
+    fn open_returns_none_for_an_epoch_whose_key_we_lack() {
+        // The read-side of rotation: a member who only holds a LATER epoch's key
+        // cannot open an earlier-epoch message (they joined after that rotation).
+        let a = DeviceIdentity::generate();
+        let id = new_channel_id();
+        let mut alice = ChannelState::from_meta(id, meta("general", &[&a], 0));
+        alice.record_key(0, GroupKey::generate());
+        let payload = alice.seal_message(b"epoch-0 message").unwrap();
+
+        let mut latecomer = ChannelState::from_meta(id, meta("general", &[&a], 1));
+        latecomer.record_key(1, GroupKey::generate()); // has epoch-1 key, not epoch-0
+        assert!(latecomer.open_message(&payload).is_none());
+    }
 }
