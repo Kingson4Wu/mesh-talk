@@ -7,6 +7,7 @@ use clap::Parser;
 use mesh_talk::discovery::service::{run_broadcast, run_listen};
 use mesh_talk::discovery::{Announce, PeerRecord, Roster, UserId};
 use mesh_talk::identity::device::DeviceIdentity;
+use mesh_talk::node::net::{discovery_socket, DEFAULT_DISCOVERY_PORT};
 use mesh_talk::node::postbox::run_relay_accept_loop;
 use mesh_talk::node::{Node, ReceivedDm};
 use mesh_talk::postoffice::PostOffice;
@@ -14,12 +15,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-
-/// Default UDP port for the redesign's signed-announce discovery. Distinct from
-/// the legacy plaintext discovery port so the two protocols never collide.
-const DEFAULT_DISCOVERY_PORT: u16 = 47474;
 
 /// How often a normal node drains held DMs from the elected post office.
 const DRAIN_INTERVAL_SECS: u64 = 3;
@@ -82,23 +79,6 @@ fn emit(line: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
-}
-
-/// Bind the shared discovery UDP socket: `SO_REUSEADDR` + `SO_REUSEPORT` (so two
-/// nodes on one host can share the port) + `SO_BROADCAST`, bound to
-/// `0.0.0.0:<discovery_port>`. Mirrors the working pattern in
-/// `network/udp.rs`. The same socket is used to both broadcast and listen.
-fn discovery_socket(discovery_port: u16) -> std::io::Result<UdpSocket> {
-    use socket2::{Domain, Protocol, Socket, Type};
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(unix)]
-    socket.set_reuse_port(true)?;
-    socket.set_broadcast(true)?;
-    let bind_addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, discovery_port).into();
-    socket.bind(&bind_addr.into())?;
-    socket.set_nonblocking(true)?;
-    UdpSocket::from_std(socket.into())
 }
 
 #[tokio::main]

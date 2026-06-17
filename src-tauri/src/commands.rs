@@ -262,14 +262,16 @@ pub async fn login(
     username: String,
     password: String,
     app_state: tauri::State<'_, AppState>,
+    redesign_state: tauri::State<'_, crate::redesign_commands::RedesignState>,
 ) -> Result<LoginResult, String> {
-    let result = login_impl(username, password, app_state.inner()).map_err(|e| e.to_string())?;
+    let result =
+        login_impl(username, password.clone(), app_state.inner()).map_err(|e| e.to_string())?;
 
     if result.success {
+        // Legacy network start (unchanged).
         let app_handle_clone = app_handle.clone();
         let node_service_clone = node_service.inner().clone();
         let app_state_clone = app_state.inner().clone();
-
         tauri::async_runtime::spawn(async move {
             {
                 let mut service = node_service_clone.lock().await;
@@ -278,16 +280,56 @@ pub async fn login(
                     service.update_name(generated_name);
                 }
             }
-
             if let Err(err) =
                 start_network_impl(app_handle_clone, node_service_clone, app_state_clone).await
             {
                 eprintln!("Failed to start network runtime: {}", err);
             }
         });
+
+        // Redesign node start (additive): per-account keystore under ~/.mesh-talk/redesign/<user_id>/.
+        if let Some(session) = app_state.session().get() {
+            let account_id = session.user.user_id.clone();
+            let display_name = session.user.name.clone();
+            let redesign_handle = redesign_state.inner().clone();
+            let app_handle_for_dm = app_handle.clone();
+            let pw = password.clone();
+            tauri::async_runtime::spawn(async move {
+                let base_dir = redesign_data_dir();
+                match crate::node::runtime::RedesignRuntime::start(
+                    &base_dir,
+                    &account_id,
+                    &display_name,
+                    &pw,
+                    crate::node::net::DEFAULT_DISCOVERY_PORT,
+                    move |dm| {
+                        crate::events::emit_redesign_dm_received(
+                            &app_handle_for_dm,
+                            dm.from,
+                            dm.from_name,
+                            dm.text,
+                        );
+                    },
+                )
+                .await
+                {
+                    Ok(runtime) => {
+                        *redesign_handle.0.lock().await = Some(runtime);
+                        log::info!("Redesign node started for account {account_id}");
+                    }
+                    Err(e) => log::warn!("Redesign node failed to start: {e}"),
+                }
+            });
+        }
     }
 
     Ok(result)
+}
+
+/// The base directory for redesign per-account data (mirrors the app's `~/.mesh-talk`).
+fn redesign_data_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".mesh-talk")
 }
 
 /// Starts the network runtime
@@ -557,7 +599,12 @@ fn login_impl(
 }
 
 #[tauri::command]
-pub async fn logout(app_state: tauri::State<'_, AppState>) -> Result<LogoutResult, String> {
+pub async fn logout(
+    app_state: tauri::State<'_, AppState>,
+    redesign_state: tauri::State<'_, crate::redesign_commands::RedesignState>,
+) -> Result<LogoutResult, String> {
+    // Stop and drop the redesign runtime (Drop aborts its background tasks).
+    redesign_state.0.lock().await.take();
     logout_impl(app_state.inner()).map_err(|e| e.to_string())
 }
 

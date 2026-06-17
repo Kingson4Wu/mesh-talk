@@ -3,12 +3,16 @@
 //! only [`transport`] (authenticated channel dial/accept); the conversation
 //! layer, sync driver, and node API arrive in the next plan.
 
+pub mod channel;
 pub mod conversation;
+pub mod net;
 pub mod node;
 pub mod postbox;
+pub mod runtime;
 pub mod sentlog;
 pub mod session;
 pub mod transport;
 
-pub use node::{Node, NodeError, ReceivedDm};
+pub use node::{HistoryEntry, Node, NodeError, ReceivedDm};
 pub use postbox::elected_post_office;
+pub use runtime::{RedesignRuntime, RuntimeError};

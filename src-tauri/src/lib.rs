@@ -13,6 +13,7 @@
 )]
 
 pub mod api;
+pub mod channel;
 pub mod commands;
 pub mod contacts;
 pub mod crypto;
@@ -30,6 +31,7 @@ pub mod notifications;
 pub mod perf;
 pub mod platform;
 pub mod postoffice;
+pub mod redesign_commands;
 pub mod services;
 pub mod state;
 pub mod storage;
@@ -197,6 +199,7 @@ pub fn run_tauri() {
         })
         .manage(node_service)
         .manage(app_state)
+        .manage(crate::redesign_commands::RedesignState::empty())
         .invoke_handler(tauri::generate_handler![
             commands::send_message,
             commands::get_node_info,
@@ -221,7 +224,11 @@ pub fn run_tauri() {
             commands::list_file_transfers,
             commands::accept_incoming_file_transfer,
             commands::reject_incoming_file_transfer,
-            commands::allow_firewall_port
+            commands::allow_firewall_port,
+            crate::redesign_commands::redesign_my_id,
+            crate::redesign_commands::redesign_list_peers,
+            crate::redesign_commands::redesign_send_dm,
+            crate::redesign_commands::redesign_history
         ])
         .run(tauri::generate_context!())
         .map_err(|e| log::error!("Error while running tauri application: {}", e))
