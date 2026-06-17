@@ -755,9 +755,9 @@ const logout = async () => {
   router.push({ name: "login" });
 };
 
-function goToRedesign() {
+const goToRedesign = () => {
   router.push({ name: "redesign" });
-}
+};
 
 watch(
   () => pendingIncomingTransfers.value.length,
@@ -1207,6 +1207,8 @@ onBeforeUnmount(() => {
 .node-meta-footer {
   margin-top: auto;
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-start;
   position: relative;
   z-index: 2;
