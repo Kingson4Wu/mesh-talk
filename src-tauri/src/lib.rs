@@ -13,6 +13,7 @@
 )]
 
 pub mod api;
+pub mod channel;
 pub mod commands;
 pub mod contacts;
 pub mod crypto;
