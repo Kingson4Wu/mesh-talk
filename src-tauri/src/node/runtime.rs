@@ -62,19 +62,24 @@ pub struct RedesignRuntime {
 }
 
 impl RedesignRuntime {
-    /// Open the per-user node under `base_dir/redesign/<user_id>/` (keystore +
+    /// Open the per-account node under `base_dir/redesign/<account_id>/` (keystore +
     /// durable logs encrypted with `password`), advertise `display_name`, and start
     /// discovery + the accept loop + a periodic post-office drain + an inbound
     /// forwarder that calls `on_dm` for each received DM.
+    ///
+    /// `account_id` is the host app's account identifier — it only namespaces the
+    /// data directory so each logged-in user gets their own keystore/logs. It is
+    /// distinct from the node's own cryptographic fingerprint ([`Self::user_id`]),
+    /// which is derived from the keystore identity and is what peers see.
     pub async fn start(
         base_dir: &Path,
-        user_id: &str,
+        account_id: &str,
         display_name: &str,
         password: &str,
         discovery_port: u16,
         on_dm: impl Fn(ReceivedDm) + Send + 'static,
     ) -> Result<RedesignRuntime, RuntimeError> {
-        let dir = base_dir.join("redesign").join(user_id);
+        let dir = base_dir.join("redesign").join(account_id);
         std::fs::create_dir_all(&dir)?;
 
         let identity = keystore::load_or_create(&dir.join("identity.keystore"), password)
@@ -169,8 +174,8 @@ impl RedesignRuntime {
         self.node.dm_history(peer, limit)
     }
 
-    /// A cloned handle to the underlying node (lets a caller release the runtime
-    /// lock before an async send).
+    /// A cloned handle to the underlying node, so an IPC command can snapshot it
+    /// and release the `RedesignState` lock before an async send.
     pub fn handle(&self) -> Arc<Node> {
         Arc::clone(&self.node)
     }
