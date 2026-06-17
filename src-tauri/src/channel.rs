@@ -13,6 +13,9 @@ use rand::RngCore;
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
+/// AES-256-GCM authentication tag size — a valid sealed message is at least
+/// `NONCE_SIZE + TAG_SIZE` bytes even for empty plaintext.
+const TAG_SIZE: usize = 16;
 
 /// A per-channel symmetric group key (AES-256-GCM). Generated fresh, distributed to
 /// members via [`seal_group_key`], and rotated on membership change (by the caller).
@@ -112,9 +115,9 @@ pub fn seal_channel_message(key: &GroupKey, plaintext: &[u8]) -> Result<Vec<u8>,
 /// Decrypt a channel message produced by [`seal_channel_message`]. Returns
 /// `ChannelError::Decrypt` for the wrong key or a tampered ciphertext.
 pub fn open_channel_message(key: &GroupKey, envelope: &[u8]) -> Result<Vec<u8>, ChannelError> {
-    if envelope.len() < NONCE_SIZE {
+    if envelope.len() < NONCE_SIZE + TAG_SIZE {
         return Err(ChannelError::Malformed(
-            "channel envelope shorter than nonce".into(),
+            "channel envelope too short (need nonce + tag)".into(),
         ));
     }
     let (nonce, ciphertext) = envelope.split_at(NONCE_SIZE);
@@ -172,6 +175,16 @@ mod tests {
         let mut sealed = seal_channel_message(&key, b"secret").unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0xFF;
+        assert!(open_channel_message(&key, &sealed).is_err());
+    }
+
+    #[test]
+    fn a_tampered_nonce_fails_to_open() {
+        // Corrupting the prepended nonce must also fail authentication (guards
+        // against a future nonce/ciphertext ordering mistake).
+        let key = GroupKey::generate();
+        let mut sealed = seal_channel_message(&key, b"secret").unwrap();
+        sealed[0] ^= 0xFF; // flip the first nonce byte
         assert!(open_channel_message(&key, &sealed).is_err());
     }
 
