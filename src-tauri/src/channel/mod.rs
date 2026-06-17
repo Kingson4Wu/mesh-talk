@@ -9,4 +9,4 @@ pub use crypto::{
     open_channel_message, open_group_key, seal_channel_message, seal_group_key, ChannelError,
     GroupKey,
 };
-// pub use model::{new_channel_id, ChannelMeta, ChannelState};  // Task 2
+pub use model::{new_channel_id, ChannelMeta, ChannelState};
