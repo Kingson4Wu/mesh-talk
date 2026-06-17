@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import ChatView from "../views/chat/ChatView.vue";
 import LoginView from "../views/auth/LoginView.vue";
+import RedesignChatView from "../views/redesign/RedesignChatView.vue";
 
 // Define application routes
 const routes = [
@@ -14,6 +15,12 @@ const routes = [
     path: "/login",
     name: "login",
     component: LoginView,
+  },
+  {
+    path: "/redesign",
+    name: "redesign",
+    component: RedesignChatView,
+    meta: { requiresAuth: true },
   },
   {
     path: "/:pathMatch(.*)*",

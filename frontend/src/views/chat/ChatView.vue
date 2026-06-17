@@ -135,6 +135,7 @@
           </ul>
           <div class="node-meta-footer">
             <button class="logout-button" @click="logout">Logout</button>
+            <button class="redesign-nav-button" @click="goToRedesign">Redesign (beta)</button>
           </div>
           <div v-if="nodeOverlayVisible" class="node-info-overlay">
             <p class="overlay-title">Details</p>
@@ -754,6 +755,10 @@ const logout = async () => {
   router.push({ name: "login" });
 };
 
+function goToRedesign() {
+  router.push({ name: "redesign" });
+}
+
 watch(
   () => pendingIncomingTransfers.value.length,
   (length) => {
@@ -1224,6 +1229,16 @@ onBeforeUnmount(() => {
 
 .logout-button:hover {
   background: rgba(239, 68, 68, 0.25);
+}
+
+.redesign-nav-button {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 1px solid #4ade80;
+  border-radius: 8px;
+  background: transparent;
+  color: #4ade80;
+  cursor: pointer;
 }
 
 /* Responsive design for smaller screens */

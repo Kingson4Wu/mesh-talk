@@ -88,6 +88,14 @@ const networkAPI = {
   allowFirewall: (port) => invoke("allow_firewall_port", { port }),
 };
 
+// Redesign node API (the new serverless E2E DM stack)
+const redesignAPI = {
+  myId: () => invoke("redesign_my_id"),
+  listPeers: () => invoke("redesign_list_peers"),
+  sendDm: (recipient, text) => invoke("redesign_send_dm", { recipient, text }),
+  history: (peer, limit) => invoke("redesign_history", { peer, limit }),
+};
+
 // Combined API service
 export const API = {
   auth: authAPI,
@@ -96,4 +104,5 @@ export const API = {
   messages: messagesAPI,
   files: filesAPI,
   network: networkAPI,
+  redesign: redesignAPI,
 };
