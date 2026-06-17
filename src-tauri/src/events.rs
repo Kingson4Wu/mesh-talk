@@ -36,6 +36,7 @@ pub const EVENT_FILE_TRANSFER_PROGRESS: &str = "file-transfer-progress";
 pub const EVENT_FILE_TRANSFER_COMPLETE: &str = "file-transfer-complete";
 pub const EVENT_FILE_TRANSFER_OFFER: &str = "file-transfer-offer";
 pub const EVENT_FIREWALL_PERMISSION_REQUIRED: &str = "firewall-permission-required";
+pub const EVENT_REDESIGN_DM_RECEIVED: &str = "redesign-dm-received";
 
 static NODE_EVENT_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -343,6 +344,30 @@ pub fn emit_contact_added<R: Runtime>(
 
     if let Err(e) = app_handle.emit(EVENT_CONTACT_ADDED, event) {
         error!("Failed to emit contact added event: {}", e);
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct RedesignDmReceivedEvent {
+    pub from: String,
+    pub from_name: String,
+    pub text: String,
+}
+
+/// Emit a received redesign DM to the frontend (text decoded lossily for display).
+pub fn emit_redesign_dm_received<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    from: String,
+    from_name: String,
+    text: Vec<u8>,
+) {
+    let event = RedesignDmReceivedEvent {
+        from,
+        from_name,
+        text: String::from_utf8_lossy(&text).into_owned(),
+    };
+    if let Err(e) = app_handle.emit(EVENT_REDESIGN_DM_RECEIVED, event) {
+        log::error!("Failed to emit redesign dm event: {e}");
     }
 }
 
