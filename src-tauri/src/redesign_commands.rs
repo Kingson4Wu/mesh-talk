@@ -2,6 +2,7 @@
 //! per-session [`RedesignRuntime`] held in managed [`RedesignState`] (populated on
 //! login, cleared on logout). All are thin pass-throughs over the node API.
 
+use crate::eventlog::event::ConversationId;
 use crate::node::runtime::RedesignRuntime;
 use serde::Serialize;
 use std::sync::Arc;
@@ -101,6 +102,103 @@ pub async fn redesign_history(
         .ok_or_else(|| format!("unknown peer: {peer}"))?;
     Ok(rt
         .history(&public, limit)
+        .into_iter()
+        .map(|h| HistoryItem {
+            from_me: h.from_me,
+            who: h.who,
+            text: String::from_utf8_lossy(&h.text).into_owned(),
+            wall_clock: h.wall_clock,
+        })
+        .collect())
+}
+
+/// A channel as shown in the redesign UI.
+#[derive(Serialize)]
+pub struct ChannelInfo {
+    pub channel_id: String, // hex
+    pub name: String,
+    pub member_count: usize,
+}
+
+fn parse_channel_id(hex_id: &str) -> Result<ConversationId, String> {
+    let bytes = hex::decode(hex_id).map_err(|_| "invalid channel id".to_string())?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "channel id must be 32 bytes".to_string())?;
+    Ok(ConversationId::new(arr))
+}
+
+#[tauri::command]
+pub async fn redesign_list_channels(
+    state: tauri::State<'_, RedesignState>,
+) -> Result<Vec<ChannelInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .list_channels()
+        .into_iter()
+        .map(|c| ChannelInfo {
+            channel_id: hex::encode(c.id.as_bytes()),
+            name: c.name,
+            member_count: c.member_count,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn redesign_create_channel(
+    state: tauri::State<'_, RedesignState>,
+    name: String,
+    member_ids: Vec<String>,
+) -> Result<String, String> {
+    let (node, members) = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let mut members = Vec::new();
+        for uid in &member_ids {
+            let p = rt
+                .peer_public(uid)
+                .ok_or_else(|| format!("unknown peer: {uid}"))?;
+            members.push(p);
+        }
+        (rt.handle(), members)
+    };
+    let id = node
+        .create_channel(&name, members)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(id.as_bytes()))
+}
+
+#[tauri::command]
+pub async fn redesign_send_channel_message(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    text: String,
+) -> Result<(), String> {
+    let id = parse_channel_id(&channel_id)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.send_channel_message(id, text.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_channel_history(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    limit: usize,
+) -> Result<Vec<HistoryItem>, String> {
+    let limit = limit.min(500);
+    let id = parse_channel_id(&channel_id)?;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .channel_history(id, limit)
         .into_iter()
         .map(|h| HistoryItem {
             from_me: h.from_me,

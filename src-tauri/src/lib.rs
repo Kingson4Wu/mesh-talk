@@ -228,7 +228,11 @@ pub fn run_tauri() {
             crate::redesign_commands::redesign_my_id,
             crate::redesign_commands::redesign_list_peers,
             crate::redesign_commands::redesign_send_dm,
-            crate::redesign_commands::redesign_history
+            crate::redesign_commands::redesign_history,
+            crate::redesign_commands::redesign_list_channels,
+            crate::redesign_commands::redesign_create_channel,
+            crate::redesign_commands::redesign_send_channel_message,
+            crate::redesign_commands::redesign_channel_history
         ])
         .run(tauri::generate_context!())
         .map_err(|e| log::error!("Error while running tauri application: {}", e))
