@@ -21,6 +21,7 @@ const MAGIC: &[u8; 6] = b"MTRECV";
 /// One received message's local plaintext record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceivedEntry {
+    pub event_id: crate::eventlog::event::EventId,
     pub conversation: ConversationId,
     pub from: String,
     pub wall_clock: u64,
@@ -131,8 +132,10 @@ impl ReceivedLog {
         from: String,
         wall_clock: u64,
         plaintext: &[u8],
+        event_id: crate::eventlog::event::EventId,
     ) -> Result<(), LogError> {
         let entry = ReceivedEntry {
+            event_id,
             conversation,
             from,
             wall_clock,
@@ -172,6 +175,8 @@ impl ReceivedLog {
 mod tests {
     use super::*;
 
+    use crate::eventlog::event::EventId;
+
     fn conv(n: u8) -> ConversationId {
         ConversationId::new([n; 32])
     }
@@ -182,10 +187,30 @@ mod tests {
         let path = dir.path().join("recv.log");
         {
             let mut r = ReceivedLog::open(&path, "pw").unwrap();
-            r.record(conv(1), "alice".into(), 2000, b"second").unwrap();
-            r.record(conv(1), "alice".into(), 1000, b"first").unwrap();
-            r.record(conv(2), "bob".into(), 1500, b"other-conv")
-                .unwrap();
+            r.record(
+                conv(1),
+                "alice".into(),
+                2000,
+                b"second",
+                EventId::new([1; 32]),
+            )
+            .unwrap();
+            r.record(
+                conv(1),
+                "alice".into(),
+                1000,
+                b"first",
+                EventId::new([2; 32]),
+            )
+            .unwrap();
+            r.record(
+                conv(2),
+                "bob".into(),
+                1500,
+                b"other-conv",
+                EventId::new([3; 32]),
+            )
+            .unwrap();
         }
         // Reopen from disk: entries are restored, per-conversation, time-ordered.
         let r = ReceivedLog::open(&path, "pw").unwrap();
@@ -203,7 +228,8 @@ mod tests {
         let path = dir.path().join("recv.log");
         {
             let mut r = ReceivedLog::open(&path, "right").unwrap();
-            r.record(conv(1), "alice".into(), 1, b"secret").unwrap();
+            r.record(conv(1), "alice".into(), 1, b"secret", EventId::new([1; 32]))
+                .unwrap();
         }
         assert!(matches!(
             ReceivedLog::open(&path, "wrong"),
@@ -217,7 +243,14 @@ mod tests {
         let path = dir.path().join("recv.log");
         {
             let mut r = ReceivedLog::open(&path, "pw").unwrap();
-            r.record(conv(1), "alice".into(), 1000, b"good").unwrap();
+            r.record(
+                conv(1),
+                "alice".into(),
+                1000,
+                b"good",
+                EventId::new([1; 32]),
+            )
+            .unwrap();
         }
         {
             let mut file = OpenOptions::new().append(true).open(&path).unwrap();

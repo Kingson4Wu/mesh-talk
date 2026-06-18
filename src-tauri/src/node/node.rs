@@ -17,10 +17,13 @@ use crate::file::{
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
+use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
 use crate::node::postbox::elected_post_office;
+use crate::node::ratchet_sessions::RatchetSessions;
 use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
+use crate::node::received_log::ReceivedLog;
 use crate::node::sentlog::SentLog;
 use crate::node::session::{request_round, serve_one, Served, SessionError};
 use crate::node::transport::{accept, dial};
@@ -127,6 +130,12 @@ pub struct Node {
     emitted: Mutex<HashSet<EventId>>,
     file_incoming: mpsc::UnboundedSender<ReceivedFile>,
     files: Mutex<FileBook>,
+    // wired up in Task 2
+    #[allow(dead_code)]
+    dm_ratchet: Mutex<DmRatchet>,
+    // wired up in Task 2
+    #[allow(dead_code)]
+    received: Mutex<ReceivedLog>,
     /// Own DM reactions: sealed to the peer so un-openable from our own log.
     /// Stored in memory so `reactions` can merge them. Lost on restart (MVP limitation).
     my_dm_reactions: Mutex<Vec<(ConversationId, ReactionPayload)>>,
@@ -149,6 +158,12 @@ impl Node {
     ) -> Result<Arc<Self>, LogError> {
         let log = PersistentEventLog::open(log_path, password)?;
         let sentlog = SentLog::open(sent_path, password)?;
+        let dir = log_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let sessions = RatchetSessions::open(&dir.join("ratchet.sessions"), password)?;
+        let dm_ratchet = DmRatchet::new(sessions);
+        let received = ReceivedLog::open(&dir.join("received.log"), password)?;
         let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
         let mut channels = ChannelBook::new();
         for conv in log.conversations() {
@@ -177,6 +192,8 @@ impl Node {
             emitted: Mutex::new(emitted),
             file_incoming,
             files: Mutex::new(files),
+            dm_ratchet: Mutex::new(dm_ratchet),
+            received: Mutex::new(received),
             my_dm_reactions: Mutex::new(Vec::new()),
         }))
     }
