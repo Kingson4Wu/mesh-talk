@@ -38,6 +38,7 @@ pub const EVENT_FILE_TRANSFER_OFFER: &str = "file-transfer-offer";
 pub const EVENT_FIREWALL_PERMISSION_REQUIRED: &str = "firewall-permission-required";
 pub const EVENT_REDESIGN_DM_RECEIVED: &str = "redesign-dm-received";
 pub const EVENT_REDESIGN_CHANNEL_MESSAGE: &str = "redesign-channel-message";
+pub const EVENT_REDESIGN_FILE_RECEIVED: &str = "redesign-file-received";
 
 static NODE_EVENT_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -395,6 +396,35 @@ pub fn emit_redesign_channel_message<R: Runtime>(
     };
     if let Err(e) = app_handle.emit(EVENT_REDESIGN_CHANNEL_MESSAGE, event) {
         log::error!("Failed to emit redesign channel event: {e}");
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct RedesignFileReceivedEvent {
+    pub conv: String, // hex (channel id for a channel file; the DM conv otherwise)
+    pub from: String, // sender user-id
+    pub name: String,
+    pub size: u64,
+    pub file_conv: String, // hex — pass to save
+}
+
+pub fn emit_redesign_file_received<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    conv: String,
+    from: String,
+    name: String,
+    size: u64,
+    file_conv: String,
+) {
+    let event = RedesignFileReceivedEvent {
+        conv,
+        from,
+        name,
+        size,
+        file_conv,
+    };
+    if let Err(e) = app_handle.emit(EVENT_REDESIGN_FILE_RECEIVED, event) {
+        log::error!("Failed to emit redesign file event: {e}");
     }
 }
 

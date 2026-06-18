@@ -294,6 +294,7 @@ pub async fn login(
             let redesign_handle = redesign_state.inner().clone();
             let app_handle_for_dm = app_handle.clone();
             let app_handle_for_channel = app_handle.clone();
+            let app_handle_for_file = app_handle.clone();
             let pw = password.clone();
             tauri::async_runtime::spawn(async move {
                 let base_dir = redesign_data_dir();
@@ -318,6 +319,16 @@ pub async fn login(
                             msg.channel_name,
                             msg.from,
                             msg.text,
+                        );
+                    },
+                    move |f: crate::node::filebook::ReceivedFile| {
+                        crate::events::emit_redesign_file_received(
+                            &app_handle_for_file,
+                            hex::encode(f.conv.as_bytes()),
+                            f.from,
+                            f.name,
+                            f.size,
+                            hex::encode(f.file_conv.as_bytes()),
                         );
                     },
                 )

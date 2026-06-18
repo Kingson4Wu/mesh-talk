@@ -188,6 +188,63 @@ pub async fn redesign_send_channel_message(
 }
 
 #[tauri::command]
+pub async fn redesign_send_file_dm(
+    state: tauri::State<'_, RedesignState>,
+    recipient: String,
+    path: String,
+) -> Result<String, String> {
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let id = node
+        .send_file_dm(&recipient, std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(id.as_bytes()))
+}
+
+#[tauri::command]
+pub async fn redesign_send_file_channel(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    path: String,
+) -> Result<String, String> {
+    let id = parse_channel_id(&channel_id)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let file_conv = node
+        .send_file_channel(id, std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(file_conv.as_bytes()))
+}
+
+#[tauri::command]
+pub async fn redesign_save_file(
+    state: tauri::State<'_, RedesignState>,
+    file_conv: String,
+    dest: String,
+) -> Result<(), String> {
+    let id = parse_channel_id(&file_conv)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    // save_file is synchronous (reads chunk events, decrypts, writes) — run it on a
+    // blocking thread so it doesn't stall the async runtime on a large file.
+    tokio::task::spawn_blocking(move || node.save_file(id, std::path::Path::new(&dest)))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn redesign_channel_history(
     state: tauri::State<'_, RedesignState>,
     channel_id: String,

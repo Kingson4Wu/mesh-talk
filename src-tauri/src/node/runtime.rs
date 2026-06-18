@@ -79,6 +79,7 @@ impl RedesignRuntime {
         discovery_port: u16,
         on_dm: impl Fn(ReceivedDm) + Send + 'static,
         on_channel: impl Fn(crate::node::channel::ReceivedChannelMessage) + Send + 'static,
+        on_file: impl Fn(crate::node::filebook::ReceivedFile) + Send + 'static,
     ) -> Result<RedesignRuntime, RuntimeError> {
         let dir = base_dir.join("redesign").join(account_id);
         std::fs::create_dir_all(&dir)?;
@@ -97,7 +98,8 @@ impl RedesignRuntime {
         let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
         let (channel_tx, mut channel_rx) =
             mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
-        let (file_tx, _file_rx) = mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
+        let (file_tx, mut file_rx) =
+            mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
         let node = Node::open(
             identity,
             Arc::clone(&roster),
@@ -142,6 +144,11 @@ impl RedesignRuntime {
         tasks.push(tokio::spawn(async move {
             while let Some(msg) = channel_rx.recv().await {
                 on_channel(msg);
+            }
+        }));
+        tasks.push(tokio::spawn(async move {
+            while let Some(f) = file_rx.recv().await {
+                on_file(f);
             }
         }));
 
@@ -240,6 +247,7 @@ mod tests {
             dp,
             |_dm| {},
             |_ch| {},
+            |_f| {},
         )
         .await
         .expect("runtime starts");
@@ -264,6 +272,7 @@ mod tests {
             dp,
             |_dm| {},
             |_ch| {},
+            |_f| {},
         )
         .await
         .expect("runtime reopens");
