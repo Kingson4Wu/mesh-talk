@@ -6,6 +6,7 @@
 //! module provides the pieces and proves them with an in-process two-node
 //! exchange over loopback TCP.
 
+use crate::channel::sender_key::SenderKey;
 use crate::channel::ChannelMeta;
 use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
@@ -16,6 +17,7 @@ use crate::file::{
 };
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
+use crate::node::channel_senders::ChannelSenderStore;
 use crate::node::conversation::dm_conversation_id;
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
@@ -127,6 +129,11 @@ pub struct Node {
     incoming: mpsc::UnboundedSender<ReceivedDm>,
     channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
     channels: Mutex<ChannelBook>,
+    /// Durable, encrypted store of this node's per-channel sending keys (`my_sender`).
+    /// `my_sender` is in-memory only and rebuilt empty on restart; persisting it here
+    /// lets us resume our sending chains so receivers (first-wins on chains they hold)
+    /// can still decrypt our post-restart messages.
+    channel_senders: Mutex<ChannelSenderStore>,
     emitted: Mutex<HashSet<EventId>>,
     file_incoming: mpsc::UnboundedSender<ReceivedFile>,
     files: Mutex<FileBook>,
@@ -164,11 +171,25 @@ impl Node {
         let sessions = RatchetSessions::open(&dir.join("ratchet.sessions"), password)?;
         let dm_ratchet = DmRatchet::new(sessions);
         let received = ReceivedLog::open(&dir.join("received.log"), password)?;
+        let channel_senders = ChannelSenderStore::open(&dir.join("channel.senders"), password)?;
         let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
         let mut channels = ChannelBook::new();
         for conv in log.conversations() {
             let events = log.events(&conv);
             let _ = channels.process(&identity, conv, &events);
+        }
+        // Restore our persisted sending chains into each channel state. The event log
+        // only carries OTHER members' sender keys, so `my_sender` rebuilds empty above;
+        // without this, a post-restart send would mint a fresh chain that receivers
+        // (first-wins on the chain they already hold) cannot follow.
+        for channel in channels.channel_ids() {
+            for (epoch, bytes) in channel_senders.get(&channel) {
+                if let Some(sk) = SenderKey::deserialize(&bytes) {
+                    if let Some(state) = channels.state_mut(&channel) {
+                        state.import_my_sender(epoch, sk);
+                    }
+                }
+            }
         }
         // Seed the file book's emitted set so existing manifests are not re-surfaced
         // after restart. Opening them needs roster/channel crypto unavailable at open
@@ -189,6 +210,7 @@ impl Node {
             incoming,
             channel_incoming,
             channels: Mutex::new(channels),
+            channel_senders: Mutex::new(channel_senders),
             emitted: Mutex::new(emitted),
             file_incoming,
             files: Mutex::new(files),
@@ -577,7 +599,26 @@ impl Node {
                 .map_err(|e| NodeError::Channel(format!("key sealing failed: {e}")))?
         };
         self.append_event(channel, EventKind::KeyRotation, sealed.encode())?;
+        self.persist_my_senders(channel);
         Ok(())
+    }
+
+    /// Snapshot `channel`'s `my_sender` (under the channels lock) and persist it to the
+    /// durable store so our sending chains survive a restart. Best-effort: a store
+    /// write error must not fail an already-appended message. No `MutexGuard` is held
+    /// across the persist (the snapshot is taken first, then the lock is dropped).
+    fn persist_my_senders(&self, channel: ConversationId) {
+        let snapshot = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.state(&channel).map(|s| s.export_my_senders())
+        };
+        if let Some(senders) = snapshot {
+            let _ = self
+                .channel_senders
+                .lock()
+                .expect("channel_senders mutex not poisoned")
+                .put(&channel, &senders);
+        }
     }
 
     /// Add `new_member` to `channel`, bumping the epoch. Posts a `MembershipChange`
@@ -694,6 +735,9 @@ impl Node {
                 .seal_sender_message(&wrapped)
                 .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?
         };
+        // Persist our advanced sending chain so a post-restart send resumes THIS chain
+        // (receivers are first-wins and keep the chain they already hold).
+        self.persist_my_senders(channel);
         let seq = self.append_event(channel, EventKind::Message, payload)?;
         // Keep a local plaintext copy of what we sent — the sender-key wire key is
         // single-use and not self-decryptable, so channel history is served from the
@@ -767,6 +811,8 @@ impl Node {
                 .seal_sender_message(&manifest.encode())
                 .map_err(|e| NodeError::File(format!("manifest sealing failed: {e}")))?
         };
+        // Persist our advanced sending chain (see `send_channel_message_reply`).
+        self.persist_my_senders(channel);
         self.append_event(channel, EventKind::FileManifest, sealed)?;
         self.distribute_channel(file_conv, &members).await;
         self.distribute_channel(channel, &members).await;
@@ -1872,6 +1918,121 @@ mod tests {
         assert!(alice_hist
             .iter()
             .any(|h| !h.from_me && h.text == b"hi alice" && h.who == bob_node.user_id()));
+    }
+
+    /// Restart rig: Alice creates a {Alice, Bob} channel and sends a message Bob
+    /// decrypts. Alice's `Node` is then DROPPED and REOPENED from the SAME dir (same
+    /// log + derived stores + password). Alice sends ANOTHER message in the SAME epoch;
+    /// Bob must still decrypt it. This works only if Alice resumed her SAME sending
+    /// chain (persisted in `channel.senders`) rather than minting a fresh one: Bob is
+    /// first-wins on the chain he already holds, so a fresh chain would be undecryptable.
+    /// Without the persist+inject fix, the post-restart message is silently dropped.
+    #[tokio::test]
+    async fn channel_sending_survives_restart() {
+        let alice = DeviceIdentity::generate();
+        let (alice_ed, alice_x) = alice.secret_bytes(); // to reconstruct Alice on restart
+        let bob = DeviceIdentity::generate();
+        let bob_pub = bob.public();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+        // Separate sub-dirs so the two nodes' derived stores (ratchet.sessions,
+        // channel.senders, ...) don't collide. Alice reopens from her SAME sub-dir.
+        let alice_dir = dir.path().join("alice");
+        let bob_dir = dir.path().join("bob");
+        std::fs::create_dir_all(&alice_dir).unwrap();
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        let alice_log = alice_dir.join("a.log");
+        let alice_sent = alice_dir.join("a-sent.log");
+
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        // Build Alice's post-restart roster now, before `bob` is moved into his node.
+        let alice_roster2 = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_file, _a_file_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
+        let (b_file, _b_file_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_file,
+            &alice_log,
+            &alice_sent,
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_file,
+            &bob_dir.join("b.log"),
+            &bob_dir.join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        let channel = alice_node
+            .create_channel("general", vec![bob_pub])
+            .await
+            .unwrap();
+        alice_node
+            .send_channel_message(channel, b"before restart")
+            .await
+            .unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
+            .await
+            .expect("bob received the pre-restart message within 5s")
+            .expect("channel stream open");
+        assert_eq!(got.text, b"before restart");
+
+        // RESTART Alice: drop her node, reopen from the SAME paths/password. Her
+        // `my_sender` is rebuilt from `channel.senders`, not the (sender-key-less) log.
+        drop(alice_node);
+        let (a_dm2, _a_dm_r2) = mpsc::unbounded_channel();
+        let (a_ch2, _a_ch_r2) = mpsc::unbounded_channel();
+        let (a_file2, _a_file_r2) = mpsc::unbounded_channel();
+        let alice2 = DeviceIdentity::from_secret_bytes(alice_ed, alice_x);
+        let alice_node2 = Node::open(
+            alice2,
+            alice_roster2,
+            a_dm2,
+            a_ch2,
+            a_file2,
+            &alice_log,
+            &alice_sent,
+            "pw",
+        )
+        .unwrap();
+
+        // Same-epoch send AFTER restart. Bob (still running, first-wins on Alice's
+        // existing chain) must decrypt it — proving Alice resumed her SAME chain.
+        alice_node2
+            .send_channel_message(channel, b"after restart")
+            .await
+            .unwrap();
+        let after = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
+            .await
+            .expect("bob received the post-restart message within 5s (broken without persist)")
+            .expect("channel stream open");
+        assert_eq!(after.text, b"after restart");
+        assert_eq!(after.from, alice_node2.user_id());
     }
 
     /// Live add-member rig over loopback TCP: Alice creates a {Alice, Bob} channel and

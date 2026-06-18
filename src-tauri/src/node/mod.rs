@@ -4,6 +4,7 @@
 //! layer, sync driver, and node API arrive in the next plan.
 
 pub mod channel;
+pub mod channel_senders;
 pub mod conversation;
 pub mod dm_ratchet;
 pub mod filebook;

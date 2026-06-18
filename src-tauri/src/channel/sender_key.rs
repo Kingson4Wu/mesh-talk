@@ -59,6 +59,40 @@ impl SenderKey {
         self.n += 1;
         (n, mk)
     }
+
+    /// Serialize this sending chain (fixint bincode). The output is SECRET — callers
+    /// MUST store it encrypted at rest.
+    pub fn serialize(&self) -> Vec<u8> {
+        let wire = SenderKeyWire {
+            chain_key: self.chain_key,
+            n: self.n,
+        };
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .serialize(&wire)
+            .expect("sender key serializes")
+    }
+
+    /// Reconstruct a sending chain from [`serialize`] output. `None` if malformed
+    /// (fail-closed: reject trailing bytes).
+    pub fn deserialize(bytes: &[u8]) -> Option<SenderKey> {
+        let wire: SenderKeyWire = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .reject_trailing_bytes()
+            .deserialize(bytes)
+            .ok()?;
+        Some(SenderKey {
+            chain_key: wire.chain_key,
+            n: wire.n,
+        })
+    }
+}
+
+/// Serialization mirror (private — used only inside serialize/deserialize).
+#[derive(Serialize, Deserialize)]
+struct SenderKeyWire {
+    chain_key: [u8; 32],
+    n: u32,
 }
 
 /// The sealed-per-member initial sender chain (chain key + starting position).
@@ -265,6 +299,33 @@ mod tests {
         assert!(open_message(&rmk, &ct, b"aad").is_err());
         ct[last] ^= 0xFF;
         assert!(open_message(&rmk, &ct, b"WRONG").is_err()); // AAD mismatch
+    }
+
+    #[test]
+    fn sender_key_serialize_round_trips_and_resumes_chain() {
+        let mut sk = SenderKey::generate();
+        // Advance the chain so n != 0; the restored key must resume from here.
+        let (_n0, _mk0) = sk.ratchet();
+        let mut rc = SenderChain::from_distribution(&SenderKeyDistribution {
+            chain_key: sk.chain_key,
+            n: sk.n,
+        });
+        let bytes = sk.serialize();
+        let mut restored = SenderKey::deserialize(&bytes).unwrap();
+        // The restored key continues the SAME chain: its next message opens against a
+        // receiver that started at the restored position.
+        let (n, mk) = restored.ratchet();
+        let ct = seal_message(&mk, b"resumed", b"aad").unwrap();
+        let rmk = rc.message_key(n).unwrap();
+        assert_eq!(open_message(&rmk, &ct, b"aad").unwrap(), b"resumed");
+    }
+
+    #[test]
+    fn sender_key_deserialize_rejects_trailing_bytes() {
+        let sk = SenderKey::generate();
+        let mut bytes = sk.serialize();
+        bytes.push(0xAB);
+        assert!(SenderKey::deserialize(&bytes).is_none());
     }
 
     #[test]
