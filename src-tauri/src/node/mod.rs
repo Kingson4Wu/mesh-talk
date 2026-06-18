@@ -5,20 +5,26 @@
 
 pub mod channel;
 pub mod conversation;
+pub mod dm_ratchet;
 pub mod filebook;
 pub mod message;
 pub mod net;
 pub mod node;
 pub mod postbox;
+pub mod ratchet_sessions;
 pub mod reaction;
+pub mod received_log;
 pub mod runtime;
 pub mod sentlog;
 pub mod session;
 pub mod transport;
 
+pub use dm_ratchet::DmRatchet;
 pub use filebook::{FileBook, ReceivedFile};
 pub use message::MessageBody;
 pub use node::{ChannelSummary, HistoryEntry, Node, NodeError, ReceivedDm, SearchHit};
 pub use postbox::elected_post_office;
+pub use ratchet_sessions::RatchetSessions;
 pub use reaction::{aggregate, ReactionPayload, ReactionView};
+pub use received_log::{ReceivedEntry, ReceivedLog};
 pub use runtime::{RedesignRuntime, RuntimeError};

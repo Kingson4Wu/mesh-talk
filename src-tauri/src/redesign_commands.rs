@@ -207,6 +207,43 @@ pub async fn redesign_create_channel(
 }
 
 #[tauri::command]
+pub async fn redesign_add_channel_member(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    member_id: String,
+) -> Result<(), String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let (node, member) = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let member = rt
+            .peer_public(&member_id)
+            .ok_or_else(|| format!("unknown peer: {member_id}"))?;
+        (rt.handle(), member)
+    };
+    node.add_channel_member(channel, member)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_remove_channel_member(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    member_id: String,
+) -> Result<(), String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.remove_channel_member(channel, &member_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn redesign_send_channel_message(
     state: tauri::State<'_, RedesignState>,
     channel_id: String,
