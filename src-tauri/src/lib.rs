@@ -23,6 +23,7 @@ pub mod domain;
 pub mod error;
 pub mod eventlog;
 pub mod events;
+pub mod file;
 pub mod identity;
 pub mod logger;
 pub mod network;
