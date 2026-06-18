@@ -2158,6 +2158,258 @@ mod tests {
         assert!(ok, "alice sees bob's reaction");
     }
 
+    /// Channel file transfer over the wire, both directions. The manifest is sealed
+    /// with the sender-key ratchet (`seal_sender_message`) and opened by
+    /// `process_file_events`; the chunk conversation syncs separately. Bob is a
+    /// non-creator member, so his send must first distribute his own sender key —
+    /// the same path the creator-only-send fix repaired for messages.
+    #[tokio::test]
+    async fn two_nodes_transfer_a_file_in_a_channel() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_pub = bob.public();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Both nodes listen so each can receive the other's pushed file events.
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_f, mut a_f_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        let channel = alice_node
+            .create_channel("general", vec![bob_pub])
+            .await
+            .unwrap();
+
+        // Forward direction: Alice -> Bob. Multi-chunk payload.
+        let payload = vec![0xABu8; crate::file::CHUNK_SIZE + 1234];
+        let src = dir.path().join("photo.bin");
+        std::fs::write(&src, &payload).unwrap();
+        let file_conv = alice_node.send_file_channel(channel, &src).await.unwrap();
+
+        let rf = tokio::time::timeout(Duration::from_secs(5), b_f_r.recv())
+            .await
+            .expect("bob received the channel file within 5s")
+            .expect("file stream open");
+        assert_eq!(rf.name, "photo.bin");
+        assert_eq!(rf.size, payload.len() as u64);
+        assert_eq!(rf.conv, channel);
+        assert_eq!(rf.file_conv, file_conv);
+        assert_eq!(rf.from, alice_node.user_id());
+
+        let dest = dir.path().join("saved.bin");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match bob_node.save_file(rf.file_conv, &dest) {
+                    Ok(()) => break,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
+            }
+        })
+        .await
+        .expect("bob saved the channel file within 5s");
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+
+        // Reverse direction: Bob -> Alice. Bob is a non-creator member; his
+        // send_file_channel must distribute his own sender key first so Alice can
+        // open the manifest (mirrors the bidirectional message fix).
+        let payload2 = vec![0xCDu8; crate::file::CHUNK_SIZE * 2 + 77];
+        let src2 = dir.path().join("from-bob.bin");
+        std::fs::write(&src2, &payload2).unwrap();
+        let file_conv2 = bob_node.send_file_channel(channel, &src2).await.unwrap();
+
+        let rf2 = tokio::time::timeout(Duration::from_secs(5), a_f_r.recv())
+            .await
+            .expect("alice received Bob's channel file within 5s (non-creator send)")
+            .expect("file stream open");
+        assert_eq!(rf2.name, "from-bob.bin");
+        assert_eq!(rf2.size, payload2.len() as u64);
+        assert_eq!(rf2.conv, channel);
+        assert_eq!(rf2.file_conv, file_conv2);
+        assert_eq!(rf2.from, bob_node.user_id());
+
+        let dest2 = dir.path().join("alice-saved.bin");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match alice_node.save_file(rf2.file_conv, &dest2) {
+                    Ok(()) => break,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
+            }
+        })
+        .await
+        .expect("alice saved Bob's channel file within 5s");
+        assert_eq!(std::fs::read(&dest2).unwrap(), payload2);
+    }
+
+    /// Channel reactions over the wire. They use a per-member `SealedPayload`
+    /// (re-readable, not single-use), so both the reacting author and the other
+    /// members must see them via `reactions(channel)`. Also covers toggle-off.
+    #[tokio::test]
+    async fn channel_reactions_are_visible_to_members() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_pub = bob.public();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_f, _a_f_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
+        let (b_f, _b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        let channel = alice_node
+            .create_channel("general", vec![bob_pub])
+            .await
+            .unwrap();
+
+        // Alice sends a channel message; Bob receives it and learns its event id.
+        alice_node
+            .send_channel_message(channel, b"hi bob")
+            .await
+            .unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
+            .await
+            .expect("bob received Alice's channel message within 5s")
+            .expect("channel stream open");
+        assert_eq!(got.text, b"hi bob");
+        let target = got.event_id;
+
+        // Bob reacts; it distributes to Alice.
+        bob_node
+            .react_channel(channel, target, "👍", false)
+            .await
+            .unwrap();
+
+        // Bob re-reads his own channel reaction (sealed per-member, re-readable).
+        let bob_views = bob_node.reactions(channel);
+        assert!(
+            bob_views
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
+            "bob sees his own channel reaction"
+        );
+
+        // Alice sees Bob's reaction after distribution lands.
+        let mut ok = false;
+        for _ in 0..50 {
+            let av = alice_node.reactions(channel);
+            if av
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
+            {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(ok, "alice sees bob's channel reaction");
+        let _ = alice_uid;
+
+        // Toggle off: Bob removes the reaction; it disappears for both.
+        bob_node
+            .react_channel(channel, target, "👍", true)
+            .await
+            .unwrap();
+
+        let bob_after = bob_node.reactions(channel);
+        assert!(
+            !bob_after
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
+            "bob's reaction is gone after toggle-off"
+        );
+
+        let mut gone = false;
+        for _ in 0..50 {
+            let av = alice_node.reactions(channel);
+            if !av
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
+            {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(gone, "alice no longer sees bob's reaction after toggle-off");
+    }
+
     #[tokio::test]
     async fn search_finds_a_sent_dm_by_keyword() {
         let me = DeviceIdentity::generate();
