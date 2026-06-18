@@ -2,7 +2,7 @@
 //! per-session [`RedesignRuntime`] held in managed [`RedesignState`] (populated on
 //! login, cleared on logout). All are thin pass-throughs over the node API.
 
-use crate::eventlog::event::ConversationId;
+use crate::eventlog::event::{ConversationId, EventId};
 use crate::node::runtime::RedesignRuntime;
 use serde::Serialize;
 use std::sync::Arc;
@@ -36,10 +36,19 @@ pub struct PeerInfo {
 /// One merged history line (sent or received) for display.
 #[derive(Serialize)]
 pub struct HistoryItem {
+    pub id: String, // hex EventId
     pub from_me: bool,
     pub who: String,
     pub text: String,
     pub wall_clock: u64,
+}
+
+/// Aggregated reaction for display.
+#[derive(Serialize)]
+pub struct ReactionInfo {
+    pub target: String, // hex EventId
+    pub emoji: String,
+    pub who: Vec<String>,
 }
 
 const NOT_STARTED: &str = "redesign node not started";
@@ -104,6 +113,7 @@ pub async fn redesign_history(
         .history(&public, limit)
         .into_iter()
         .map(|h| HistoryItem {
+            id: hex::encode(h.id.as_bytes()),
             from_me: h.from_me,
             who: h.who,
             text: String::from_utf8_lossy(&h.text).into_owned(),
@@ -126,6 +136,25 @@ fn parse_channel_id(hex_id: &str) -> Result<ConversationId, String> {
         .try_into()
         .map_err(|_| "channel id must be 32 bytes".to_string())?;
     Ok(ConversationId::new(arr))
+}
+
+fn parse_event_id(hex_id: &str) -> Result<EventId, String> {
+    let bytes = hex::decode(hex_id).map_err(|_| "invalid event id".to_string())?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "event id must be 32 bytes".to_string())?;
+    Ok(EventId::new(arr))
+}
+
+fn to_reaction_infos(views: Vec<crate::node::reaction::ReactionView>) -> Vec<ReactionInfo> {
+    views
+        .into_iter()
+        .map(|v| ReactionInfo {
+            target: v.target,
+            emoji: v.emoji,
+            who: v.who,
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -258,10 +287,74 @@ pub async fn redesign_channel_history(
         .channel_history(id, limit)
         .into_iter()
         .map(|h| HistoryItem {
+            id: hex::encode(h.id.as_bytes()),
             from_me: h.from_me,
             who: h.who,
             text: String::from_utf8_lossy(&h.text).into_owned(),
             wall_clock: h.wall_clock,
         })
         .collect())
+}
+
+#[tauri::command]
+pub async fn redesign_react_dm(
+    state: tauri::State<'_, RedesignState>,
+    recipient: String,
+    target: String,
+    emoji: String,
+    remove: bool,
+) -> Result<(), String> {
+    let id = parse_event_id(&target)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.react_dm(&recipient, id, &emoji, remove)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_react_channel(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    target: String,
+    emoji: String,
+    remove: bool,
+) -> Result<(), String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let id = parse_event_id(&target)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.react_channel(channel, id, &emoji, remove)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_reactions(
+    state: tauri::State<'_, RedesignState>,
+    peer: String,
+) -> Result<Vec<ReactionInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let public = rt
+        .peer_public(&peer)
+        .ok_or_else(|| format!("unknown peer: {peer}"))?;
+    Ok(to_reaction_infos(rt.reactions_dm(&public)))
+}
+
+#[tauri::command]
+pub async fn redesign_channel_reactions(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+) -> Result<Vec<ReactionInfo>, String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(to_reaction_infos(rt.channel_reactions(channel)))
 }

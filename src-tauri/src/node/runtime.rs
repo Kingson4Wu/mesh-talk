@@ -215,6 +215,19 @@ impl RedesignRuntime {
         self.node.channel_history(channel, limit)
     }
 
+    /// Aggregated reactions in the DM with `peer`.
+    pub fn reactions_dm(&self, peer: &PublicIdentity) -> Vec<crate::node::reaction::ReactionView> {
+        self.node.reactions_dm(peer)
+    }
+
+    /// Aggregated reactions in a channel.
+    pub fn channel_reactions(
+        &self,
+        channel: crate::eventlog::event::ConversationId,
+    ) -> Vec<crate::node::reaction::ReactionView> {
+        self.node.reactions(channel)
+    }
+
     /// A cloned handle to the underlying node, so an IPC command can snapshot it
     /// and release the `RedesignState` lock before an async send.
     pub fn handle(&self) -> Arc<Node> {

@@ -791,6 +791,12 @@ impl Node {
         entries
     }
 
+    /// Aggregated reactions in the DM with `peer` (derives the conversation id).
+    pub fn reactions_dm(&self, peer: &PublicIdentity) -> Vec<ReactionView> {
+        let conv = dm_conversation_id(&self.identity.public(), peer);
+        self.reactions(conv)
+    }
+
     /// React to a message in a DM (toggle off with `remove = true`).
     pub async fn react_dm(
         &self,
