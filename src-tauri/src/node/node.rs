@@ -29,11 +29,12 @@ use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
-/// Maximum raw file size for `send_file_*`. The sync layer currently delivers a
-/// conversation's missing events in ONE transport frame (`MAX_PLAINTEXT` ≈ 64 KiB),
-/// so a file's chunk events must fit one frame; this cap keeps a transfer from
-/// silently failing mid-send. Lifted once bounded/streaming sync lands.
-const MAX_FILE_SIZE: usize = 56 * 1024;
+/// Maximum raw file size for `send_file_*`. Bounded multi-round sync transfers a
+/// file's chunk events across frames now, so the practical limit is the `have`
+/// id-set size (a conversation's full id-set still travels in one frame): ~8 MB of
+/// 48 KiB chunks ≈ 180 ids ≈ 7 KB, comfortably within a frame. Lifting further
+/// needs id-set compaction (a separate slice).
+const MAX_FILE_SIZE: usize = 8 * 1024 * 1024;
 
 /// A received direct message, surfaced to the application.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -564,11 +565,9 @@ impl Node {
     /// send paths. The caller seals + posts the manifest into the original conv.
     fn stage_file(&self, path: &Path) -> Result<(FileManifest, ConversationId), NodeError> {
         let data = std::fs::read(path).map_err(|e| NodeError::File(format!("read file: {e}")))?;
-        // The sync layer currently batches a conversation's missing events into ONE
-        // transport frame (capped at `MAX_PLAINTEXT` ≈ 64 KiB), so a file's chunk
-        // events must collectively fit one frame. We cap raw file size accordingly so
-        // a transfer never SILENTLY fails mid-send. Bounded/streaming sync (a separate
-        // slice) lifts this; until then files larger than this are rejected up front.
+        // Bounded multi-round sync now transfers chunk events across frames, so files
+        // up to MAX_FILE_SIZE (8 MB) are supported. The practical limit is the have
+        // id-set fitting one frame; files over the cap are rejected up front.
         if data.len() > MAX_FILE_SIZE {
             return Err(NodeError::File(format!(
                 "file too large: {} bytes (max {MAX_FILE_SIZE} until streaming sync lands)",
@@ -1361,5 +1360,75 @@ mod tests {
         .await
         .expect("bob saved the file within 5s");
         assert_eq!(std::fs::read(&dest).unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn two_nodes_transfer_a_multi_chunk_file_over_loopback_tcp() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
+        let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
+
+        let (a_dm, _a) = mpsc::unbounded_channel();
+        let (a_ch, _b) = mpsc::unbounded_channel();
+        let (a_f, _c) = mpsc::unbounded_channel();
+        let (b_dm, _d) = mpsc::unbounded_channel();
+        let (b_ch, _e) = mpsc::unbounded_channel();
+        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+        // ~5 chunks → the file_conv batch far exceeds one frame → multiple rounds.
+        let payload = vec![0x5Au8; crate::file::CHUNK_SIZE * 4 + 999];
+        let src = dir.path().join("big.bin");
+        std::fs::write(&src, &payload).unwrap();
+
+        let bob_uid = bob_node.user_id();
+        let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
+
+        let rf = tokio::time::timeout(std::time::Duration::from_secs(10), b_f_r.recv())
+            .await
+            .expect("received within 10s")
+            .expect("stream open");
+        assert_eq!(rf.size, payload.len() as u64);
+
+        // Saving may need a brief retry while the file_conv chunks finish syncing.
+        let dest = dir.path().join("big-saved.bin");
+        let mut saved = false;
+        for _ in 0..100 {
+            if bob_node.save_file(rf.file_conv, &dest).is_ok() {
+                saved = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(saved, "bob saved the multi-chunk file");
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        let _ = file_conv;
     }
 }
