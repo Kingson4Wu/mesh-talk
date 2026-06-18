@@ -6,6 +6,7 @@
 use crate::channel::{open_group_key, seal_group_key, ChannelMeta, ChannelState, GroupKey};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
+use crate::node::message::MessageBody;
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -80,6 +81,7 @@ pub struct ReceivedChannelMessage {
     pub channel_name: String,
     pub from: String,
     pub text: Vec<u8>,
+    pub reply_to: Option<EventId>,
 }
 
 /// A node's view of all the channels it knows: each channel's [`ChannelState`]
@@ -169,12 +171,14 @@ impl ChannelBook {
                     let Some(state) = self.states.get(&channel_id) else {
                         continue;
                     };
-                    if let Some(text) = state.open_message(&event.ciphertext) {
+                    if let Some(plaintext) = state.open_message(&event.ciphertext) {
+                        let body = MessageBody::decode(&plaintext);
                         let msg = ReceivedChannelMessage {
                             channel_id,
                             channel_name: state.name().to_string(),
                             from: event.author.user_id(),
-                            text,
+                            text: body.text,
+                            reply_to: body.reply_to,
                         };
                         self.emitted.insert(event.id);
                         out.push(msg);

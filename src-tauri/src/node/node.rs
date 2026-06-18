@@ -18,6 +18,7 @@ use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
 use crate::node::filebook::{FileBook, ReceivedFile};
+use crate::node::message::MessageBody;
 use crate::node::postbox::elected_post_office;
 use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
 use crate::node::sentlog::SentLog;
@@ -43,6 +44,7 @@ pub struct ReceivedDm {
     pub from: UserId,
     pub from_name: String,
     pub text: Vec<u8>,
+    pub reply_to: Option<EventId>,
 }
 
 /// A channel summary for listing in the UI.
@@ -76,6 +78,7 @@ pub struct HistoryEntry {
     pub who: String,
     pub text: Vec<u8>,
     pub wall_clock: u64,
+    pub reply_to: Option<EventId>,
 }
 
 /// Errors from node operations.
@@ -205,6 +208,16 @@ impl Node {
     /// delivery or a post office accepted the event; errors only if the recipient
     /// is unreachable and no post office is available.
     pub async fn send_dm(&self, recipient: &str, text: &[u8]) -> Result<(), NodeError> {
+        self.send_dm_reply(recipient, text, None).await
+    }
+
+    /// Send a DM that replies to `reply_to` (or `None` for a normal message).
+    pub async fn send_dm_reply(
+        &self,
+        recipient: &str,
+        text: &[u8],
+        reply_to: Option<EventId>,
+    ) -> Result<(), NodeError> {
         let peer = self
             .roster
             .lock()
@@ -213,6 +226,7 @@ impl Node {
             .cloned()
             .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
 
+        let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
         let conv = dm_conversation_id(&self.identity.public(), &peer.public);
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
         let wall_clock = now_millis();
@@ -234,7 +248,7 @@ impl Node {
                 parents,
                 lamport,
                 wall_clock,
-                text,
+                &wrapped,
             )
             .map_err(NodeError::Seal)?;
             log.append(event).map_err(NodeError::Log)?;
@@ -247,7 +261,7 @@ impl Node {
             .sentlog
             .lock()
             .expect("sentlog mutex not poisoned")
-            .record(conv, seq, wall_clock, text);
+            .record(conv, seq, wall_clock, &wrapped);
 
         // Best-effort direct delivery (the recipient may be offline) plus always
         // replicating to the elected post office (store-and-forward).
@@ -513,13 +527,24 @@ impl Node {
         channel: ConversationId,
         text: &[u8],
     ) -> Result<(), NodeError> {
+        self.send_channel_message_reply(channel, text, None).await
+    }
+
+    /// Send a channel message that replies to `reply_to` (or `None` for a normal message).
+    pub async fn send_channel_message_reply(
+        &self,
+        channel: ConversationId,
+        text: &[u8],
+        reply_to: Option<EventId>,
+    ) -> Result<(), NodeError> {
+        let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
         let (payload, members) = {
             let book = self.channels.lock().expect("channels mutex not poisoned");
             let state = book
                 .state(&channel)
                 .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
             let payload = state
-                .seal_message(text)
+                .seal_message(&wrapped)
                 .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?;
             (payload, state.members().to_vec())
         };
@@ -720,13 +745,15 @@ impl Node {
             if event.kind != EventKind::Message {
                 continue;
             }
-            if let Some(text) = state.open_message(&event.ciphertext) {
+            if let Some(plaintext) = state.open_message(&event.ciphertext) {
+                let body = MessageBody::decode(&plaintext);
                 out.push(HistoryEntry {
                     id: event.id,
                     from_me: event.author == self_author,
                     who: event.author.user_id(),
-                    text,
+                    text: body.text,
                     wall_clock: event.wall_clock,
+                    reply_to: body.reply_to,
                 });
             }
         }
@@ -771,13 +798,16 @@ impl Node {
                 if event.kind != EventKind::Message || event.author == self_author {
                     continue; // our own sent events come from the sidecar (below)
                 }
-                if let Some((_uid, name, text)) = open_dm_event(&self.identity, &roster, event) {
+                if let Some((_uid, name, text, reply_to)) =
+                    open_dm_event(&self.identity, &roster, event)
+                {
                     entries.push(HistoryEntry {
                         id: event.id,
                         from_me: false,
                         who: name,
                         text,
                         wall_clock: event.wall_clock,
+                        reply_to,
                     });
                 }
             }
@@ -788,6 +818,7 @@ impl Node {
             .expect("sentlog mutex not poisoned")
             .entries(&conversation)
         {
+            let sent_body = MessageBody::decode(&sent.plaintext);
             entries.push(HistoryEntry {
                 id: my_msg_ids
                     .get(&sent.seq)
@@ -795,8 +826,9 @@ impl Node {
                     .unwrap_or(EventId::new([0u8; 32])),
                 from_me: true,
                 who: "you".to_string(),
-                text: sent.plaintext,
+                text: sent_body.text,
                 wall_clock: sent.wall_clock,
+                reply_to: sent_body.reply_to,
             });
         }
         entries.sort_by_key(|e| e.wall_clock);
@@ -1008,11 +1040,14 @@ impl Node {
         };
         let roster = self.roster.lock().expect("roster mutex not poisoned");
         for event in fresh {
-            if let Some((from, from_name, text)) = open_dm_event(&self.identity, &roster, &event) {
+            if let Some((from, from_name, text, reply_to)) =
+                open_dm_event(&self.identity, &roster, &event)
+            {
                 let _ = self.incoming.send(ReceivedDm {
                     from,
                     from_name,
                     text,
+                    reply_to,
                 });
             }
         }
@@ -1780,5 +1815,125 @@ mod tests {
         assert_eq!(hits[0].target, peer_uid);
         assert!(node.search("   ").is_empty());
         assert!(node.search("absent-keyword").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reply_round_trips_with_its_reply_to() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Capture public identities BEFORE moving into Node::open.
+        let alice_pub = alice.public();
+        let bob_pub = bob.public();
+        let alice_uid = alice_pub.user_id();
+        let bob_uid = bob_pub.user_id();
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_pub.user_id());
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_pub.user_id());
+
+        let (a_dm, mut a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch) = mpsc::unbounded_channel();
+        let (a_f, _a_f) = mpsc::unbounded_channel();
+        let (b_dm, mut b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch) = mpsc::unbounded_channel();
+        let (b_f, _b_f) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+
+        // Alice sends a normal DM to Bob (no reply_to).
+        alice_node
+            .send_dm(&bob_uid, b"hi")
+            .await
+            .expect("alice sends hi");
+
+        // Bob receives it.
+        let got = tokio::time::timeout(Duration::from_secs(5), b_dm_r.recv())
+            .await
+            .expect("bob got alice's dm within 5s")
+            .expect("stream open");
+        assert_eq!(got.text, b"hi");
+        assert_eq!(got.reply_to, None, "normal message has no reply_to");
+
+        // Bob looks up the parent message id from his history.
+        let parent_id = bob_node
+            .dm_history(&alice_pub, 10)
+            .into_iter()
+            .find(|e| !e.from_me)
+            .map(|e| e.id)
+            .expect("bob has alice's message in history");
+
+        // Bob replies to Alice's message.
+        bob_node
+            .send_dm_reply(&alice_uid, b"hey back", Some(parent_id))
+            .await
+            .expect("bob sends reply");
+
+        // Alice receives the reply with reply_to set.
+        let reply = tokio::time::timeout(Duration::from_secs(5), a_dm_r.recv())
+            .await
+            .expect("alice got bob's reply within 5s")
+            .expect("stream open");
+        assert_eq!(reply.text, b"hey back");
+        assert_eq!(
+            reply.reply_to,
+            Some(parent_id),
+            "alice's ReceivedDm carries reply_to"
+        );
+
+        // Alice's dm_history shows the reply entry with reply_to.
+        let alice_hist = alice_node.dm_history(&bob_pub, 10);
+        let reply_entry = alice_hist
+            .iter()
+            .find(|e| !e.from_me)
+            .expect("alice has bob's reply in history");
+        assert_eq!(reply_entry.text, b"hey back");
+        assert_eq!(
+            reply_entry.reply_to,
+            Some(parent_id),
+            "history entry carries reply_to"
+        );
+
+        // A normal send_dm (no reply) yields reply_to == None in history.
+        alice_node.send_dm(&bob_uid, b"just a message").await.ok();
+        let alice_hist2 = alice_node.dm_history(&bob_pub, 10);
+        let normal_sent = alice_hist2
+            .iter()
+            .find(|e| e.from_me && e.text == b"just a message")
+            .expect("alice's normal sent message is in history");
+        assert_eq!(
+            normal_sent.reply_to, None,
+            "normal send_dm yields reply_to == None"
+        );
     }
 }
