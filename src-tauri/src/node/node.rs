@@ -580,6 +580,78 @@ impl Node {
         Ok(())
     }
 
+    /// Add `new_member` to `channel`, bumping the epoch. Posts a `MembershipChange`
+    /// carrying the new member set at `old_epoch + 1`, adopts it locally, then pushes
+    /// the channel to the new member set (so the joiner gets the membership event). The
+    /// fresh-epoch sender key is distributed lazily on our next send (the
+    /// `has_my_sender(new_epoch)` guard in the send path), so the joiner can read
+    /// post-join messages but not pre-join ones.
+    pub async fn add_channel_member(
+        &self,
+        channel: ConversationId,
+        new_member: PublicIdentity,
+    ) -> Result<(), NodeError> {
+        let (name, mut new_members, new_epoch) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            (
+                state.name().to_string(),
+                state.members().to_vec(),
+                state.epoch() + 1,
+            )
+        };
+        if !new_members
+            .iter()
+            .any(|m| m.user_id() == new_member.user_id())
+        {
+            new_members.push(new_member);
+        }
+        let meta = ChannelMeta {
+            name,
+            members: new_members.clone(),
+            epoch: new_epoch,
+        };
+        self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
+        self.process_channel(channel);
+        self.distribute_channel(channel, &new_members).await;
+        Ok(())
+    }
+
+    /// Remove the member with `member_user_id` from `channel`, bumping the epoch. Posts
+    /// a `MembershipChange` carrying the reduced member set at `old_epoch + 1`, adopts it
+    /// locally, then pushes the channel to the remaining members only — the removed
+    /// member never receives the new epoch's events or sender keys, so it cannot read
+    /// post-removal messages.
+    pub async fn remove_channel_member(
+        &self,
+        channel: ConversationId,
+        member_user_id: &str,
+    ) -> Result<(), NodeError> {
+        let (name, mut new_members, new_epoch) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            (
+                state.name().to_string(),
+                state.members().to_vec(),
+                state.epoch() + 1,
+            )
+        };
+        new_members.retain(|m| m.user_id() != member_user_id);
+        let meta = ChannelMeta {
+            name,
+            members: new_members.clone(),
+            epoch: new_epoch,
+        };
+        self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
+        self.process_channel(channel);
+        self.distribute_channel(channel, &new_members).await;
+        Ok(())
+    }
+
     /// Send a message to a channel we hold the key for. Distribution is best-effort
     /// and fail-soft: returns `Ok(())` once the event is appended locally, regardless
     /// of how many members were reachable (an offline member catches up via sync).
@@ -1256,6 +1328,21 @@ mod tests {
         roster
     }
 
+    /// Add another known peer to an existing roster (for multi-peer rigs).
+    fn add_peer(
+        roster: &Arc<Mutex<Roster>>,
+        peer: &DeviceIdentity,
+        name: &str,
+        port: u16,
+        self_user_id: &str,
+    ) {
+        roster.lock().unwrap().update(
+            &Announce::new(peer, name, port),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            self_user_id,
+        );
+    }
+
     #[tokio::test]
     async fn send_dm_to_unknown_peer_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -1785,6 +1872,141 @@ mod tests {
         assert!(alice_hist
             .iter()
             .any(|h| !h.from_me && h.text == b"hi alice" && h.who == bob_node.user_id()));
+    }
+
+    /// Live add-member rig over loopback TCP: Alice creates a {Alice, Bob} channel and
+    /// they exchange an epoch-0 message. Alice then adds Carol (a third node, member of
+    /// nobody) via `add_channel_member`, bumping to epoch 1, and sends a new message.
+    /// Carol — who got the `MembershipChange` + Alice's lazily-distributed epoch-1 SKD —
+    /// receives + decrypts the epoch-1 message, but NOT the epoch-0 one she joined after
+    /// (late-join isolation / forward secrecy).
+    #[tokio::test]
+    async fn adding_a_channel_member_lets_them_receive_new_messages() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let carol = DeviceIdentity::generate();
+        let bob_pub = bob.public();
+        let carol_pub = carol.public();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let carol_uid = carol.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+        let carol_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let carol_addr = carol_listener.local_addr().unwrap();
+
+        // Alice knows Bob and Carol (so she can dial both to distribute). Bob and Carol
+        // each know Alice (enough to receive her pushes).
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        add_peer(
+            &alice_roster,
+            &carol,
+            "Carol",
+            carol_addr.port(),
+            &alice_uid,
+        );
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
+        let carol_roster = seed_roster(&alice, "Alice", alice_addr.port(), &carol_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_file, _a_file_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
+        let (b_file, _b_file_r) = mpsc::unbounded_channel();
+        let (c_dm, _c_dm_r) = mpsc::unbounded_channel();
+        let (c_ch, mut c_ch_r) = mpsc::unbounded_channel();
+        let (c_file, _c_file_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_file,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_file,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let carol_node = Node::open(
+            carol,
+            carol_roster,
+            c_dm,
+            c_ch,
+            c_file,
+            &dir.path().join("c.log"),
+            &dir.path().join("c-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+        tokio::spawn(Arc::clone(&carol_node).run_accept_loop(carol_listener));
+
+        // Epoch 0: {Alice, Bob}. Alice sends; Bob receives.
+        let channel = alice_node
+            .create_channel("general", vec![bob_pub])
+            .await
+            .unwrap();
+        alice_node
+            .send_channel_message(channel, b"epoch0 msg")
+            .await
+            .unwrap();
+        let got0 = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
+            .await
+            .expect("bob received the epoch-0 message within 5s")
+            .expect("channel stream open");
+        assert_eq!(got0.text, b"epoch0 msg");
+
+        // Add Carol (epoch 1). She gets the MembershipChange via Alice's distribution.
+        alice_node
+            .add_channel_member(channel, carol_pub)
+            .await
+            .unwrap();
+
+        // Epoch 1: Alice sends. Her lazy SKD for epoch 1 is distributed before the seal,
+        // so both Bob (still a member) and Carol (newly joined) can read it.
+        alice_node
+            .send_channel_message(channel, b"epoch1 msg")
+            .await
+            .unwrap();
+
+        let got_carol = tokio::time::timeout(Duration::from_secs(5), c_ch_r.recv())
+            .await
+            .expect("carol received the epoch-1 message within 5s")
+            .expect("channel stream open");
+        assert_eq!(got_carol.text, b"epoch1 msg");
+        assert_eq!(got_carol.from, alice_node.user_id());
+
+        // Late-join isolation: Carol never receives the epoch-0 message (she joined at
+        // epoch 1). Her history holds only the epoch-1 message.
+        let carol_hist = carol_node.channel_history(channel, 10);
+        assert!(
+            carol_hist.iter().all(|h| h.text != b"epoch0 msg"),
+            "late joiner must not read pre-join messages"
+        );
+        assert!(carol_hist.iter().any(|h| h.text == b"epoch1 msg"));
+        assert!(
+            c_ch_r.try_recv().is_err(),
+            "carol must not receive the pre-join epoch-0 message"
+        );
     }
 
     /// Forward-secrecy rig: Alice + Bob channel; Alice sends two messages; Bob reads
