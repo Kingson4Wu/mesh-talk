@@ -4,11 +4,11 @@
 //! per-channel state + decrypted messages. Operates on `Event`s — no live network.
 
 use crate::channel::{open_group_key, seal_group_key, ChannelMeta, ChannelState, GroupKey};
-use crate::eventlog::event::{Author, ConversationId, Event, EventKind};
+use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The `KeyRotation` event payload: the epoch's group key sealed to each member.
 /// Each `(user_id, sealed)` is `seal_group_key(author, member.x25519, key)`; only
@@ -89,6 +89,7 @@ pub struct ReceivedChannelMessage {
 #[derive(Default)]
 pub struct ChannelBook {
     states: HashMap<ConversationId, ChannelState>,
+    emitted: HashSet<EventId>,
 }
 
 impl ChannelBook {
@@ -157,19 +158,21 @@ impl ChannelBook {
                     }
                 }
                 EventKind::Message => {
-                    if event.author == my_author {
-                        continue;
+                    if event.author == my_author || self.emitted.contains(&event.id) {
+                        continue; // our own message, or already surfaced
                     }
                     let Some(state) = self.states.get(&channel_id) else {
                         continue;
                     };
                     if let Some(text) = state.open_message(&event.ciphertext) {
-                        out.push(ReceivedChannelMessage {
+                        let msg = ReceivedChannelMessage {
                             channel_id,
                             channel_name: state.name().to_string(),
                             from: event.author.user_id(),
                             text,
-                        });
+                        };
+                        self.emitted.insert(event.id);
+                        out.push(msg);
                     }
                 }
                 _ => {}
@@ -343,5 +346,49 @@ mod tests {
         let bob_got2 = bob_book.process(&bob, channel, &collect(&bob_log, &channel));
         assert!(bob_got2.iter().any(|m| m.text == b"welcome carol"));
         assert_eq!(bob_book.state(&channel).unwrap().epoch(), 1);
+    }
+
+    #[test]
+    fn process_does_not_re_emit_an_already_seen_message() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let channel = new_channel_id();
+        let mut alice_log = EventLog::default();
+        let key0 = GroupKey::generate();
+        let meta0 = ChannelMeta {
+            name: "general".into(),
+            members: vec![alice.public(), bob.public()],
+            epoch: 0,
+        };
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            meta0.encode(),
+        );
+        let sealed0 = seal_keys_for(&alice, &meta0.members, &key0, 0).unwrap();
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::KeyRotation,
+            sealed0.encode(),
+        );
+        let mut alice_state = ChannelState::from_meta(channel, meta0.clone());
+        alice_state.record_key(0, key0);
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::Message,
+            alice_state.seal_message(b"hi").unwrap(),
+        );
+
+        let mut book = ChannelBook::new();
+        let first = book.process(&bob, channel, &collect(&alice_log, &channel));
+        assert_eq!(first.len(), 1);
+        let second = book.process(&bob, channel, &collect(&alice_log, &channel));
+        assert!(second.is_empty());
     }
 }

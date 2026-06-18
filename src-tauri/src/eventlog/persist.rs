@@ -199,6 +199,11 @@ impl PersistentEventLog {
     pub fn all_event_ids(&self) -> Vec<EventId> {
         self.log.all_event_ids()
     }
+
+    /// All conversation ids this log holds events for (used to rebuild channel state).
+    pub fn conversations(&self) -> Vec<ConversationId> {
+        self.log.conversations()
+    }
 }
 
 // NOTE: this impl is structurally identical to `impl SyncStore for EventLog`

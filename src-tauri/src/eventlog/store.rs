@@ -126,6 +126,11 @@ impl EventLog {
         self.events.keys().copied().collect()
     }
 
+    /// All conversation ids this log holds events for.
+    pub fn conversations(&self) -> Vec<ConversationId> {
+        self.by_conversation.keys().copied().collect()
+    }
+
     pub fn get(&self, id: &EventId) -> Option<&Event> {
         self.events.get(id)
     }
