@@ -8,10 +8,16 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use bincode::Options;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
 const MAX_SKIP: u32 = 1000;
+
+/// Hard cap on TOTAL buffered skipped message keys (across all chains/steps) — a
+/// memory-DoS backstop. Oldest are evicted; an extremely-late message older than
+/// this bound won't decrypt (acceptable, matches Signal's bounded buffer).
+const MAX_SKIPPED_TOTAL: usize = 2000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RatchetError {
@@ -62,6 +68,7 @@ pub struct RatchetState {
     nr: u32,                  // messages received in current receiving chain
     pn: u32,                  // previous sending-chain length
     skipped: HashMap<([u8; 32], u32), [u8; 32]>, // (their ratchet pub, n) -> mk
+    skipped_order: VecDeque<([u8; 32], u32)>, // insertion order for FIFO eviction
 }
 
 fn dh(secret: &StaticSecret, public: &PublicKey) -> [u8; 32] {
@@ -86,6 +93,7 @@ pub fn init_alice(shared_secret: &[u8; 32], bob_ratchet_pub: &[u8; 32]) -> Ratch
         nr: 0,
         pn: 0,
         skipped: HashMap::new(),
+        skipped_order: VecDeque::new(),
     }
 }
 
@@ -106,6 +114,7 @@ pub fn init_bob(shared_secret: &[u8; 32], bob_ratchet_secret: [u8; 32]) -> Ratch
         nr: 0,
         pn: 0,
         skipped: HashMap::new(),
+        skipped_order: VecDeque::new(),
     }
 }
 
@@ -174,6 +183,14 @@ impl RatchetState {
         while self.nr < until {
             let (ck2, mk) = kdf_ck(&ck);
             self.skipped.insert((dhr, self.nr), mk);
+            self.skipped_order.push_back((dhr, self.nr));
+            while self.skipped.len() > MAX_SKIPPED_TOTAL {
+                if let Some(old) = self.skipped_order.pop_front() {
+                    self.skipped.remove(&old);
+                } else {
+                    break;
+                }
+            }
             ck = ck2;
             self.nr += 1;
         }
@@ -252,6 +269,8 @@ impl RatchetState {
             .ok()?;
         let dhs_secret = StaticSecret::from(wire.dhs_secret);
         let dhs_public = PublicKey::from(&dhs_secret);
+        let skipped_order: VecDeque<([u8; 32], u32)> =
+            wire.skipped.iter().map(|(p, n, _)| (*p, *n)).collect();
         let skipped: HashMap<([u8; 32], u32), [u8; 32]> = wire
             .skipped
             .into_iter()
@@ -268,7 +287,30 @@ impl RatchetState {
             nr: wire.nr,
             pn: wire.pn,
             skipped,
+            skipped_order,
         })
+    }
+
+    /// Test-only accessor: number of currently buffered skipped keys.
+    #[cfg(test)]
+    pub fn skipped_len(&self) -> usize {
+        self.skipped.len()
+    }
+}
+
+impl Drop for RatchetState {
+    fn drop(&mut self) {
+        self.rk.zeroize();
+        if let Some(ck) = self.cks.as_mut() {
+            ck.zeroize();
+        }
+        if let Some(ck) = self.ckr.as_mut() {
+            ck.zeroize();
+        }
+        for mk in self.skipped.values_mut() {
+            mk.zeroize();
+        }
+        // dhs_secret (StaticSecret) zeroizes itself on drop.
     }
 }
 
@@ -433,5 +475,30 @@ mod tests {
 
         // Malformed input is rejected.
         assert!(RatchetState::deserialize(b"junk").is_none());
+    }
+
+    #[test]
+    fn skipped_buffer_is_bounded() {
+        let (mut alice, mut bob) = pair();
+        // Drive many small skipped-key steps across DH ratchets so the TOTAL would
+        // exceed the cap without eviction. Each round: Alice sends N then bob jumps.
+        for _ in 0..6 {
+            // advance alice's chain with a fresh DH ratchet each round
+            let (hb, cb) = {
+                let (h1, c1) = alice.ratchet_encrypt(b"x").unwrap();
+                bob.ratchet_decrypt(&h1, &c1).unwrap();
+                bob.ratchet_encrypt(b"y").unwrap()
+            };
+            alice.ratchet_decrypt(&hb, &cb).unwrap();
+            // Alice sends 500, bob skips to the last → 499 skipped keys this step.
+            let mut last = None;
+            for i in 0..500u32 {
+                last = Some(alice.ratchet_encrypt(format!("m{i}").as_bytes()).unwrap());
+            }
+            let (h, c) = last.unwrap();
+            bob.ratchet_decrypt(&h, &c).unwrap();
+        }
+        // Total buffered skipped keys never exceeds the cap.
+        assert!(bob.skipped_len() <= MAX_SKIPPED_TOTAL);
     }
 }
