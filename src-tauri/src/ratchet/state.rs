@@ -40,7 +40,7 @@ pub struct Header {
 }
 
 impl Header {
-    fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Vec<u8> {
         bincode::DefaultOptions::new()
             .with_fixint_encoding()
             .serialize(self)
