@@ -3,7 +3,9 @@
 //! carries chunks as events and seals the manifest with the conversation crypto.
 
 pub mod crypto;
+pub mod manifest;
 
 pub use crypto::{
     file_checksum, open_chunk, seal_chunk, split_chunks, FileError, FileKey, CHUNK_SIZE,
 };
+pub use manifest::{reassemble_and_verify, FileManifest};
