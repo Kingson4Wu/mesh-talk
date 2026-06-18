@@ -200,6 +200,78 @@ impl RatchetState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Serialization mirror (private — used only inside serialize/deserialize)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct RatchetWire {
+    dhs_secret: [u8; 32],
+    dhr: Option<[u8; 32]>,
+    rk: [u8; 32],
+    cks: Option<[u8; 32]>,
+    ckr: Option<[u8; 32]>,
+    ns: u32,
+    nr: u32,
+    pn: u32,
+    // (their ratchet pub, message number, message key)
+    skipped: Vec<([u8; 32], u32, [u8; 32])>,
+}
+
+impl RatchetState {
+    /// Serialize the full session (fixint bincode). The output is SECRET — callers
+    /// MUST store it encrypted at rest.
+    pub fn serialize(&self) -> Vec<u8> {
+        let wire = RatchetWire {
+            dhs_secret: self.dhs_secret.to_bytes(),
+            dhr: self.dhr.map(|p| p.to_bytes()),
+            rk: self.rk,
+            cks: self.cks,
+            ckr: self.ckr,
+            ns: self.ns,
+            nr: self.nr,
+            pn: self.pn,
+            skipped: self
+                .skipped
+                .iter()
+                .map(|((pub_, n), mk)| (*pub_, *n, *mk))
+                .collect(),
+        };
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .serialize(&wire)
+            .expect("ratchet state serializes")
+    }
+
+    /// Reconstruct a session from [`serialize`] output. `None` if malformed.
+    pub fn deserialize(bytes: &[u8]) -> Option<RatchetState> {
+        let wire: RatchetWire = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .reject_trailing_bytes()
+            .deserialize(bytes)
+            .ok()?;
+        let dhs_secret = StaticSecret::from(wire.dhs_secret);
+        let dhs_public = PublicKey::from(&dhs_secret);
+        let skipped: HashMap<([u8; 32], u32), [u8; 32]> = wire
+            .skipped
+            .into_iter()
+            .map(|(pub_, n, mk)| ((pub_, n), mk))
+            .collect();
+        Some(RatchetState {
+            dhs_secret,
+            dhs_public,
+            dhr: wire.dhr.map(PublicKey::from),
+            rk: wire.rk,
+            cks: wire.cks,
+            ckr: wire.ckr,
+            ns: wire.ns,
+            nr: wire.nr,
+            pn: wire.pn,
+            skipped,
+        })
+    }
+}
+
 fn aead_encrypt(mk: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, RatchetError> {
     let (key, nonce) = message_keys(mk);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| RatchetError::Decrypt)?;
@@ -334,5 +406,32 @@ mod tests {
         };
         assert_eq!(Header::decode(&h.encode()).unwrap().n, 9);
         assert!(Header::decode(b"junk").is_none() || Header::decode(b"junk").is_some());
+    }
+
+    #[test]
+    fn a_serialized_session_resumes_losslessly() {
+        let (mut alice, mut bob) = pair();
+        // Exchange a few messages (advance both chains + a DH ratchet).
+        let (h1, c1) = alice.ratchet_encrypt(b"a1").unwrap();
+        bob.ratchet_decrypt(&h1, &c1).unwrap();
+        let (hb, cb) = bob.ratchet_encrypt(b"b1").unwrap();
+        alice.ratchet_decrypt(&hb, &cb).unwrap();
+        // Create a skipped key on Bob's side (Alice sends 2, Bob will get #1 later).
+        let (h2, c2) = alice.ratchet_encrypt(b"a2").unwrap();
+        let (h3, c3) = alice.ratchet_encrypt(b"a3").unwrap();
+        bob.ratchet_decrypt(&h3, &c3).unwrap(); // stores skipped key for a2
+
+        // Serialize BOTH, drop, and reload.
+        let alice2 = RatchetState::deserialize(&alice.serialize()).unwrap();
+        let mut bob2 = RatchetState::deserialize(&bob.serialize()).unwrap();
+        let mut alice2 = alice2;
+
+        // Bob reloads and can still open the skipped a2; Alice reloads and keeps sending.
+        assert_eq!(bob2.ratchet_decrypt(&h2, &c2).unwrap(), b"a2");
+        let (h4, c4) = alice2.ratchet_encrypt(b"a4").unwrap();
+        assert_eq!(bob2.ratchet_decrypt(&h4, &c4).unwrap(), b"a4");
+
+        // Malformed input is rejected.
+        assert!(RatchetState::deserialize(b"junk").is_none());
     }
 }
