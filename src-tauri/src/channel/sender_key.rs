@@ -12,6 +12,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use zeroize::Zeroize;
 
 /// Max messages a receiver will skip forward in one sender's chain (DoS bound) and
 /// the total buffered skipped keys.
@@ -30,6 +31,12 @@ pub enum SenderKeyError {
 pub struct SenderKey {
     chain_key: [u8; 32],
     n: u32,
+}
+
+impl Drop for SenderKey {
+    fn drop(&mut self) {
+        self.chain_key.zeroize();
+    }
 }
 
 impl SenderKey {
@@ -126,6 +133,15 @@ pub struct SenderChain {
     order: VecDeque<u32>,
 }
 
+impl Drop for SenderChain {
+    fn drop(&mut self) {
+        self.chain_key.zeroize();
+        for mk in self.skipped.values_mut() {
+            mk.zeroize();
+        }
+    }
+}
+
 impl SenderChain {
     pub fn from_distribution(skd: &SenderKeyDistribution) -> Self {
         SenderChain {
@@ -141,6 +157,14 @@ impl SenderChain {
     /// buffered key, or beyond the skip bound.
     pub fn message_key(&mut self, target: u32) -> Result<[u8; 32], SenderKeyError> {
         if let Some(mk) = self.skipped.remove(&target) {
+            // Prune now-stale heads so `order` stays bounded by the live `skipped` map.
+            while self
+                .order
+                .front()
+                .is_some_and(|k| !self.skipped.contains_key(k))
+            {
+                self.order.pop_front();
+            }
             return Ok(mk);
         }
         if target < self.n {
