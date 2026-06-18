@@ -26,9 +26,52 @@
           </li>
           <li v-if="!peers.length" class="empty">No peers discovered yet…</li>
         </ul>
+
+        <div class="peers-head channels-head">
+          <span>Channels ({{ channels.length }})</span>
+          <button class="icon" title="New channel" @click="showCreate = !showCreate">+</button>
+        </div>
+
+        <div v-if="showCreate" class="create-panel">
+          <input
+            v-model="newChannelName"
+            class="create-input"
+            placeholder="channel name"
+          />
+          <div class="create-members">
+            <label v-for="p in peers" :key="p.user_id" class="member-row">
+              <input type="checkbox" v-model="selectedMembers[p.user_id]" />
+              {{ p.name || p.user_id.slice(0, 8) }}
+            </label>
+            <span v-if="!peers.length" class="empty">No peers to add.</span>
+          </div>
+          <div class="create-actions">
+            <button
+              class="create-btn"
+              :disabled="!newChannelName.trim()"
+              @click="createChannel"
+            >Create</button>
+            <button class="cancel-btn" @click="showCreate = false">Cancel</button>
+          </div>
+        </div>
+
+        <ul>
+          <li
+            v-for="c in channels"
+            :key="c.channel_id"
+            :class="{ active: activeChannel && c.channel_id === activeChannel.channel_id }"
+            @click="selectChannel(c)"
+          >
+            <span class="ch-hash">#</span>
+            <span class="name">{{ c.name }}</span>
+            <span class="uid">{{ c.member_count }}m</span>
+            <span v-if="channelUnread[c.channel_id]" class="badge">{{ channelUnread[c.channel_id] }}</span>
+          </li>
+          <li v-if="!channels.length" class="empty">No channels yet.</li>
+        </ul>
       </aside>
 
-      <section v-if="activePeer" class="chat">
+      <section v-if="activePeer || activeChannel" class="chat">
         <div ref="msgList" class="messages">
           <div
             v-for="(m, i) in messages"
@@ -44,7 +87,9 @@
         <form class="composer" @submit.prevent="send">
           <input
             v-model="draft"
-            :placeholder="`Message ${activePeer.name || activePeer.user_id.slice(0, 8)}…`"
+            :placeholder="activeChannel
+              ? `Message #${activeChannel.name}…`
+              : `Message ${activePeer.name || activePeer.user_id.slice(0, 8)}…`"
           />
           <button type="submit" :disabled="!draft.trim()">Send</button>
         </form>
@@ -52,7 +97,7 @@
       </section>
 
       <section v-else class="chat empty-chat">
-        <p>Select a peer to start chatting.</p>
+        <p>Select a peer or channel to start chatting.</p>
         <p v-if="error" class="error">{{ error }}</p>
       </section>
     </div>
@@ -78,8 +123,16 @@ const error = ref("");
 const unread = reactive({});
 const msgList = ref(null);
 
+const channels = ref([]);
+const activeChannel = ref(null);
+const channelUnread = reactive({});
+const showCreate = ref(false);
+const newChannelName = ref("");
+const selectedMembers = reactive({});
+
 let refreshTimer = null;
 let unlisten = null;
+let unlistenChannel = null;
 
 async function refreshPeers() {
   try {
@@ -89,7 +142,16 @@ async function refreshPeers() {
   }
 }
 
+async function refreshChannels() {
+  try {
+    channels.value = await API.redesign.listChannels();
+  } catch (_e) {
+    // node may still be starting; leave the list as-is
+  }
+}
+
 async function selectPeer(p) {
+  activeChannel.value = null;
   activePeer.value = p;
   delete unread[p.user_id];
   await loadHistory();
@@ -111,12 +173,38 @@ async function loadHistory() {
   }
 }
 
-async function send() {
-  const text = draft.value.trim();
-  if (!text || !activePeer.value) return;
+async function selectChannel(c) {
+  activePeer.value = null;
+  activeChannel.value = c;
+  delete channelUnread[c.channel_id];
+  await loadChannelHistory();
+}
+
+async function loadChannelHistory() {
+  const target = activeChannel.value;
+  if (!target) return;
   error.value = "";
   try {
-    await API.redesign.sendDm(activePeer.value.user_id, text);
+    const items = await API.redesign.channelHistory(target.channel_id, 100);
+    if (activeChannel.value?.channel_id !== target.channel_id) return;
+    messages.value = items;
+    await scrollDown();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function send() {
+  const text = draft.value.trim();
+  if (!text) return;
+  if (!activePeer.value && !activeChannel.value) return;
+  error.value = "";
+  try {
+    if (activeChannel.value) {
+      await API.redesign.sendChannelMessage(activeChannel.value.channel_id, text);
+    } else {
+      await API.redesign.sendDm(activePeer.value.user_id, text);
+    }
     // We get no inbound echo for our own message, so append optimistically.
     messages.value.push({ from_me: true, who: "you", text, wall_clock: Date.now() });
     draft.value = "";
@@ -141,6 +229,39 @@ function onInbound(payload) {
   }
 }
 
+function onChannelInbound(payload) {
+  if (activeChannel.value && payload.channel_id === activeChannel.value.channel_id) {
+    messages.value.push({
+      from_me: false,
+      who: payload.from,
+      text: payload.text,
+      wall_clock: Date.now(),
+    });
+    void scrollDown();
+  } else {
+    channelUnread[payload.channel_id] = (channelUnread[payload.channel_id] || 0) + 1;
+  }
+  // Refresh so a brand-new channel (created by a peer) appears in the list.
+  refreshChannels();
+}
+
+async function createChannel() {
+  const ids = Object.keys(selectedMembers).filter((k) => selectedMembers[k]);
+  const name = newChannelName.value.trim();
+  if (!name) return;
+  try {
+    const id = await API.redesign.createChannel(name, ids);
+    newChannelName.value = "";
+    Object.keys(selectedMembers).forEach((k) => delete selectedMembers[k]);
+    showCreate.value = false;
+    await refreshChannels();
+    const created = channels.value.find((c) => c.channel_id === id);
+    if (created) await selectChannel(created);
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
 async function scrollDown() {
   await nextTick();
   if (msgList.value) {
@@ -159,13 +280,16 @@ onMounted(async () => {
     error.value = "Redesign node not started yet — give it a moment after login.";
   }
   await refreshPeers();
-  refreshTimer = setInterval(refreshPeers, 3000);
+  await refreshChannels();
+  refreshTimer = setInterval(() => { refreshPeers(); refreshChannels(); }, 3000);
   unlisten = await listen("redesign-dm-received", (ev) => onInbound(ev.payload ?? {}));
+  unlistenChannel = await listen("redesign-channel-message", (ev) => onChannelInbound(ev.payload ?? {}));
 });
 
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer);
   if (typeof unlisten === "function") unlisten();
+  if (typeof unlistenChannel === "function") unlistenChannel();
 });
 </script>
 
@@ -217,6 +341,10 @@ onBeforeUnmount(() => {
   color: rgba(148, 163, 184, 1);
   font-size: 13px;
 }
+.channels-head {
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+  margin-top: 4px;
+}
 .peers .icon {
   background: transparent;
   border: none;
@@ -263,9 +391,71 @@ onBeforeUnmount(() => {
   font-size: 11px;
   padding: 0 6px;
 }
+.ch-hash {
+  color: rgba(148, 163, 184, 0.6);
+  font-size: 13px;
+}
 .empty {
   color: rgba(148, 163, 184, 0.8);
   padding: 12px;
+  font-size: 13px;
+}
+.create-panel {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+.create-input {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(15, 23, 42, 1);
+  color: rgba(226, 232, 240, 1);
+  font-size: 13px;
+}
+.create-members {
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+}
+.create-actions {
+  display: flex;
+  gap: 6px;
+}
+.create-btn {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: 6px;
+  border: none;
+  background: #4ade80;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 13px;
+}
+.create-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cancel-btn {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: rgba(148, 163, 184, 1);
+  cursor: pointer;
   font-size: 13px;
 }
 .chat {

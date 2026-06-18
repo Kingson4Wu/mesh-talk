@@ -94,6 +94,10 @@ const redesignAPI = {
   listPeers: () => invoke("redesign_list_peers"),
   sendDm: (recipient, text) => invoke("redesign_send_dm", { recipient, text }),
   history: (peer, limit) => invoke("redesign_history", { peer, limit }),
+  listChannels: () => invoke("redesign_list_channels"),
+  createChannel: (name, memberIds) => invoke("redesign_create_channel", { name, memberIds }),
+  sendChannelMessage: (channelId, text) => invoke("redesign_send_channel_message", { channelId, text }),
+  channelHistory: (channelId, limit) => invoke("redesign_channel_history", { channelId, limit }),
 };
 
 // Combined API service
