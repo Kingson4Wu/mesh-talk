@@ -11,9 +11,11 @@ use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::eventlog::persist::PersistentEventLog;
 use crate::eventlog::LogError;
+use crate::file::FileManifest;
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
+use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::postbox::elected_post_office;
 use crate::node::sentlog::SentLog;
 use crate::node::session::{request_round, serve_one, Served, SessionError};
@@ -90,6 +92,8 @@ pub struct Node {
     channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
     channels: Mutex<ChannelBook>,
     emitted: Mutex<HashSet<EventId>>,
+    file_incoming: mpsc::UnboundedSender<ReceivedFile>,
+    files: Mutex<FileBook>,
 }
 
 impl Node {
@@ -102,6 +106,7 @@ impl Node {
         roster: Arc<Mutex<Roster>>,
         incoming: mpsc::UnboundedSender<ReceivedDm>,
         channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
+        file_incoming: mpsc::UnboundedSender<ReceivedFile>,
         log_path: &Path,
         sent_path: &Path,
         password: &str,
@@ -114,6 +119,17 @@ impl Node {
             let events = log.events(&conv);
             let _ = channels.process(&identity, conv, &events);
         }
+        // Seed the file book's emitted set so existing manifests are not re-surfaced
+        // after restart. Opening them needs roster/channel crypto unavailable at open
+        // time — persisting opened manifests across restart is deferred.
+        let mut files = FileBook::new();
+        for conv in log.conversations() {
+            for event in log.events(&conv) {
+                if event.kind == EventKind::FileManifest {
+                    files.mark_emitted(event.id);
+                }
+            }
+        }
         Ok(Arc::new(Self {
             identity,
             log: Mutex::new(log),
@@ -123,6 +139,8 @@ impl Node {
             channel_incoming,
             channels: Mutex::new(channels),
             emitted: Mutex::new(emitted),
+            file_incoming,
+            files: Mutex::new(files),
         }))
     }
 
@@ -270,6 +288,83 @@ impl Node {
         while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
             self.emit_new_messages(conv);
             self.process_channel(conv);
+            self.process_file_events(conv);
+        }
+    }
+
+    /// Open and surface any new `FileManifest` events in `conv`. Channel manifests
+    /// open with the channel group key; DM manifests with the DM sealed-box (the
+    /// author's X25519 from the roster). A no-op for conversations with no new
+    /// manifest events. Own manifests are skipped (the sender already knows).
+    fn process_file_events(&self, conv: ConversationId) {
+        let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
+        let manifest_events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::FileManifest && e.author != self_author)
+                .cloned()
+                .collect()
+        };
+        if manifest_events.is_empty() {
+            return;
+        }
+        // Is this a channel conversation? If so, open with its group key.
+        let is_channel = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.state(&conv).is_some()
+        };
+        let mut surfaced: Vec<ReceivedFile> = Vec::new();
+        for event in manifest_events {
+            {
+                let mut files = self.files.lock().expect("files mutex not poisoned");
+                if files.is_emitted(&event.id) {
+                    continue;
+                }
+                files.mark_emitted(event.id);
+            }
+            let plaintext = if is_channel {
+                let book = self.channels.lock().expect("channels mutex not poisoned");
+                match book
+                    .state(&conv)
+                    .and_then(|s| s.open_message(&event.ciphertext))
+                {
+                    Some(p) => p,
+                    None => continue,
+                }
+            } else {
+                let author_uid = event.author.user_id();
+                let sender_x25519 = {
+                    let roster = self.roster.lock().expect("roster mutex not poisoned");
+                    match roster.get(&author_uid) {
+                        Some(p) => p.public.x25519_pub,
+                        None => continue, // author unknown → can't open yet
+                    }
+                };
+                match crate::dm::open(&self.identity, &sender_x25519, &event.ciphertext) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                }
+            };
+            let Some(manifest) = FileManifest::decode(&plaintext) else {
+                continue;
+            };
+            let received = ReceivedFile {
+                conv,
+                from: event.author.user_id(),
+                name: manifest.name.clone(),
+                size: manifest.size,
+                mime: manifest.mime.clone(),
+                file_conv: manifest.file_conv,
+            };
+            self.files
+                .lock()
+                .expect("files mutex not poisoned")
+                .record(manifest);
+            surfaced.push(received);
+        }
+        for rf in surfaced {
+            let _ = self.file_incoming.send(rf);
         }
     }
 
@@ -594,11 +689,13 @@ mod tests {
         let roster = Arc::new(Mutex::new(Roster::default())); // empty
         let (tx, _rx) = mpsc::unbounded_channel();
         let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             tx,
             ch_tx,
+            file_tx,
             &dir.path().join("me.log"),
             &dir.path().join("me-sent.log"),
             "pw",
@@ -629,11 +726,14 @@ mod tests {
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
         let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
         let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
+        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
+        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_tx,
             a_ch_tx,
+            a_file_tx,
             &dir.path().join("alice.log"),
             &dir.path().join("alice-sent.log"),
             "pw",
@@ -644,6 +744,7 @@ mod tests {
             bob_roster,
             bob_tx,
             b_ch_tx,
+            b_file_tx,
             &dir.path().join("bob.log"),
             &dir.path().join("bob-sent.log"),
             "pw",
@@ -740,11 +841,14 @@ mod tests {
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
         let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
         let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
+        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
+        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_tx,
             a_ch_tx,
+            a_file_tx,
             &dir.path().join("alice.log"),
             &dir.path().join("alice-sent.log"),
             "pw",
@@ -755,6 +859,7 @@ mod tests {
             bob_roster,
             bob_tx,
             b_ch_tx,
+            b_file_tx,
             &dir.path().join("bob.log"),
             &dir.path().join("bob-sent.log"),
             "pw",
@@ -804,11 +909,13 @@ mod tests {
         );
         let (tx, _rx) = mpsc::unbounded_channel();
         let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             tx,
             ch_tx,
+            file_tx,
             &dir.path().join("me.log"),
             &dir.path().join("me-sent.log"),
             "pw",
@@ -898,7 +1005,8 @@ mod tests {
         );
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
-        let node = Node::open(me, roster, tx, ch_tx, &log_path, &sent_path, "pw").unwrap();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let node = Node::open(me, roster, tx, ch_tx, file_tx, &log_path, &sent_path, "pw").unwrap();
 
         // Restored history must NOT be re-streamed.
         node.emit_new_messages(conv);
@@ -937,14 +1045,17 @@ mod tests {
 
         let (alice_dm_tx, _alice_dm_rx) = mpsc::unbounded_channel();
         let (alice_ch_tx, _alice_ch_rx) = mpsc::unbounded_channel();
+        let (alice_file_tx, _alice_file_rx) = mpsc::unbounded_channel();
         let (bob_dm_tx, _bob_dm_rx) = mpsc::unbounded_channel();
         let (bob_ch_tx, mut bob_ch_rx) = mpsc::unbounded_channel();
+        let (bob_file_tx, _bob_file_rx) = mpsc::unbounded_channel();
 
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_dm_tx,
             alice_ch_tx,
+            alice_file_tx,
             &dir.path().join("a.log"),
             &dir.path().join("a-sent.log"),
             "pw",
@@ -955,6 +1066,7 @@ mod tests {
             bob_roster,
             bob_dm_tx,
             bob_ch_tx,
+            bob_file_tx,
             &dir.path().join("b.log"),
             &dir.path().join("b-sent.log"),
             "pw",
@@ -994,11 +1106,13 @@ mod tests {
         let roster = Arc::new(Mutex::new(Roster::default()));
         let (dm_tx, _dm_rx) = mpsc::unbounded_channel();
         let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             dm_tx,
             ch_tx,
+            file_tx,
             &dir.path().join("m.log"),
             &dir.path().join("m-sent.log"),
             "pw",

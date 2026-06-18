@@ -97,11 +97,13 @@ impl RedesignRuntime {
         let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
         let (channel_tx, mut channel_rx) =
             mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
         let node = Node::open(
             identity,
             Arc::clone(&roster),
             incoming_tx,
             channel_tx,
+            file_tx,
             &dir.join("messages.log"),
             &dir.join("sent.log"),
             password,

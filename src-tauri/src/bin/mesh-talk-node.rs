@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
     let (channel_tx, _channel_rx) =
         mpsc::unbounded_channel::<mesh_talk::node::channel::ReceivedChannelMessage>();
+    let (file_tx, _file_rx) = mpsc::unbounded_channel::<mesh_talk::node::filebook::ReceivedFile>();
     // Derive log paths from the keystore path (sibling files, same directory).
     let keystore_path = std::path::Path::new(&args.keystore);
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
@@ -118,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&roster),
         incoming_tx,
         channel_tx,
+        file_tx,
         &log_path,
         &sent_path,
         &args.password,
