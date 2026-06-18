@@ -78,6 +78,7 @@ impl RedesignRuntime {
         password: &str,
         discovery_port: u16,
         on_dm: impl Fn(ReceivedDm) + Send + 'static,
+        on_channel: impl Fn(crate::node::channel::ReceivedChannelMessage) + Send + 'static,
     ) -> Result<RedesignRuntime, RuntimeError> {
         let dir = base_dir.join("redesign").join(account_id);
         std::fs::create_dir_all(&dir)?;
@@ -94,7 +95,7 @@ impl RedesignRuntime {
 
         let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
         let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
-        let (channel_tx, _channel_rx) =
+        let (channel_tx, mut channel_rx) =
             mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
         let node = Node::open(
             identity,
@@ -134,6 +135,11 @@ impl RedesignRuntime {
         tasks.push(tokio::spawn(async move {
             while let Some(dm) = incoming_rx.recv().await {
                 on_dm(dm);
+            }
+        }));
+        tasks.push(tokio::spawn(async move {
+            while let Some(msg) = channel_rx.recv().await {
+                on_channel(msg);
             }
         }));
 
@@ -177,6 +183,29 @@ impl RedesignRuntime {
         self.node.dm_history(peer, limit)
     }
 
+    /// Create a channel; returns its conversation id.
+    pub async fn create_channel(
+        &self,
+        name: &str,
+        members: Vec<PublicIdentity>,
+    ) -> Result<crate::eventlog::event::ConversationId, NodeError> {
+        self.node.create_channel(name, members).await
+    }
+
+    /// Channels this node is a member of.
+    pub fn list_channels(&self) -> Vec<crate::node::ChannelSummary> {
+        self.node.list_channels()
+    }
+
+    /// History of a channel (all senders).
+    pub fn channel_history(
+        &self,
+        channel: crate::eventlog::event::ConversationId,
+        limit: usize,
+    ) -> Vec<HistoryEntry> {
+        self.node.channel_history(channel, limit)
+    }
+
     /// A cloned handle to the underlying node, so an IPC command can snapshot it
     /// and release the `RedesignState` lock before an async send.
     pub fn handle(&self) -> Arc<Node> {
@@ -201,10 +230,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // An uncommon discovery port so the test doesn't touch the real one.
         let dp = 47990;
-        let runtime =
-            RedesignRuntime::start(dir.path(), "alice-user-id", "Alice", "pw", dp, |_dm| {})
-                .await
-                .expect("runtime starts");
+        let runtime = RedesignRuntime::start(
+            dir.path(),
+            "alice-user-id",
+            "Alice",
+            "pw",
+            dp,
+            |_dm| {},
+            |_ch| {},
+        )
+        .await
+        .expect("runtime starts");
 
         // The node opened and exposes a stable fingerprint; no peers yet.
         assert_eq!(runtime.user_id().len(), 32); // user_id is 32 hex chars
@@ -218,10 +254,17 @@ mod tests {
         assert!(node_dir.join("sent.log").exists());
 
         // Reopening the same dir reloads the SAME identity (persistent).
-        let runtime2 =
-            RedesignRuntime::start(dir.path(), "alice-user-id", "Alice", "pw", dp, |_dm| {})
-                .await
-                .expect("runtime reopens");
+        let runtime2 = RedesignRuntime::start(
+            dir.path(),
+            "alice-user-id",
+            "Alice",
+            "pw",
+            dp,
+            |_dm| {},
+            |_ch| {},
+        )
+        .await
+        .expect("runtime reopens");
         assert_eq!(runtime.user_id(), runtime2.user_id());
     }
 }

@@ -33,6 +33,14 @@ pub struct ReceivedDm {
     pub text: Vec<u8>,
 }
 
+/// A channel summary for listing in the UI.
+#[derive(Debug, Clone)]
+pub struct ChannelSummary {
+    pub id: ConversationId,
+    pub name: String,
+    pub member_count: usize,
+}
+
 /// A merged conversation-history entry (sent or received), for display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
@@ -121,6 +129,21 @@ impl Node {
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> UserId {
         self.identity.public().user_id()
+    }
+
+    /// Summaries of all channels this node is a member of.
+    pub fn list_channels(&self) -> Vec<ChannelSummary> {
+        let book = self.channels.lock().expect("channels mutex not poisoned");
+        book.channel_ids()
+            .into_iter()
+            .filter_map(|id| {
+                book.state(&id).map(|s| ChannelSummary {
+                    id,
+                    name: s.name().to_string(),
+                    member_count: s.members().len(),
+                })
+            })
+            .collect()
     }
 
     /// Send a DM to `recipient` (a known peer): seal it, append the Message event
@@ -962,5 +985,32 @@ mod tests {
         assert_eq!(hist.len(), 1);
         assert!(hist[0].from_me);
         assert_eq!(hist[0].text, b"hello channel");
+    }
+
+    #[tokio::test]
+    async fn list_channels_reports_created_channels() {
+        let me = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let roster = Arc::new(Mutex::new(Roster::default()));
+        let (dm_tx, _dm_rx) = mpsc::unbounded_channel();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let node = Node::open(
+            me,
+            roster,
+            dm_tx,
+            ch_tx,
+            &dir.path().join("m.log"),
+            &dir.path().join("m-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        assert!(node.list_channels().is_empty());
+        let id = node.create_channel("general", vec![]).await.unwrap();
+        let channels = node.list_channels();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].id, id);
+        assert_eq!(channels[0].name, "general");
+        assert_eq!(channels[0].member_count, 1); // just the creator
     }
 }

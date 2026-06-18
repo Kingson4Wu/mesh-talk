@@ -13,6 +13,6 @@ pub mod sentlog;
 pub mod session;
 pub mod transport;
 
-pub use node::{HistoryEntry, Node, NodeError, ReceivedDm};
+pub use node::{ChannelSummary, HistoryEntry, Node, NodeError, ReceivedDm};
 pub use postbox::elected_post_office;
 pub use runtime::{RedesignRuntime, RuntimeError};

@@ -310,6 +310,7 @@ pub async fn login(
                             dm.text,
                         );
                     },
+                    |_ch| {}, // placeholder; replaced by next task
                 )
                 .await
                 {
