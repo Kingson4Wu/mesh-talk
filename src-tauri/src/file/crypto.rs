@@ -12,8 +12,11 @@ const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
 const TAG_SIZE: usize = 16;
 
-/// The chunk size for splitting a file (256 KiB). The last chunk may be smaller.
-pub const CHUNK_SIZE: usize = 256 * 1024;
+/// The chunk size for splitting a file (48 KiB). Must be smaller than the
+/// transport's `MAX_PLAINTEXT` (65,519 B) once AES-GCM overhead is added;
+/// 48 KiB leaves ample room for sync framing overhead. The last chunk may be
+/// smaller.
+pub const CHUNK_SIZE: usize = 48 * 1024;
 
 /// A per-file symmetric key (AES-256-GCM). Generated fresh per file; carried inside
 /// the (sealed) `FileManifest` so only conversation members can decrypt chunks.

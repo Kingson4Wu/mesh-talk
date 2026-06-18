@@ -52,6 +52,11 @@ impl FileBook {
     pub fn mark_emitted(&mut self, id: EventId) {
         self.emitted.insert(id);
     }
+
+    /// The per-file conversation ids we have manifests for.
+    pub fn file_convs(&self) -> Vec<crate::eventlog::event::ConversationId> {
+        self.manifests.keys().copied().collect()
+    }
 }
 
 #[cfg(test)]

@@ -11,7 +11,9 @@ use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::eventlog::persist::PersistentEventLog;
 use crate::eventlog::LogError;
-use crate::file::FileManifest;
+use crate::file::{
+    file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
+};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
@@ -408,6 +410,7 @@ impl Node {
                 return; // channel broke; the next drain re-dials
             }
             self.emit_new_messages(conv);
+            self.process_file_events(conv);
         }
         // Drain known channel conversations as well.
         let channel_ids: Vec<ConversationId> = {
@@ -419,6 +422,18 @@ impl Node {
                 return;
             }
             self.process_channel(cid);
+            self.process_file_events(cid);
+        }
+        // Drain per-file conversations the file book knows (so a recipient pulls
+        // chunks the PO holds).
+        let file_convs: Vec<ConversationId> = {
+            let book = self.files.lock().expect("files mutex not poisoned");
+            book.file_convs()
+        };
+        for fc in file_convs {
+            if request_round(&mut channel, &self.log, fc).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -444,8 +459,8 @@ impl Node {
         let sealed = seal_keys_for(&self.identity, &members, &key, 0)
             .map_err(|e| NodeError::Channel(format!("key sealing failed: {e}")))?;
 
-        self.append_channel_event(channel, EventKind::MembershipChange, meta.encode())?;
-        self.append_channel_event(channel, EventKind::KeyRotation, sealed.encode())?;
+        self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
+        self.append_event(channel, EventKind::KeyRotation, sealed.encode())?;
         // Build our own channel state by replaying our own events (opens our key).
         self.process_channel(channel);
 
@@ -471,13 +486,130 @@ impl Node {
                 .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?;
             (payload, state.members().to_vec())
         };
-        self.append_channel_event(channel, EventKind::Message, payload)?;
+        self.append_event(channel, EventKind::Message, payload)?;
         self.distribute_channel(channel, &members).await;
         Ok(())
     }
 
+    /// Send the file at `path` to a DM peer. Chunks + seals it into a fresh per-file
+    /// conversation, seals the manifest to the recipient, posts a `FileManifest`
+    /// event into the DM conversation, and distributes both. Returns the per-file
+    /// conversation id (the handle for the recipient to save).
+    pub async fn send_file_dm(
+        &self,
+        recipient: &str,
+        path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        let peer = self
+            .roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .get(recipient)
+            .cloned()
+            .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
+
+        let (manifest, file_conv) = self.stage_file(path)?;
+        let sealed = crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest.encode())
+            .map_err(NodeError::Seal)?;
+        let dm_conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        self.append_event(dm_conv, EventKind::FileManifest, sealed)?;
+
+        self.deliver_direct(&peer, file_conv).await.ok();
+        self.replicate_to_post_office(file_conv).await.ok();
+        self.deliver_direct(&peer, dm_conv).await.ok();
+        self.replicate_to_post_office(dm_conv).await.ok();
+        Ok(file_conv)
+    }
+
+    /// Send the file at `path` to a channel we hold the key for.
+    pub async fn send_file_channel(
+        &self,
+        channel: ConversationId,
+        path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        let (manifest, file_conv) = self.stage_file(path)?;
+        let (sealed, members) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            let sealed = state
+                .seal_message(&manifest.encode())
+                .map_err(|e| NodeError::Channel(format!("manifest sealing failed: {e}")))?;
+            (sealed, state.members().to_vec())
+        };
+        self.append_event(channel, EventKind::FileManifest, sealed)?;
+        self.distribute_channel(file_conv, &members).await;
+        self.distribute_channel(channel, &members).await;
+        Ok(file_conv)
+    }
+
+    /// Read `path`, chunk + seal it into a fresh per-file conversation (appending a
+    /// chunk event per piece), and build the (unsealed) manifest. Shared by both
+    /// send paths. The caller seals + posts the manifest into the original conv.
+    fn stage_file(&self, path: &Path) -> Result<(FileManifest, ConversationId), NodeError> {
+        let data =
+            std::fs::read(path).map_err(|e| NodeError::Channel(format!("read file: {e}")))?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_string());
+        let key = FileKey::generate();
+        let checksum = file_checksum(&data);
+        let file_conv = crate::channel::new_channel_id();
+        let chunks = split_chunks(&data);
+        let chunk_count = chunks.len() as u32;
+        for chunk in &chunks {
+            let sealed = seal_chunk(&key, chunk)
+                .map_err(|e| NodeError::Channel(format!("chunk seal: {e}")))?;
+            self.append_event(file_conv, EventKind::Message, sealed)?;
+        }
+        let manifest = FileManifest {
+            name,
+            size: data.len() as u64,
+            mime: "application/octet-stream".to_string(),
+            checksum,
+            file_key: *key.as_bytes(),
+            file_conv,
+            chunk_count,
+        };
+        Ok((manifest, file_conv))
+    }
+
+    /// Save a received file (identified by its per-file conversation id) to `dest`:
+    /// gather the chunk events, reassemble, verify the checksum, and write. Errors if
+    /// the manifest is unknown, not all chunks have synced yet, or verification fails.
+    pub fn save_file(&self, file_conv: ConversationId, dest: &Path) -> Result<(), NodeError> {
+        let manifest = self
+            .files
+            .lock()
+            .expect("files mutex not poisoned")
+            .manifest(&file_conv)
+            .cloned()
+            .ok_or_else(|| NodeError::Channel("unknown file".into()))?;
+        let chunks: Vec<Vec<u8>> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&file_conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::Message)
+                .map(|e| e.ciphertext.clone())
+                .collect()
+        };
+        if chunks.len() as u32 != manifest.chunk_count {
+            return Err(NodeError::Channel(format!(
+                "file incomplete: {}/{} chunks",
+                chunks.len(),
+                manifest.chunk_count
+            )));
+        }
+        let data = reassemble_and_verify(&manifest, &chunks)
+            .map_err(|e| NodeError::Channel(format!("reassemble: {e}")))?;
+        std::fs::write(dest, data).map_err(|e| NodeError::Channel(format!("write file: {e}")))?;
+        Ok(())
+    }
+
     /// Append a channel event, sequencing it from the channel's log position.
-    fn append_channel_event(
+    fn append_event(
         &self,
         channel: ConversationId,
         kind: EventKind,
@@ -1126,5 +1258,83 @@ mod tests {
         assert_eq!(channels[0].id, id);
         assert_eq!(channels[0].name, "general");
         assert_eq!(channels[0].member_count, 1); // just the creator
+    }
+
+    #[tokio::test]
+    async fn two_nodes_transfer_a_file_over_loopback_tcp() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        // Bob knows Alice (to open her DM-sealed manifest); Alice knows Bob (to dial).
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
+        let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_f, _a_f_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+        // A multi-chunk payload.
+        let payload = vec![0xABu8; crate::file::CHUNK_SIZE + 1234];
+        let src = dir.path().join("photo.bin");
+        std::fs::write(&src, &payload).unwrap();
+
+        let bob_uid = bob_node.user_id();
+        let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
+
+        // Bob surfaces the received file.
+        let rf = tokio::time::timeout(std::time::Duration::from_secs(5), b_f_r.recv())
+            .await
+            .expect("bob received a file within 5s")
+            .expect("file stream open");
+        assert_eq!(rf.name, "photo.bin");
+        assert_eq!(rf.size, payload.len() as u64);
+        assert_eq!(rf.file_conv, file_conv);
+        assert_eq!(rf.from, alice_node.user_id());
+
+        // Bob saves it and the bytes match. Retry briefly: the file_conv chunk
+        // sync runs in a separate task and may land just after the manifest
+        // notification fires (separate TCP connection, same loopback).
+        let dest = dir.path().join("saved.bin");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match bob_node.save_file(rf.file_conv, &dest) {
+                    Ok(()) => break,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                }
+            }
+        })
+        .await
+        .expect("bob saved the file within 5s");
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
     }
 }
