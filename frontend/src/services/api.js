@@ -92,11 +92,13 @@ const networkAPI = {
 const redesignAPI = {
   myId: () => invoke("redesign_my_id"),
   listPeers: () => invoke("redesign_list_peers"),
-  sendDm: (recipient, text) => invoke("redesign_send_dm", { recipient, text }),
+  sendDm: (recipient, text, replyTo = null) =>
+    invoke("redesign_send_dm", { recipient, text, replyTo }),
   history: (peer, limit) => invoke("redesign_history", { peer, limit }),
   listChannels: () => invoke("redesign_list_channels"),
   createChannel: (name, memberIds) => invoke("redesign_create_channel", { name, memberIds }),
-  sendChannelMessage: (channelId, text) => invoke("redesign_send_channel_message", { channelId, text }),
+  sendChannelMessage: (channelId, text, replyTo = null) =>
+    invoke("redesign_send_channel_message", { channelId, text, replyTo }),
   channelHistory: (channelId, limit) => invoke("redesign_channel_history", { channelId, limit }),
   sendFileDm: (recipient, path) => invoke("redesign_send_file_dm", { recipient, path }),
   sendFileChannel: (channelId, path) => invoke("redesign_send_file_channel", { channelId, path }),

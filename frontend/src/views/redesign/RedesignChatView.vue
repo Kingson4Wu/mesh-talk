@@ -102,6 +102,10 @@
             :class="{ mine: m.from_me }"
           >
             <span class="who">{{ m.from_me ? "you" : m.who }}</span>
+            <span v-if="m.reply_to && replyPreview(m)" class="reply-context">
+              ↩ {{ replyPreview(m).who }}: {{ replyPreview(m).text }}
+            </span>
+            <span v-else-if="m.reply_to" class="reply-context muted">↩ replying to a message</span>
             <template v-if="m.file">
               <span class="file-card">
                 📄 {{ m.file.name }}<span v-if="m.file.size"> · {{ Math.ceil(m.file.size / 1024) }} KB</span>
@@ -128,9 +132,14 @@
                   <button v-for="e in EMOJIS" :key="e" @click="toggleReaction(m, e); m._pick = false">{{ e }}</button>
                 </span>
               </span>
+              <button type="button" class="chip reply-btn" @click="startReply(m)" title="Reply">↩</button>
             </div>
           </div>
           <div v-if="!messages.length" class="empty">No messages yet.</div>
+        </div>
+        <div v-if="replyingTo" class="reply-banner">
+          Replying to {{ replyingTo.from_me ? "you" : replyingTo.who }}: "{{ (replyingTo.text || "").slice(0, 50) }}"
+          <button type="button" class="cancel" @click="cancelReply">✕</button>
         </div>
         <form class="composer" @submit.prevent="send">
           <div v-if="mentionOpen && mentionCandidates.length" class="mention-pop">
@@ -195,6 +204,17 @@ const selectedMembers = reactive({});
 
 const reactions = ref([]);
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
+
+// --- reply-to ---
+const replyingTo = ref(null);
+function startReply(m) { if (m.id) replyingTo.value = m; }
+function cancelReply() { replyingTo.value = null; }
+function messageById(id) { return messages.value.find((m) => m.id === id); }
+function replyPreview(m) {
+  const p = m.reply_to ? messageById(m.reply_to) : null;
+  if (!p) return null;
+  return { who: p.from_me ? "you" : p.who, text: (p.text || "").slice(0, 60) };
+}
 
 // --- search ---
 const searchQuery = ref("");
@@ -383,15 +403,17 @@ async function send() {
   if (!text) return;
   if (!activePeer.value && !activeChannel.value) return;
   error.value = "";
+  const replyTo = replyingTo.value?.id || null;
   try {
     if (activeChannel.value) {
-      await API.redesign.sendChannelMessage(activeChannel.value.channel_id, text);
+      await API.redesign.sendChannelMessage(activeChannel.value.channel_id, text, replyTo);
     } else {
-      await API.redesign.sendDm(activePeer.value.user_id, text);
+      await API.redesign.sendDm(activePeer.value.user_id, text, replyTo);
     }
     // We get no inbound echo for our own message, so append optimistically.
-    messages.value.push({ from_me: true, who: "you", text, wall_clock: Date.now() });
+    messages.value.push({ from_me: true, who: "you", text, reply_to: replyTo, wall_clock: Date.now() });
     draft.value = "";
+    replyingTo.value = null;
     await scrollDown();
   } catch (e) {
     error.value = String(e);
@@ -405,6 +427,7 @@ function onInbound(payload) {
       from_me: false,
       who: payload.from_name,
       text: payload.text,
+      reply_to: payload.reply_to ?? null,
       wall_clock: Date.now(),
     });
     void scrollDown();
@@ -420,6 +443,7 @@ function onChannelInbound(payload) {
       from_me: false,
       who: payload.from,
       text: payload.text,
+      reply_to: payload.reply_to ?? null,
       wall_clock: Date.now(),
     });
     void scrollDown();
@@ -933,5 +957,52 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.reply-context {
+  font-size: 11px;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.1);
+  border-left: 2px solid #3b82f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.reply-context.muted {
+  color: rgba(148, 163, 184, 0.6);
+  background: transparent;
+  border-left-color: rgba(148, 163, 184, 0.3);
+}
+.reply-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: rgba(59, 130, 246, 0.1);
+  border-top: 1px solid rgba(59, 130, 246, 0.3);
+  font-size: 12px;
+  color: #93c5fd;
+}
+.reply-banner .cancel {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: rgba(148, 163, 184, 0.8);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.reply-banner .cancel:hover {
+  color: rgba(226, 232, 240, 1);
+}
+.reply-btn {
+  opacity: 0.6;
+}
+.reply-btn:hover {
+  opacity: 1;
 }
 </style>
