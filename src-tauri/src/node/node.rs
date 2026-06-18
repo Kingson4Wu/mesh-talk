@@ -53,6 +53,8 @@ pub enum NodeError {
     Log(crate::eventlog::LogError),
     /// The networked sync session failed.
     Session(SessionError),
+    /// A channel operation failed (unknown channel, or key/message sealing).
+    Channel(String),
 }
 
 impl std::fmt::Display for NodeError {
@@ -62,6 +64,7 @@ impl std::fmt::Display for NodeError {
             NodeError::Seal(e) => write!(f, "seal error: {e}"),
             NodeError::Log(e) => write!(f, "log error: {e}"),
             NodeError::Session(e) => write!(f, "session error: {e}"),
+            NodeError::Channel(m) => write!(f, "channel error: {m}"),
         }
     }
 }
@@ -321,7 +324,7 @@ impl Node {
             epoch: 0,
         };
         let sealed = seal_keys_for(&self.identity, &members, &key, 0)
-            .map_err(|_| NodeError::UnknownPeer("channel key sealing failed".into()))?;
+            .map_err(|e| NodeError::Channel(format!("key sealing failed: {e}")))?;
 
         self.append_channel_event(channel, EventKind::MembershipChange, meta.encode())?;
         self.append_channel_event(channel, EventKind::KeyRotation, sealed.encode())?;
@@ -332,7 +335,9 @@ impl Node {
         Ok(channel)
     }
 
-    /// Send a message to a channel we hold the key for.
+    /// Send a message to a channel we hold the key for. Distribution is best-effort
+    /// and fail-soft: returns `Ok(())` once the event is appended locally, regardless
+    /// of how many members were reachable (an offline member catches up via sync).
     pub async fn send_channel_message(
         &self,
         channel: ConversationId,
@@ -342,10 +347,10 @@ impl Node {
             let book = self.channels.lock().expect("channels mutex not poisoned");
             let state = book
                 .state(&channel)
-                .ok_or_else(|| NodeError::UnknownPeer(format!("unknown channel {channel:?}")))?;
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
             let payload = state
                 .seal_message(text)
-                .map_err(|_| NodeError::UnknownPeer("channel message sealing failed".into()))?;
+                .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?;
             (payload, state.members().to_vec())
         };
         self.append_channel_event(channel, EventKind::Message, payload)?;
