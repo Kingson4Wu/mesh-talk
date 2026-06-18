@@ -102,6 +102,11 @@ impl ChannelBook {
         self.states.get(channel_id)
     }
 
+    /// The ids of all channels this book knows.
+    pub fn channel_ids(&self) -> Vec<crate::eventlog::event::ConversationId> {
+        self.states.keys().copied().collect()
+    }
+
     /// Replay `events` (a channel's events, in log/causal order) for the node `me`.
     /// Updates membership + keys and returns the channel `Message`s that are newly
     /// decryptable and authored by someone other than `me`. Events we can't act on
