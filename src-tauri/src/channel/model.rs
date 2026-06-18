@@ -154,6 +154,12 @@ impl ChannelState {
             .distribution()
     }
 
+    /// Whether this node has already generated (and thus should have distributed) its
+    /// sender key for `epoch`.
+    pub fn has_my_sender(&self, epoch: u64) -> bool {
+        self.my_sender.contains_key(&epoch)
+    }
+
     /// Record a peer's sender chain for `(author, epoch)` from their distribution.
     pub fn record_sender_chain(&mut self, author: String, epoch: u64, skd: &SenderKeyDistribution) {
         self.sender_chains

@@ -599,15 +599,28 @@ impl Node {
         reply_to: Option<EventId>,
     ) -> Result<(), NodeError> {
         let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
-        let (payload, members) = {
+        // Ensure this node's sender-key distribution for the current epoch is published
+        // BEFORE the first seal (which generates+ratchets our chain to n=1). Without
+        // this, a non-creator member's messages are undecryptable by everyone.
+        let (members, already_distributed) = {
             let mut book = self.channels.lock().expect("channels mutex not poisoned");
             let state = book
                 .state_mut(&channel)
                 .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
-            let payload = state
+            let epoch = state.epoch();
+            (state.members().to_vec(), state.has_my_sender(epoch))
+        };
+        if !already_distributed {
+            self.distribute_my_sender_key(channel, &members)?;
+        }
+        let payload = {
+            let mut book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state_mut(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            state
                 .seal_sender_message(&wrapped)
-                .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?;
-            (payload, state.members().to_vec())
+                .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?
         };
         let seq = self.append_event(channel, EventKind::Message, payload)?;
         // Keep a local plaintext copy of what we sent — the sender-key wire key is
@@ -660,15 +673,27 @@ impl Node {
         path: &Path,
     ) -> Result<ConversationId, NodeError> {
         let (manifest, file_conv) = self.stage_file(path)?;
-        let (sealed, members) = {
+        // Publish our sender-key distribution before the first seal (see
+        // `send_channel_message_reply`).
+        let (members, already_distributed) = {
             let mut book = self.channels.lock().expect("channels mutex not poisoned");
             let state = book
                 .state_mut(&channel)
                 .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
-            let sealed = state
+            let epoch = state.epoch();
+            (state.members().to_vec(), state.has_my_sender(epoch))
+        };
+        if !already_distributed {
+            self.distribute_my_sender_key(channel, &members)?;
+        }
+        let sealed = {
+            let mut book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state_mut(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            state
                 .seal_sender_message(&manifest.encode())
-                .map_err(|e| NodeError::File(format!("manifest sealing failed: {e}")))?;
-            (sealed, state.members().to_vec())
+                .map_err(|e| NodeError::File(format!("manifest sealing failed: {e}")))?
         };
         self.append_event(channel, EventKind::FileManifest, sealed)?;
         self.distribute_channel(file_conv, &members).await;
@@ -1664,6 +1689,102 @@ mod tests {
         assert!(!bob_hist[0].from_me);
         assert_eq!(bob_hist[0].text, b"hello channel");
         assert_eq!(bob_hist[0].who, alice_node.user_id());
+    }
+
+    /// Bidirectional channel rig: Alice (creator) + Bob both run accept loops and know
+    /// each other. Alice sends -> Bob receives (already worked). THEN Bob sends -> Alice
+    /// receives + decrypts. The reverse direction was BROKEN before the fix: a
+    /// non-creator never distributed its own sender-key distribution, so the creator
+    /// had no `SenderChain` for it and silently dropped its messages.
+    #[tokio::test]
+    async fn two_nodes_exchange_channel_messages_both_directions_over_loopback_tcp() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_pub = bob.public();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Both nodes listen, so each can receive the other's pushed channel events.
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        // Each knows the other at its real listen port (so distribution can dial back).
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, mut a_ch_r) = mpsc::unbounded_channel();
+        let (a_file, _a_file_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
+        let (b_file, _b_file_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_file,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_file,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        let channel = alice_node
+            .create_channel("general", vec![bob_pub])
+            .await
+            .unwrap();
+
+        // Forward direction: Alice -> Bob (already worked).
+        alice_node
+            .send_channel_message(channel, b"hi bob")
+            .await
+            .unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
+            .await
+            .expect("bob received Alice's message within 5s")
+            .expect("channel stream open");
+        assert_eq!(got.text, b"hi bob");
+        assert_eq!(got.from, alice_node.user_id());
+
+        // Reverse direction: Bob -> Alice. This is the path the fix repairs. Bob is a
+        // non-creator member; his send must first distribute his own SKD so Alice can
+        // build his sender chain and decrypt.
+        bob_node
+            .send_channel_message(channel, b"hi alice")
+            .await
+            .unwrap();
+        let back = tokio::time::timeout(Duration::from_secs(5), a_ch_r.recv())
+            .await
+            .expect("alice received Bob's message within 5s (broken before the fix)")
+            .expect("channel stream open");
+        assert_eq!(back.text, b"hi alice");
+        assert_eq!(back.from, bob_node.user_id());
+
+        // Alice's channel_history now shows both: her own sent line + Bob's decrypted one.
+        let alice_hist = alice_node.channel_history(channel, 10);
+        assert!(alice_hist.iter().any(|h| h.from_me && h.text == b"hi bob"));
+        assert!(alice_hist
+            .iter()
+            .any(|h| !h.from_me && h.text == b"hi alice" && h.who == bob_node.user_id()));
     }
 
     /// Forward-secrecy rig: Alice + Bob channel; Alice sends two messages; Bob reads
