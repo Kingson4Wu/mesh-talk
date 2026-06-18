@@ -4,5 +4,6 @@
 //! integration are later plans.
 
 mod kdf;
-// pub mod state;    // Task 2
-// pub use state::{init_alice, init_bob, Header, RatchetError, RatchetState};  // Task 2
+pub mod state;
+
+pub use state::{init_alice, init_bob, Header, RatchetError, RatchetState};
