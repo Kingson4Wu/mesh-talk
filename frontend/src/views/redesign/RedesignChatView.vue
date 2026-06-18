@@ -87,6 +87,21 @@
               </span>
             </template>
             <span v-else class="text">{{ m.text }}</span>
+            <div v-if="m.id" class="reactions">
+              <button
+                v-for="r in reactionsFor(m.id)"
+                :key="r.emoji"
+                class="chip"
+                :class="{ mine: iReacted(r) }"
+                @click="toggleReaction(m, r.emoji)"
+              >{{ r.emoji }} {{ r.who.length }}</button>
+              <span class="react-add">
+                <button class="chip add" @click="m._pick = !m._pick">＋</button>
+                <span v-if="m._pick" class="palette">
+                  <button v-for="e in EMOJIS" :key="e" @click="toggleReaction(m, e); m._pick = false">{{ e }}</button>
+                </span>
+              </span>
+            </div>
           </div>
           <div v-if="!messages.length" class="empty">No messages yet.</div>
         </div>
@@ -138,10 +153,42 @@ const showCreate = ref(false);
 const newChannelName = ref("");
 const selectedMembers = reactive({});
 
+const reactions = ref([]);
+const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
+
 let refreshTimer = null;
 let unlisten = null;
 let unlistenChannel = null;
 let unlistenFile = null;
+
+async function loadReactions() {
+  try {
+    reactions.value = activeChannel.value
+      ? await API.redesign.channelReactions(activeChannel.value.channel_id)
+      : activePeer.value
+      ? await API.redesign.reactions(activePeer.value.user_id)
+      : [];
+  } catch (_e) { /* node may not be ready; ignore */ }
+}
+
+function reactionsFor(messageId) {
+  return reactions.value.filter(r => r.target === messageId);
+}
+
+function iReacted(r) {
+  return r.who.includes(myId.value);
+}
+
+async function toggleReaction(message, emoji) {
+  if (!message.id) return;
+  const existing = reactions.value.find(r => r.target === message.id && r.emoji === emoji);
+  const remove = !!(existing && existing.who.includes(myId.value));
+  try {
+    if (activeChannel.value) await API.redesign.reactChannel(activeChannel.value.channel_id, message.id, emoji, remove);
+    else await API.redesign.reactDm(activePeer.value.user_id, message.id, emoji, remove);
+    await loadReactions();
+  } catch (e) { error.value = String(e); }
+}
 
 async function refreshPeers() {
   try {
@@ -177,6 +224,7 @@ async function loadHistory() {
     if (activePeer.value?.user_id !== target.user_id) return;
     messages.value = items;
     await scrollDown();
+    await loadReactions();
   } catch (e) {
     error.value = String(e);
   }
@@ -198,6 +246,7 @@ async function loadChannelHistory() {
     if (activeChannel.value?.channel_id !== target.channel_id) return;
     messages.value = items;
     await scrollDown();
+    await loadReactions();
   } catch (e) {
     error.value = String(e);
   }
@@ -233,6 +282,7 @@ function onInbound(payload) {
       wall_clock: Date.now(),
     });
     void scrollDown();
+    void loadReactions();
   } else if (from) {
     unread[from] = (unread[from] || 0) + 1;
   }
@@ -247,6 +297,7 @@ function onChannelInbound(payload) {
       wall_clock: Date.now(),
     });
     void scrollDown();
+    void loadReactions();
   } else {
     channelUnread[payload.channel_id] = (channelUnread[payload.channel_id] || 0) + 1;
   }
@@ -327,7 +378,7 @@ onMounted(async () => {
   }
   await refreshPeers();
   await refreshChannels();
-  refreshTimer = setInterval(() => { refreshPeers(); refreshChannels(); }, 3000);
+  refreshTimer = setInterval(() => { refreshPeers(); refreshChannels(); loadReactions(); }, 3000);
   unlisten = await listen("redesign-dm-received", (ev) => onInbound(ev.payload ?? {}));
   unlistenChannel = await listen("redesign-channel-message", (ev) => onChannelInbound(ev.payload ?? {}));
   unlistenFile = await listen("redesign-file-received", (ev) => onFileReceived(ev.payload ?? {}));
@@ -598,5 +649,55 @@ onBeforeUnmount(() => {
   color: #0f172a;
   cursor: pointer;
   font-size: 12px;
+}
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.chip {
+  padding: 2px 7px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(148, 163, 184, 0.1);
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.chip.mine {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.2);
+}
+.chip.add {
+  padding: 2px 6px;
+  font-size: 14px;
+}
+.react-add {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.palette {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  display: flex;
+  gap: 4px;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  padding: 4px 6px;
+  z-index: 10;
+  white-space: nowrap;
+}
+.palette button {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 2px;
+  line-height: 1;
 }
 </style>

@@ -101,6 +101,12 @@ const redesignAPI = {
   sendFileDm: (recipient, path) => invoke("redesign_send_file_dm", { recipient, path }),
   sendFileChannel: (channelId, path) => invoke("redesign_send_file_channel", { channelId, path }),
   saveFile: (fileConv, dest) => invoke("redesign_save_file", { fileConv, dest }),
+  reactDm: (recipient, target, emoji, remove) =>
+    invoke("redesign_react_dm", { recipient, target, emoji, remove }),
+  reactChannel: (channelId, target, emoji, remove) =>
+    invoke("redesign_react_channel", { channelId, target, emoji, remove }),
+  reactions: (peer) => invoke("redesign_reactions", { peer }),
+  channelReactions: (channelId) => invoke("redesign_channel_reactions", { channelId }),
 };
 
 // Combined API service
