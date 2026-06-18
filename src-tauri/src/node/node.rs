@@ -19,6 +19,7 @@ use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::postbox::elected_post_office;
+use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
 use crate::node::sentlog::SentLog;
 use crate::node::session::{request_round, serve_one, Served, SessionError};
 use crate::node::transport::{accept, dial};
@@ -55,6 +56,7 @@ pub struct ChannelSummary {
 /// A merged conversation-history entry (sent or received), for display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
+    pub id: EventId,
     pub from_me: bool,
     pub who: String,
     pub text: Vec<u8>,
@@ -107,6 +109,9 @@ pub struct Node {
     emitted: Mutex<HashSet<EventId>>,
     file_incoming: mpsc::UnboundedSender<ReceivedFile>,
     files: Mutex<FileBook>,
+    /// Own DM reactions: sealed to the peer so un-openable from our own log.
+    /// Stored in memory so `reactions` can merge them. Lost on restart (MVP limitation).
+    my_dm_reactions: Mutex<Vec<(ConversationId, ReactionPayload)>>,
 }
 
 impl Node {
@@ -154,6 +159,7 @@ impl Node {
             emitted: Mutex::new(emitted),
             file_incoming,
             files: Mutex::new(files),
+            my_dm_reactions: Mutex::new(Vec::new()),
         }))
     }
 
@@ -701,6 +707,7 @@ impl Node {
             }
             if let Some(text) = state.open_message(&event.ciphertext) {
                 out.push(HistoryEntry {
+                    id: event.id,
                     from_me: event.author == self_author,
                     who: event.author.user_id(),
                     text,
@@ -733,6 +740,15 @@ impl Node {
             log.events(&conversation).into_iter().cloned().collect()
         };
 
+        // Map our own Message events' seq -> id, to give sent sidecar entries an id.
+        let mut my_msg_ids: std::collections::HashMap<u64, EventId> =
+            std::collections::HashMap::new();
+        for event in &events {
+            if event.kind == EventKind::Message && event.author == self_author {
+                my_msg_ids.insert(event.seq, event.id);
+            }
+        }
+
         let mut entries: Vec<HistoryEntry> = Vec::new();
         {
             let roster = self.roster.lock().expect("roster mutex not poisoned");
@@ -742,6 +758,7 @@ impl Node {
                 }
                 if let Some((_uid, name, text)) = open_dm_event(&self.identity, &roster, event) {
                     entries.push(HistoryEntry {
+                        id: event.id,
                         from_me: false,
                         who: name,
                         text,
@@ -757,6 +774,10 @@ impl Node {
             .entries(&conversation)
         {
             entries.push(HistoryEntry {
+                id: my_msg_ids
+                    .get(&sent.seq)
+                    .copied()
+                    .unwrap_or(EventId::new([0u8; 32])),
                 from_me: true,
                 who: "you".to_string(),
                 text: sent.plaintext,
@@ -768,6 +789,121 @@ impl Node {
             entries.drain(0..entries.len() - limit);
         }
         entries
+    }
+
+    /// React to a message in a DM (toggle off with `remove = true`).
+    pub async fn react_dm(
+        &self,
+        recipient: &str,
+        target: EventId,
+        emoji: &str,
+        remove: bool,
+    ) -> Result<(), NodeError> {
+        let peer = self
+            .roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .get(recipient)
+            .cloned()
+            .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
+        let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        let payload = ReactionPayload {
+            target,
+            emoji: emoji.to_string(),
+            remove,
+        };
+        let sealed = crate::dm::seal(&self.identity, &peer.public.x25519_pub, &payload.encode())
+            .map_err(NodeError::Seal)?;
+        self.append_event(conv, EventKind::React, sealed)?;
+        // Our own DM reaction is sealed to the peer; record it so `reactions` can
+        // include it (we can't open it from our own log).
+        self.my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned")
+            .push((conv, payload));
+        self.deliver_direct(&peer, conv).await.ok();
+        self.replicate_to_post_office(conv).await.ok();
+        Ok(())
+    }
+
+    /// React to a message in a channel we hold the key for.
+    pub async fn react_channel(
+        &self,
+        channel: ConversationId,
+        target: EventId,
+        emoji: &str,
+        remove: bool,
+    ) -> Result<(), NodeError> {
+        let payload = ReactionPayload {
+            target,
+            emoji: emoji.to_string(),
+            remove,
+        };
+        let (sealed, members) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            let sealed = state
+                .seal_message(&payload.encode())
+                .map_err(|e| NodeError::Channel(format!("reaction seal failed: {e}")))?;
+            (sealed, state.members().to_vec())
+        };
+        self.append_event(channel, EventKind::React, sealed)?;
+        self.distribute_channel(channel, &members).await;
+        Ok(())
+    }
+
+    /// Aggregated reactions for a conversation (DM or channel). Opens each `React`
+    /// event with the conversation crypto, merges our own (un-openable) DM reactions,
+    /// and folds them per `(target, emoji)`.
+    pub fn reactions(&self, conv: ConversationId) -> Vec<ReactionView> {
+        let self_uid = self.identity.public().user_id();
+        let react_events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::React)
+                .cloned()
+                .collect()
+        };
+        let is_channel = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.state(&conv).is_some()
+        };
+        let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
+        for event in &react_events {
+            let plaintext = if is_channel {
+                let book = self.channels.lock().expect("channels mutex not poisoned");
+                book.state(&conv)
+                    .and_then(|s| s.open_message(&event.ciphertext))
+            } else {
+                let author_uid = event.author.user_id();
+                let sender_x25519 = {
+                    let roster = self.roster.lock().expect("roster mutex not poisoned");
+                    roster.get(&author_uid).map(|p| p.public.x25519_pub)
+                };
+                sender_x25519
+                    .and_then(|x| crate::dm::open(&self.identity, &x, &event.ciphertext).ok())
+            };
+            if let Some(p) = plaintext.and_then(|b| ReactionPayload::decode(&b)) {
+                decoded.push((event.author.user_id(), p));
+            }
+        }
+        // Merge our own DM reactions for this conversation (not in the openable log).
+        if !is_channel {
+            for (c, p) in self
+                .my_dm_reactions
+                .lock()
+                .expect("my_dm_reactions mutex not poisoned")
+                .iter()
+            {
+                if *c == conv {
+                    decoded.push((self_uid.clone(), p.clone()));
+                }
+            }
+        }
+        aggregate(&decoded)
     }
 
     /// Decrypt and emit any not-yet-emitted, non-self `Message` events in `conv`.
@@ -1430,5 +1566,109 @@ mod tests {
         assert!(saved, "bob saved the multi-chunk file");
         assert_eq!(std::fs::read(&dest).unwrap(), payload);
         let _ = file_conv;
+    }
+
+    #[tokio::test]
+    async fn a_dm_reaction_is_visible_to_both_peers() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Capture public identities BEFORE moving into Node::open.
+        let alice_pub = alice.public();
+        let bob_pub = bob.public();
+        let alice_uid = alice_pub.user_id();
+        let bob_uid = bob_pub.user_id();
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_pub.user_id());
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_pub.user_id());
+
+        let (a_dm, _a1) = mpsc::unbounded_channel();
+        let (a_ch, _a2) = mpsc::unbounded_channel();
+        let (a_f, _a3) = mpsc::unbounded_channel();
+        let (b_dm, mut b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b2) = mpsc::unbounded_channel();
+        let (b_f, _b3) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+
+        // Alice DMs Bob; Bob receives it and learns its event id from history.
+        alice_node.send_dm(&bob_uid, b"hi bob").await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), b_dm_r.recv())
+            .await
+            .expect("bob got the dm")
+            .expect("stream open");
+        assert_eq!(got.text, b"hi bob");
+
+        // Derive the DM conversation id from the two public identities.
+        let conv = dm_conversation_id(&alice_pub, &bob_pub);
+
+        let target = {
+            let h = bob_node.dm_history(&alice_pub, 10);
+            h.iter()
+                .find(|e| !e.from_me)
+                .map(|e| e.id)
+                .expect("bob has the message id")
+        };
+
+        // Bob reacts; it distributes to Alice.
+        bob_node
+            .react_dm(&alice_uid, target, "👍", false)
+            .await
+            .unwrap();
+
+        // Bob sees his own reaction (from my_dm_reactions).
+        let bob_views = bob_node.reactions(conv);
+        assert!(
+            bob_views
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
+            "bob sees his own reaction"
+        );
+
+        // Give the distribution a moment, then check Alice.
+        let mut ok = false;
+        for _ in 0..50 {
+            let av = alice_node.reactions(conv);
+            if av
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
+            {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(ok, "alice sees bob's reaction");
     }
 }
