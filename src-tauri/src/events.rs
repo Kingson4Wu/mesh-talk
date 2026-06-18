@@ -1,5 +1,6 @@
 use crate::commands::ChatMessageInfo;
 use crate::domain::node_registry::NodeStatus;
+use crate::eventlog::event::EventId;
 use crate::perf_monitor;
 use crate::services::file_transfer::{TransferDirection, TransferStatus};
 use crate::services::node_service::{MessageEvent, NodeService};
@@ -354,6 +355,7 @@ pub struct RedesignDmReceivedEvent {
     pub from: String,
     pub from_name: String,
     pub text: String,
+    pub reply_to: Option<String>, // hex EventId of the parent message, if any
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -362,6 +364,7 @@ pub struct RedesignChannelMessageEvent {
     pub channel_name: String,
     pub from: String,
     pub text: String,
+    pub reply_to: Option<String>, // hex EventId of the parent message, if any
 }
 
 /// Emit a received redesign DM to the frontend (text decoded lossily for display).
@@ -370,11 +373,13 @@ pub fn emit_redesign_dm_received<R: Runtime>(
     from: String,
     from_name: String,
     text: Vec<u8>,
+    reply_to: Option<EventId>,
 ) {
     let event = RedesignDmReceivedEvent {
         from,
         from_name,
         text: String::from_utf8_lossy(&text).into_owned(),
+        reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
     };
     if let Err(e) = app_handle.emit(EVENT_REDESIGN_DM_RECEIVED, event) {
         log::error!("Failed to emit redesign dm event: {e}");
@@ -387,12 +392,14 @@ pub fn emit_redesign_channel_message<R: Runtime>(
     channel_name: String,
     from: String,
     text: Vec<u8>,
+    reply_to: Option<EventId>,
 ) {
     let event = RedesignChannelMessageEvent {
         channel_id,
         channel_name,
         from,
         text: String::from_utf8_lossy(&text).into_owned(),
+        reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
     };
     if let Err(e) = app_handle.emit(EVENT_REDESIGN_CHANNEL_MESSAGE, event) {
         log::error!("Failed to emit redesign channel event: {e}");

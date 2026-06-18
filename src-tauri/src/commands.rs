@@ -310,6 +310,7 @@ pub async fn login(
                             dm.from,
                             dm.from_name,
                             dm.text,
+                            dm.reply_to,
                         );
                     },
                     move |msg: crate::node::channel::ReceivedChannelMessage| {
@@ -319,6 +320,7 @@ pub async fn login(
                             msg.channel_name,
                             msg.from,
                             msg.text,
+                            msg.reply_to,
                         );
                     },
                     move |f: crate::node::filebook::ReceivedFile| {

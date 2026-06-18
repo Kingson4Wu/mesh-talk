@@ -41,6 +41,7 @@ pub struct HistoryItem {
     pub who: String,
     pub text: String,
     pub wall_clock: u64,
+    pub reply_to: Option<String>, // hex EventId of the parent message, if any
 }
 
 /// Aggregated reaction for display.
@@ -83,6 +84,7 @@ pub async fn redesign_send_dm(
     state: tauri::State<'_, RedesignState>,
     recipient: String,
     text: String,
+    reply_to: Option<String>,
 ) -> Result<(), String> {
     // Snapshot the node handle, then release the state lock before the .await send.
     let node = {
@@ -90,7 +92,11 @@ pub async fn redesign_send_dm(
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
-    node.send_dm(&recipient, text.as_bytes())
+    let reply = match reply_to {
+        Some(h) => Some(parse_event_id(&h)?),
+        None => None,
+    };
+    node.send_dm_reply(&recipient, text.as_bytes(), reply)
         .await
         .map_err(|e| e.to_string())
 }
@@ -118,6 +124,7 @@ pub async fn redesign_history(
             who: h.who,
             text: String::from_utf8_lossy(&h.text).into_owned(),
             wall_clock: h.wall_clock,
+            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
         })
         .collect())
 }
@@ -204,14 +211,19 @@ pub async fn redesign_send_channel_message(
     state: tauri::State<'_, RedesignState>,
     channel_id: String,
     text: String,
+    reply_to: Option<String>,
 ) -> Result<(), String> {
     let id = parse_channel_id(&channel_id)?;
+    let reply = match reply_to {
+        Some(h) => Some(parse_event_id(&h)?),
+        None => None,
+    };
     let node = {
         let guard = state.0.lock().await;
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
-    node.send_channel_message(id, text.as_bytes())
+    node.send_channel_message_reply(id, text.as_bytes(), reply)
         .await
         .map_err(|e| e.to_string())
 }
@@ -292,6 +304,7 @@ pub async fn redesign_channel_history(
             who: h.who,
             text: String::from_utf8_lossy(&h.text).into_owned(),
             wall_clock: h.wall_clock,
+            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
         })
         .collect())
 }
