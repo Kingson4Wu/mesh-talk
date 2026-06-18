@@ -18,8 +18,13 @@
 use crate::eventlog::event::{ConversationId, Event, EventId};
 use crate::eventlog::store::{AppendOutcome, EventLog};
 use crate::eventlog::LogError;
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+/// Bytes reserved per sync frame for the message's non-event framing (enum tag,
+/// conversation id, bincode wrappers) on top of the event/id payload.
+const SYNC_MARGIN: usize = 256;
 
 /// Sent by the peer initiating sync: "for this conversation, here are the ids I have."
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +106,38 @@ impl SyncStore for EventLog {
     }
 }
 
+/// The fixint-bincode encoded size of one event (matches `node::session::encode`).
+fn encoded_event_size(event: &Event) -> usize {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialized_size(event)
+        .map(|n| n as usize)
+        .unwrap_or(usize::MAX)
+}
+
+/// The longest prefix of `events` whose summed encoded size fits `budget`. Always
+/// returns at least the first event when `events` is non-empty (progress guarantee —
+/// a single event is bounded by `CHUNK_SIZE` < a frame by construction).
+fn cap_events(events: Vec<Event>, budget: usize) -> Vec<Event> {
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for event in events {
+        let size = encoded_event_size(&event);
+        if !out.is_empty() && used.saturating_add(size) > budget {
+            break;
+        }
+        used = used.saturating_add(size);
+        out.push(event);
+    }
+    out
+}
+
+/// Approximate encoded size of a `have` id-set (`Vec<EventId>`): 8-byte length
+/// prefix + 32 bytes per id (fixint). Used to leave room for `have` in a Response.
+fn have_set_size(have: &[EventId]) -> usize {
+    8 + 32 * have.len()
+}
+
 /// Build the opening request: the ids this store holds for `conversation`.
 pub fn build_request(store: &impl SyncStore, conversation: ConversationId) -> SyncRequest {
     SyncRequest {
@@ -109,17 +146,31 @@ pub fn build_request(store: &impl SyncStore, conversation: ConversationId) -> Sy
     }
 }
 
-/// Answer a request: the events the requester is missing (topological order),
-/// plus this store's own id-set so the requester can reciprocate.
-pub fn handle_request(store: &impl SyncStore, request: &SyncRequest) -> SyncResponse {
+/// Answer a request, bounding the returned events so the encoded `SyncResponse`
+/// (events + the responder's `have`) stays within `frame_budget` bytes. The
+/// requester pulls the remainder over subsequent rounds (it learns the full set
+/// from `have`).
+pub fn handle_request_bounded(
+    store: &impl SyncStore,
+    request: &SyncRequest,
+    frame_budget: usize,
+) -> SyncResponse {
     let requester_have: HashSet<EventId> = request.have.iter().copied().collect();
-    let events = store.events_excluding(&request.conversation, &requester_have);
+    let all_missing = store.events_excluding(&request.conversation, &requester_have);
     let responder_have = store.event_ids(&request.conversation);
+    let event_budget = frame_budget.saturating_sub(have_set_size(&responder_have) + SYNC_MARGIN);
+    let events = cap_events(all_missing, event_budget);
     SyncResponse {
         conversation: request.conversation,
         events,
         have: responder_have,
     }
+}
+
+/// Unbounded answer (in-process / single-round callers). Equivalent to
+/// [`handle_request_bounded`] with no frame limit.
+pub fn handle_request(store: &impl SyncStore, request: &SyncRequest) -> SyncResponse {
+    handle_request_bounded(store, request, usize::MAX)
 }
 
 /// Ingest a batch of received events through the store's validation gate,
@@ -139,17 +190,17 @@ fn ingest_all(store: &mut impl SyncStore, events: &[Event]) -> ApplyReport {
     report
 }
 
-/// Apply a responder's reply: ingest the events it sent, then compute the
-/// events IT is missing (so the caller can send a [`SyncFollowup`]).
-pub fn handle_response(
+/// Apply a responder's reply and build a (bounded) follow-up of events the
+/// responder is missing.
+pub fn handle_response_bounded(
     store: &mut impl SyncStore,
     response: &SyncResponse,
+    frame_budget: usize,
 ) -> (ApplyReport, SyncFollowup) {
     let report = ingest_all(store, &response.events);
-    // `collect` into a HashSet implicitly drops any duplicate ids an
-    // adversarial peer may have placed in `have`.
     let remote_have: HashSet<EventId> = response.have.iter().copied().collect();
-    let events = store.events_excluding(&response.conversation, &remote_have);
+    let all_missing = store.events_excluding(&response.conversation, &remote_have);
+    let events = cap_events(all_missing, frame_budget.saturating_sub(SYNC_MARGIN));
     (
         report,
         SyncFollowup {
@@ -157,6 +208,15 @@ pub fn handle_response(
             events,
         },
     )
+}
+
+/// Apply a responder's reply: ingest the events it sent, then compute the
+/// events IT is missing (so the caller can send a [`SyncFollowup`]).
+pub fn handle_response(
+    store: &mut impl SyncStore,
+    response: &SyncResponse,
+) -> (ApplyReport, SyncFollowup) {
+    handle_response_bounded(store, response, usize::MAX)
 }
 
 /// Apply the requester's follow-up: ingest the events it sent.
@@ -839,5 +899,60 @@ mod tests {
                                        // Even though the requester now holds `a`, the followup must not echo it
                                        // back (it is in the responder's `have`).
         assert!(followup.events.is_empty());
+    }
+
+    /// Build a store with `n` chained events in `conv()` and return it.
+    fn build_store_with_events(n: usize) -> (EventLog, ConversationId) {
+        let id = DeviceIdentity::generate();
+        let mut store = EventLog::default();
+        let c = conv();
+        let mut parent_ids: Vec<EventId> = vec![];
+        for i in 0..n as u64 {
+            let e = Event::new(
+                &id,
+                c,
+                i + 1,
+                parent_ids.clone(),
+                i + 1,
+                0,
+                EventKind::Message,
+                vec![b'x'; 32], // small fixed payload so sizes are predictable
+            );
+            parent_ids = vec![e.id];
+            store.append(e).unwrap();
+        }
+        (store, c)
+    }
+
+    #[test]
+    fn cap_events_returns_prefix_within_budget_but_always_one() {
+        let (store, c) = build_store_with_events(5);
+        let all = store.events_excluding(&c, &HashSet::new());
+        assert_eq!(all.len(), 5);
+        let one = encoded_event_size(&all[0]);
+        // A budget below one event still yields exactly one (progress guarantee).
+        assert_eq!(cap_events(all.clone(), 1).len(), 1);
+        // A budget for ~2 events yields 2 or 3 (size-dependent), never all 5.
+        let capped = cap_events(all.clone(), one * 2 + 8);
+        assert!(capped.len() >= 1 && capped.len() < 5);
+        // A huge budget yields all.
+        assert_eq!(cap_events(all, usize::MAX).len(), 5);
+    }
+
+    #[test]
+    fn handle_request_bounded_caps_events_but_reports_full_have() {
+        let (store, c) = build_store_with_events(5);
+        let request = SyncRequest {
+            conversation: c,
+            have: vec![],
+        };
+        let one = encoded_event_size(&store.events_excluding(&c, &HashSet::new())[0]);
+        // A small frame budget returns fewer events than the full set...
+        let resp = handle_request_bounded(&store, &request, one + 8 + 300);
+        assert!(resp.events.len() < 5);
+        // ...but always the FULL have id-set, so the requester knows to come back.
+        assert_eq!(resp.have.len(), 5);
+        // Unbounded returns everything.
+        assert_eq!(handle_request(&store, &request).events.len(), 5);
     }
 }
