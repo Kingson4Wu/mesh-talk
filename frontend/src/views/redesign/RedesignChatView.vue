@@ -137,6 +137,22 @@
           </div>
           <div v-if="!messages.length" class="empty">No messages yet.</div>
         </div>
+        <div v-if="activeChannel" class="members-bar">
+          <button class="members-toggle" :class="{ active: showMembers }" @click="showMembers = !showMembers">
+            👥 Members
+          </button>
+          <span v-if="memberNotice" class="members-notice">{{ memberNotice }}</span>
+        </div>
+        <div v-if="activeChannel && showMembers" class="members-panel">
+          <div class="members-hint">Add a peer to <strong>#{{ activeChannel.name }}</strong>:</div>
+          <div class="members-list">
+            <div v-for="p in peers" :key="p.user_id" class="members-row">
+              <span class="members-name">{{ p.name || p.user_id.slice(0, 8) }}</span>
+              <button class="members-add" @click="addMember(p)">Add</button>
+            </div>
+            <span v-if="!peers.length" class="empty">No peers to add.</span>
+          </div>
+        </div>
         <div v-if="replyingTo" class="reply-banner">
           Replying to {{ replyingTo.from_me ? "you" : replyingTo.who }}: "{{ (replyingTo.text || "").slice(0, 50) }}"
           <button type="button" class="cancel" @click="cancelReply">✕</button>
@@ -201,6 +217,9 @@ const channelUnread = reactive({});
 const showCreate = ref(false);
 const newChannelName = ref("");
 const selectedMembers = reactive({});
+const showMembers = ref(false);
+const memberNotice = ref("");
+let memberNoticeTimer = null;
 
 const reactions = ref([]);
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
@@ -379,6 +398,8 @@ async function loadHistory() {
 async function selectChannel(c) {
   activePeer.value = null;
   activeChannel.value = c;
+  showMembers.value = false;
+  memberNotice.value = "";
   delete channelUnread[c.channel_id];
   await loadChannelHistory();
 }
@@ -472,6 +493,24 @@ async function createChannel() {
   }
 }
 
+async function addMember(peer) {
+  if (!activeChannel.value) return;
+  error.value = "";
+  try {
+    await API.redesign.addChannelMember(activeChannel.value.channel_id, peer.user_id);
+    flashMemberNotice(`Added ${peer.name || peer.user_id.slice(0, 8)}`);
+    await refreshChannels();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+function flashMemberNotice(text) {
+  memberNotice.value = text;
+  if (memberNoticeTimer) clearTimeout(memberNoticeTimer);
+  memberNoticeTimer = setTimeout(() => { memberNotice.value = ""; }, 2500);
+}
+
 async function attachFile() {
   if (!activePeer.value && !activeChannel.value) return;
   const sel = await openDialog({ multiple: false });
@@ -536,6 +575,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer);
+  if (memberNoticeTimer) clearTimeout(memberNoticeTimer);
   if (typeof unlisten === "function") unlisten();
   if (typeof unlistenChannel === "function") unlistenChannel();
   if (typeof unlistenFile === "function") unlistenFile();
@@ -1004,5 +1044,66 @@ onBeforeUnmount(() => {
 }
 .reply-btn:hover {
   opacity: 1;
+}
+.members-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+.members-toggle {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+  font-size: 12px;
+}
+.members-toggle.active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+}
+.members-notice {
+  font-size: 12px;
+  color: #4ade80;
+}
+.members-panel {
+  padding: 8px 16px 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+.members-hint {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 1);
+  margin-bottom: 6px;
+}
+.members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.members-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.members-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.members-add {
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: none;
+  background: #4ade80;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 12px;
 }
 </style>
