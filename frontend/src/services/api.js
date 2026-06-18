@@ -98,6 +98,9 @@ const redesignAPI = {
   createChannel: (name, memberIds) => invoke("redesign_create_channel", { name, memberIds }),
   sendChannelMessage: (channelId, text) => invoke("redesign_send_channel_message", { channelId, text }),
   channelHistory: (channelId, limit) => invoke("redesign_channel_history", { channelId, limit }),
+  sendFileDm: (recipient, path) => invoke("redesign_send_file_dm", { recipient, path }),
+  sendFileChannel: (channelId, path) => invoke("redesign_send_file_channel", { channelId, path }),
+  saveFile: (fileConv, dest) => invoke("redesign_save_file", { fileConv, dest }),
 };
 
 // Combined API service

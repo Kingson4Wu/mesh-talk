@@ -80,7 +80,13 @@
             :class="{ mine: m.from_me }"
           >
             <span class="who">{{ m.from_me ? "you" : m.who }}</span>
-            <span class="text">{{ m.text }}</span>
+            <template v-if="m.file">
+              <span class="file-card">
+                📄 {{ m.file.name }}<span v-if="m.file.size"> · {{ Math.ceil(m.file.size / 1024) }} KB</span>
+                <button v-if="!m.from_me" class="save" @click="saveReceivedFile(m.file)">Save</button>
+              </span>
+            </template>
+            <span v-else class="text">{{ m.text }}</span>
           </div>
           <div v-if="!messages.length" class="empty">No messages yet.</div>
         </div>
@@ -91,6 +97,7 @@
               ? `Message #${activeChannel.name}…`
               : `Message ${activePeer.name || activePeer.user_id.slice(0, 8)}…`"
           />
+          <button type="button" class="attach" title="Send a file" @click="attachFile">📎</button>
           <button type="submit" :disabled="!draft.trim()">Send</button>
         </form>
         <p v-if="error" class="error">{{ error }}</p>
@@ -110,6 +117,7 @@ import { useRouter } from "vue-router";
 import { useAppStore } from "../../stores/appStore";
 import { API } from "../../services/api";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 const router = useRouter();
 const store = useAppStore();
@@ -133,6 +141,7 @@ const selectedMembers = reactive({});
 let refreshTimer = null;
 let unlisten = null;
 let unlistenChannel = null;
+let unlistenFile = null;
 
 async function refreshPeers() {
   try {
@@ -262,6 +271,43 @@ async function createChannel() {
   }
 }
 
+async function attachFile() {
+  if (!activePeer.value && !activeChannel.value) return;
+  const sel = await openDialog({ multiple: false });
+  const path = typeof sel === "string" ? sel : null;
+  if (!path) return;
+  const name = path.split(/[\\/]/).pop();
+  error.value = "";
+  try {
+    let fileConv;
+    if (activeChannel.value) {
+      fileConv = await API.redesign.sendFileChannel(activeChannel.value.channel_id, path);
+    } else {
+      fileConv = await API.redesign.sendFileDm(activePeer.value.user_id, path);
+    }
+    messages.value.push({ from_me: true, who: "you", file: { name, size: null, file_conv: fileConv }, wall_clock: Date.now() });
+    await scrollDown();
+  } catch (e) { error.value = String(e); }
+}
+
+function onFileReceived(payload) {
+  const card = { from_me: false, who: payload.from, file: { name: payload.name, size: payload.size, file_conv: payload.file_conv }, wall_clock: Date.now() };
+  if (activeChannel.value && payload.conv === activeChannel.value.channel_id) {
+    messages.value.push(card); void scrollDown();
+  } else if (activePeer.value && payload.from === activePeer.value.user_id) {
+    messages.value.push(card); void scrollDown();
+  }
+  // else: a file for an inactive conversation — ignored in this MVP
+}
+
+async function saveReceivedFile(file) {
+  const dest = await saveDialog({ defaultPath: file.name });
+  if (typeof dest !== "string" || !dest) return;
+  error.value = "";
+  try { await API.redesign.saveFile(file.file_conv, dest); }
+  catch (e) { error.value = String(e); }
+}
+
 async function scrollDown() {
   await nextTick();
   if (msgList.value) {
@@ -284,12 +330,14 @@ onMounted(async () => {
   refreshTimer = setInterval(() => { refreshPeers(); refreshChannels(); }, 3000);
   unlisten = await listen("redesign-dm-received", (ev) => onInbound(ev.payload ?? {}));
   unlistenChannel = await listen("redesign-channel-message", (ev) => onChannelInbound(ev.payload ?? {}));
+  unlistenFile = await listen("redesign-file-received", (ev) => onFileReceived(ev.payload ?? {}));
 });
 
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer);
   if (typeof unlisten === "function") unlisten();
   if (typeof unlistenChannel === "function") unlistenChannel();
+  if (typeof unlistenFile === "function") unlistenFile();
 });
 </script>
 
@@ -522,5 +570,33 @@ onBeforeUnmount(() => {
 .error {
   color: #f87171;
   padding: 0 16px 8px;
+}
+.attach {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+  font-size: 15px;
+}
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 13px;
+}
+.save {
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: none;
+  background: #4ade80;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 12px;
 }
 </style>
