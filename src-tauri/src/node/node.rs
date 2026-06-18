@@ -16,7 +16,7 @@ use crate::file::{
 };
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
-use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
+use crate::node::conversation::dm_conversation_id;
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
@@ -246,6 +246,16 @@ impl Node {
         let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
         let conv = dm_conversation_id(&self.identity.public(), &peer.public);
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
+        // Seal the wrapped body with the Double Ratchet (forward-secret). Compute the
+        // wire OUTSIDE the log lock so no lock spans the seal.
+        let wire = {
+            let mut r = self
+                .dm_ratchet
+                .lock()
+                .expect("dm_ratchet mutex not poisoned");
+            r.encrypt(&self.identity, &peer.public, &wrapped)
+                .map_err(NodeError::Log)?
+        };
         let wall_clock = now_millis();
         let seq;
         {
@@ -257,23 +267,22 @@ impl Node {
                 .copied()
                 .unwrap_or(0)
                 + 1;
-            let event = build_dm_event(
+            let event = Event::new(
                 &self.identity,
-                &peer.public,
                 conv,
                 seq,
                 parents,
                 lamport,
                 wall_clock,
-                &wrapped,
-            )
-            .map_err(NodeError::Seal)?;
+                EventKind::Message,
+                wire,
+            );
             log.append(event).map_err(NodeError::Log)?;
         }
 
-        // Keep a local plaintext copy of what we sent (sealed events aren't
-        // self-decryptable). Best-effort: a sidecar write error doesn't fail a
-        // message that was sealed, appended, and about to be delivered.
+        // Keep a local plaintext copy of what we sent (the ratchet wire key is
+        // single-use and not self-decryptable). Best-effort: a sidecar write error
+        // doesn't fail a message that was sealed, appended, and about to be delivered.
         let _ = self
             .sentlog
             .lock()
@@ -789,53 +798,32 @@ impl Node {
     }
 
     /// The last `limit` messages of `conversation`, both directions, sorted by
-    /// wall-clock: peer-authored events decrypted from the durable log, plus our
-    /// own sent plaintext from the local sidecar.
+    /// wall-clock: our own sent plaintext from the local sidecar, plus the plaintext
+    /// of peer-authored messages we decrypted on receipt (from the received store).
+    /// The wire ratchet key is single-use and gone, so history is served from the
+    /// stores — that IS the forward-secrecy property, not a limitation.
     pub fn history(&self, conversation: ConversationId, limit: usize) -> Vec<HistoryEntry> {
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
-        // Snapshot the conversation's events, then release the log lock.
-        let events: Vec<Event> = {
-            let log = self.log.lock().expect("log mutex not poisoned");
-            log.events(&conversation).into_iter().cloned().collect()
-        };
-
         // Map our own Message events' seq -> id, to give sent sidecar entries an id.
         let mut my_msg_ids: std::collections::HashMap<u64, EventId> =
             std::collections::HashMap::new();
-        for event in &events {
-            if event.kind == EventKind::Message && event.author == self_author {
-                my_msg_ids.insert(event.seq, event.id);
+        {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            for event in log.events(&conversation) {
+                if event.kind == EventKind::Message && event.author == self_author {
+                    my_msg_ids.insert(event.seq, event.id);
+                }
             }
         }
 
         let mut entries: Vec<HistoryEntry> = Vec::new();
-        {
-            let roster = self.roster.lock().expect("roster mutex not poisoned");
-            for event in &events {
-                if event.kind != EventKind::Message || event.author == self_author {
-                    continue; // our own sent events come from the sidecar (below)
-                }
-                if let Some((_uid, name, text, reply_to)) =
-                    open_dm_event(&self.identity, &roster, event)
-                {
-                    entries.push(HistoryEntry {
-                        id: event.id,
-                        from_me: false,
-                        who: name,
-                        text,
-                        wall_clock: event.wall_clock,
-                        reply_to,
-                    });
-                }
-            }
-        }
         for sent in self
             .sentlog
             .lock()
             .expect("sentlog mutex not poisoned")
             .entries(&conversation)
         {
-            let sent_body = MessageBody::decode(&sent.plaintext);
+            let body = MessageBody::decode(&sent.plaintext);
             entries.push(HistoryEntry {
                 id: my_msg_ids
                     .get(&sent.seq)
@@ -843,9 +831,25 @@ impl Node {
                     .unwrap_or(EventId::new([0u8; 32])),
                 from_me: true,
                 who: "you".to_string(),
-                text: sent_body.text,
+                text: body.text,
                 wall_clock: sent.wall_clock,
-                reply_to: sent_body.reply_to,
+                reply_to: body.reply_to,
+            });
+        }
+        for rcv in self
+            .received
+            .lock()
+            .expect("received mutex not poisoned")
+            .entries(&conversation)
+        {
+            let body = MessageBody::decode(&rcv.plaintext);
+            entries.push(HistoryEntry {
+                id: rcv.event_id,
+                from_me: false,
+                who: rcv.from,
+                text: body.text,
+                wall_clock: rcv.wall_clock,
+                reply_to: body.reply_to,
             });
         }
         entries.sort_by_key(|e| e.wall_clock);
@@ -1032,16 +1036,17 @@ impl Node {
         aggregate(&decoded)
     }
 
-    /// Decrypt and emit any not-yet-emitted, non-self `Message` events in `conv`.
+    /// Decrypt (via the Double Ratchet) and emit any not-yet-emitted, non-self
+    /// `Message` events in `conv`. A message is marked emitted ONLY after it
+    /// successfully decrypts and is recorded — so a transiently-undecryptable one
+    /// (author not yet in the roster, or its ratchet key not yet derivable) is
+    /// retried on a later sync rather than lost.
     fn emit_new_messages(&self, conv: ConversationId) {
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
-        let fresh: Vec<Event> = {
+        let candidates: Vec<Event> = {
             let log = self.log.lock().expect("log mutex not poisoned");
-            let mut emitted = self.emitted.lock().expect("emitted mutex not poisoned");
-            // Collect candidates first (ends the filter borrow on `emitted`),
-            // then mark them as emitted in a separate pass.
-            let candidates: Vec<Event> = log
-                .events(&conv)
+            let emitted = self.emitted.lock().expect("emitted mutex not poisoned");
+            log.events(&conv)
                 .into_iter()
                 .filter(|e| {
                     e.kind == EventKind::Message
@@ -1049,24 +1054,54 @@ impl Node {
                         && !emitted.contains(&e.id)
                 })
                 .cloned()
-                .collect();
-            for e in &candidates {
-                emitted.insert(e.id);
-            }
-            candidates
+                .collect()
         };
-        let roster = self.roster.lock().expect("roster mutex not poisoned");
-        for event in fresh {
-            if let Some((from, from_name, text, reply_to)) =
-                open_dm_event(&self.identity, &roster, &event)
-            {
-                let _ = self.incoming.send(ReceivedDm {
-                    from,
-                    from_name,
-                    text,
-                    reply_to,
-                });
-            }
+        for event in candidates {
+            // Resolve the author's public identity + display name from the roster.
+            let author_uid = event.author.user_id();
+            let (peer_public, peer_name) = {
+                let roster = self.roster.lock().expect("roster mutex not poisoned");
+                match roster.get(&author_uid) {
+                    Some(p) => (p.public.clone(), p.name.clone()),
+                    None => continue, // unknown author yet; retry later (NOT marked emitted)
+                }
+            };
+            // Decrypt the ratchet wire. The wire key is single-use: a successful
+            // decrypt advances + persists the session, so a re-fed event won't reopen.
+            let wrapped = {
+                let mut r = self
+                    .dm_ratchet
+                    .lock()
+                    .expect("dm_ratchet mutex not poisoned");
+                match r.decrypt(&self.identity, &peer_public, &event.ciphertext) {
+                    Ok(pt) => pt,
+                    Err(_) => continue, // not yet decryptable / not a ratchet DM (NOT emitted)
+                }
+            };
+            let body = MessageBody::decode(&wrapped);
+            // Persist the received plaintext (the wire key is single-use/gone), then
+            // mark emitted — only AFTER a successful decrypt + record.
+            let _ = self
+                .received
+                .lock()
+                .expect("received mutex not poisoned")
+                .record(
+                    conv,
+                    author_uid.clone(),
+                    event.wall_clock,
+                    &wrapped,
+                    event.id,
+                );
+            self.emitted
+                .lock()
+                .expect("emitted mutex not poisoned")
+                .insert(event.id);
+            let _ = self.incoming.send(ReceivedDm {
+                from: author_uid,
+                from_name: peer_name,
+                text: body.text,
+                reply_to: body.reply_to,
+            });
         }
     }
 }
@@ -1317,10 +1352,8 @@ mod tests {
         let me = DeviceIdentity::generate();
         let bob = DeviceIdentity::generate();
         let me_pub = me.public();
+        let bob_uid = bob.public().user_id();
         let conv = crate::node::conversation::dm_conversation_id(&me_pub, &bob.public());
-        // A signing copy of our identity (the original is moved into the node below).
-        let (me_ed, me_x) = me.secret_bytes();
-        let me_signer = DeviceIdentity::from_secret_bytes(me_ed, me_x);
 
         let roster = Arc::new(Mutex::new(Roster::default()));
         roster.lock().unwrap().update(
@@ -1343,43 +1376,32 @@ mod tests {
         )
         .unwrap();
 
-        // Bob sent us a message at t=1000 (a received event in our durable log).
-        let recv = crate::node::conversation::build_dm_event(
-            &bob,
-            &me_pub,
-            conv,
-            1,
-            vec![],
-            1,
-            1000,
-            b"hi from bob",
-        )
-        .unwrap();
-        node.log.lock().unwrap().append(recv).unwrap();
-        // We sent one at t=2000 (recorded in the sidecar).
+        // Bob sent us a message at t=1000 (decrypted on receipt → received store).
+        node.received
+            .lock()
+            .unwrap()
+            .record(
+                conv,
+                bob_uid.clone(),
+                1000,
+                &MessageBody::new(b"hi from bob".to_vec(), None).encode(),
+                EventId::new([7u8; 32]),
+            )
+            .unwrap();
+        // We sent one at t=2000 (recorded in the sidecar as the wrapped body).
         node.sentlog
             .lock()
             .unwrap()
-            .record(conv, 1, 2000, b"hi from me")
+            .record(
+                conv,
+                1,
+                2000,
+                &MessageBody::new(b"hi from me".to_vec(), None).encode(),
+            )
             .unwrap();
-        // Our OWN sent event is also in the durable log (sealed); history must take
-        // its plaintext from the sidecar and suppress the self-authored log event —
-        // otherwise it would double-list. This event must NOT appear in history.
-        let self_in_log = crate::node::conversation::build_dm_event(
-            &me_signer,
-            &bob.public(),
-            conv,
-            1,
-            vec![],
-            1,
-            2000,
-            b"hi from me",
-        )
-        .unwrap();
-        node.log.lock().unwrap().append(self_in_log).unwrap();
 
         let hist = node.dm_history(&bob.public(), 10);
-        assert_eq!(hist.len(), 2); // self-authored log event suppressed (not 3)
+        assert_eq!(hist.len(), 2);
         assert!(!hist[0].from_me && hist[0].text == b"hi from bob"); // t=1000 first
         assert!(hist[1].from_me && hist[1].who == "you" && hist[1].text == b"hi from me");
 
@@ -1399,22 +1421,38 @@ mod tests {
         let log_path = dir.path().join("me.log");
         let sent_path = dir.path().join("me-sent.log");
 
-        // Prior session: a received DM from Alice is already in the persistent log.
-        let old = crate::node::conversation::build_dm_event(
+        // Alice's ratchet (to seal wire she sends us). Her sessions live in their own
+        // temp dir — only the wire bytes matter to us.
+        let alice_dir = dir.path().join("alice-sess");
+        std::fs::create_dir_all(&alice_dir).unwrap();
+        let mut alice_ratchet = DmRatchet::new(
+            RatchetSessions::open(&alice_dir.join("ratchet.sessions"), "pw").unwrap(),
+        );
+
+        // Prior session: a received DM from Alice is already in the persistent log
+        // (its ratchet wire, sealed to us). We seed `emitted` from it at open.
+        let old_wire = alice_ratchet
+            .encrypt(
+                &alice,
+                &me_pub,
+                &MessageBody::new(b"old".to_vec(), None).encode(),
+            )
+            .unwrap();
+        let old = crate::eventlog::event::Event::new(
             &alice,
-            &me_pub,
             conv,
             1,
             vec![],
             1,
             1000,
-            b"old",
-        )
-        .unwrap();
+            EventKind::Message,
+            old_wire,
+        );
+        let old_id = old.id;
         {
             let mut log =
                 crate::eventlog::persist::PersistentEventLog::open(&log_path, "pw").unwrap();
-            log.append(old.clone()).unwrap();
+            log.append(old).unwrap();
         }
 
         // Roster knows Alice (so decryption is possible if it were attempted).
@@ -1429,22 +1467,28 @@ mod tests {
         let (file_tx, _file_rx) = mpsc::unbounded_channel();
         let node = Node::open(me, roster, tx, ch_tx, file_tx, &log_path, &sent_path, "pw").unwrap();
 
-        // Restored history must NOT be re-streamed.
+        // Restored history must NOT be re-streamed (seeded into `emitted` at open).
         node.emit_new_messages(conv);
         assert!(rx.try_recv().is_err(), "restored history was re-streamed");
 
         // A genuinely-new received event (not present at open) IS surfaced.
-        let fresh = crate::node::conversation::build_dm_event(
+        let fresh_wire = alice_ratchet
+            .encrypt(
+                &alice,
+                &me_pub,
+                &MessageBody::new(b"new".to_vec(), None).encode(),
+            )
+            .unwrap();
+        let fresh = crate::eventlog::event::Event::new(
             &alice,
-            &me_pub,
             conv,
             2,
-            vec![old.id],
+            vec![old_id],
             2,
             2000,
-            b"new",
-        )
-        .unwrap();
+            EventKind::Message,
+            fresh_wire,
+        );
         node.log.lock().unwrap().append(fresh).unwrap();
         node.emit_new_messages(conv);
         let got = rx.try_recv().expect("a new message is emitted");
@@ -1951,6 +1995,172 @@ mod tests {
         assert_eq!(
             normal_sent.reply_to, None,
             "normal send_dm yields reply_to == None"
+        );
+    }
+
+    #[tokio::test]
+    async fn dm_messages_are_forward_secret_over_the_ratchet() {
+        // Two nodes over loopback TCP. Alice sends DMs sealed with the Double
+        // Ratchet; Bob decrypts them once into his received store. Proves: (a) both
+        // land in Bob's dm_history; (b) re-feeding the SAME wire event to
+        // emit_new_messages does NOT re-surface it (the wire key is single-use); and
+        // (c) out-of-order arrival still surfaces every message.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let alice_pub = alice.public();
+        let bob_pub = bob.public();
+        let alice_uid = alice_pub.user_id();
+        let bob_uid = bob_pub.user_id();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
+        let bob_roster = seed_roster(&alice, "Alice", 4000, &bob_uid);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
+        let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
+        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
+        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
+        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
+        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            alice_tx,
+            a_ch_tx,
+            a_file_tx,
+            &dir.path().join("alice.log"),
+            &dir.path().join("alice-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            bob_tx,
+            b_ch_tx,
+            b_file_tx,
+            &dir.path().join("bob.log"),
+            &dir.path().join("bob-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+        // Alice sends two DMs; Bob receives both via the ratchet.
+        alice_node.send_dm(&bob_uid, b"first").await.unwrap();
+        let r1 = tokio::time::timeout(Duration::from_secs(5), bob_rx.recv())
+            .await
+            .expect("bob got the first dm")
+            .expect("stream open");
+        assert_eq!(r1.text, b"first");
+        assert_eq!(r1.from, alice_uid);
+        alice_node.send_dm(&bob_uid, b"second").await.unwrap();
+        let r2 = tokio::time::timeout(Duration::from_secs(5), bob_rx.recv())
+            .await
+            .expect("bob got the second dm")
+            .expect("stream open");
+        assert_eq!(r2.text, b"second");
+
+        // (a) Bob's dm_history shows both (served from his received store).
+        let conv = dm_conversation_id(&alice_pub, &bob_pub);
+        let hist = bob_node.dm_history(&alice_pub, 10);
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].text, b"first");
+        assert_eq!(hist[1].text, b"second");
+
+        // (b) Re-feeding the same wire events does NOT re-surface them: the ratchet
+        // keys were consumed (single-use) AND they're marked emitted. Draining again
+        // yields nothing new.
+        bob_node.emit_new_messages(conv);
+        assert!(
+            bob_rx.try_recv().is_err(),
+            "consumed-key events must not re-surface"
+        );
+        assert_eq!(
+            bob_node.dm_history(&alice_pub, 10).len(),
+            2,
+            "history unchanged after re-feed"
+        );
+
+        // (c) Out-of-order: Alice seals m0,m1,m2 and Bob is fed them as 2,0,1. The
+        // ratchet opens skipped messages, so all three surface. Use a fresh peer pair
+        // so this exercises a clean session.
+        let carol = DeviceIdentity::generate();
+        let dave = DeviceIdentity::generate();
+        let carol_pub = carol.public();
+        let dave_pub = dave.public();
+        let dave_uid = dave_pub.user_id();
+        let conv2 = dm_conversation_id(&carol_pub, &dave_pub);
+
+        // Carol's ratchet (seals the wire she "sends"); only the bytes matter.
+        let carol_sess_dir = dir.path().join("carol-sess");
+        std::fs::create_dir_all(&carol_sess_dir).unwrap();
+        let mut carol_ratchet = DmRatchet::new(
+            RatchetSessions::open(&carol_sess_dir.join("ratchet.sessions"), "pw").unwrap(),
+        );
+        let mk = |r: &mut DmRatchet, body: &[u8], seq: u64, wc: u64| {
+            let wire = r
+                .encrypt(
+                    &carol,
+                    &dave_pub,
+                    &MessageBody::new(body.to_vec(), None).encode(),
+                )
+                .unwrap();
+            Event::new(
+                &carol,
+                conv2,
+                seq,
+                vec![],
+                seq,
+                wc,
+                EventKind::Message,
+                wire,
+            )
+        };
+        let m0 = mk(&mut carol_ratchet, b"m0", 1, 1000);
+        let m1 = mk(&mut carol_ratchet, b"m1", 2, 2000);
+        let m2 = mk(&mut carol_ratchet, b"m2", 3, 3000);
+
+        // Dave's node knows Carol.
+        let dave_roster = seed_roster(&carol, "Carol", 4000, &dave_uid);
+        let (dave_tx, mut dave_rx) = mpsc::unbounded_channel();
+        let (d_ch_tx, _d_ch_rx) = mpsc::unbounded_channel();
+        let (d_file_tx, _d_file_rx) = mpsc::unbounded_channel();
+        let dave_node = Node::open(
+            dave,
+            dave_roster,
+            dave_tx,
+            d_ch_tx,
+            d_file_tx,
+            &dir.path().join("dave.log"),
+            &dir.path().join("dave-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        // Feed them in arrival order 2,0,1 into Dave's log, draining after each.
+        for ev in [m2, m0, m1] {
+            dave_node.log.lock().unwrap().append(ev).unwrap();
+            dave_node.emit_new_messages(conv2);
+        }
+        let mut got: Vec<Vec<u8>> = Vec::new();
+        while let Ok(dm) = dave_rx.try_recv() {
+            got.push(dm.text);
+        }
+        got.sort();
+        assert_eq!(
+            got,
+            vec![b"m0".to_vec(), b"m1".to_vec(), b"m2".to_vec()],
+            "out-of-order delivery surfaces all three messages"
+        );
+        // History (sorted by wall_clock) shows them in send order.
+        let dhist = dave_node.dm_history(&carol_pub, 10);
+        assert_eq!(
+            dhist.iter().map(|e| e.text.clone()).collect::<Vec<_>>(),
+            vec![b"m0".to_vec(), b"m1".to_vec(), b"m2".to_vec()]
         );
     }
 }
