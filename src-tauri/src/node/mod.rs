@@ -5,6 +5,7 @@
 
 pub mod channel;
 pub mod conversation;
+pub mod dm_ratchet;
 pub mod filebook;
 pub mod message;
 pub mod net;
@@ -18,6 +19,7 @@ pub mod sentlog;
 pub mod session;
 pub mod transport;
 
+pub use dm_ratchet::DmRatchet;
 pub use filebook::{FileBook, ReceivedFile};
 pub use message::MessageBody;
 pub use node::{ChannelSummary, HistoryEntry, Node, NodeError, ReceivedDm, SearchHit};
