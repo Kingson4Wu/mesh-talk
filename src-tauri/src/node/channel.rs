@@ -1,9 +1,11 @@
-//! Channel orchestration over the event log: the per-member sealed group-key
-//! payload carried by `KeyRotation` events, the payload builders for the three
-//! channel event kinds, and a [`ChannelBook`] that replays a channel's events into
-//! per-channel state + decrypted messages. Operates on `Event`s — no live network.
+//! Channel orchestration over the event log: the per-member sealed
+//! sender-key-distribution payload carried by `KeyRotation` events, the payload
+//! builders for the three channel event kinds, and a [`ChannelBook`] that replays a
+//! channel's events into per-channel state + decrypted messages. Operates on
+//! `Event`s — no live network.
 
-use crate::channel::{open_group_key, seal_group_key, ChannelMeta, ChannelState, GroupKey};
+use crate::channel::sender_key::SenderKeyDistribution;
+use crate::channel::{ChannelMeta, ChannelState};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::message::MessageBody;
@@ -11,12 +13,15 @@ use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-/// The `KeyRotation` event payload: the epoch's group key sealed to each member.
-/// Each `(user_id, sealed)` is `seal_group_key(author, member.x25519, key)`; only
-/// that member can open its entry. The post office relays it but never reads it.
+/// The `KeyRotation` event payload: the author's epoch sender-key distribution
+/// sealed to each member. `sender` is the author's user id (whose chain the SKD
+/// seeds); each `(user_id, sealed)` is `dm::seal(author, member.x25519, skd_bytes)`,
+/// so only that member can open its entry. The post office relays it but never reads
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SealedKeys {
     pub epoch: u64,
+    pub sender: String,
     pub entries: Vec<SealedKeyEntry>,
 }
 
@@ -42,39 +47,107 @@ impl SealedKeys {
     }
 }
 
-/// Seal `key` (for `epoch`) to each member's X25519, producing the `KeyRotation`
-/// payload. `author` is the sender whose static key the recipients use to open.
+/// Seal `author`'s epoch sender-key distribution to each member's X25519, producing
+/// the `KeyRotation` payload. Members open their entry to follow `author`'s chain
+/// from `n = 0`. `author` is the sender whose static key the recipients use to open.
 pub fn seal_keys_for(
     author: &DeviceIdentity,
     members: &[PublicIdentity],
-    key: &GroupKey,
+    skd: &SenderKeyDistribution,
     epoch: u64,
 ) -> Result<SealedKeys, crate::channel::ChannelError> {
+    let skd_bytes = skd.encode();
     let mut entries = Vec::with_capacity(members.len());
     for member in members {
-        let sealed = seal_group_key(author, &member.x25519_pub, key)?;
+        let sealed = crate::dm::seal(author, &member.x25519_pub, &skd_bytes)
+            .map_err(crate::channel::ChannelError::Seal)?;
         entries.push(SealedKeyEntry {
             user_id: member.user_id(),
             sealed,
         });
     }
-    Ok(SealedKeys { epoch, entries })
+    Ok(SealedKeys {
+        epoch,
+        sender: author.public().user_id(),
+        entries,
+    })
 }
 
-/// Open the group key sealed to `me` in a `SealedKeys`, using the rotation author's
-/// X25519 (looked up from the channel membership). `None` if there is no entry for
-/// us or it fails to open.
-fn open_my_key(
+/// Open the sender-key distribution sealed to `me` in a `SealedKeys`, using the
+/// rotation author's X25519 (looked up from the channel membership). `None` if there
+/// is no entry for us or it fails to open/decode.
+fn open_my_skd(
     me: &DeviceIdentity,
     author_x25519: &[u8; 32],
     sealed: &SealedKeys,
-) -> Option<GroupKey> {
+) -> Option<SenderKeyDistribution> {
     let my_uid = me.public().user_id();
     let entry = sealed.entries.iter().find(|e| e.user_id == my_uid)?;
-    open_group_key(me, author_x25519, &entry.sealed).ok()
+    let bytes = crate::dm::open(me, author_x25519, &entry.sealed).ok()?;
+    SenderKeyDistribution::decode(&bytes)
 }
 
-/// A decrypted channel message surfaced to the application.
+/// A channel payload (e.g. a reaction) sealed per-member with the DM sealed box: the
+/// author's bytes sealed to each member's X25519, so any member can open their entry.
+/// Used for content that must be RE-READABLE by all members (no forward secrecy) —
+/// unlike channel messages, which use single-use sender keys. The post office relays
+/// it but never reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedPayload {
+    pub sender: String,
+    pub entries: Vec<SealedKeyEntry>,
+}
+
+impl SealedPayload {
+    pub fn encode(&self) -> Vec<u8> {
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .serialize(self)
+            .expect("sealed payload serialize")
+    }
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .reject_trailing_bytes()
+            .deserialize(bytes)
+            .ok()
+    }
+
+    /// Seal `plaintext` to each member's X25519. `author` is the sender whose static
+    /// key the recipients use to open.
+    pub fn seal(
+        author: &DeviceIdentity,
+        members: &[PublicIdentity],
+        plaintext: &[u8],
+    ) -> Result<Self, crate::channel::ChannelError> {
+        let mut entries = Vec::with_capacity(members.len());
+        for member in members {
+            let sealed = crate::dm::seal(author, &member.x25519_pub, plaintext)
+                .map_err(crate::channel::ChannelError::Seal)?;
+            entries.push(SealedKeyEntry {
+                user_id: member.user_id(),
+                sealed,
+            });
+        }
+        Ok(SealedPayload {
+            sender: author.public().user_id(),
+            entries,
+        })
+    }
+
+    /// Open the bytes sealed to `me`, using the author's X25519. `None` if there is no
+    /// entry for us or it fails to open.
+    pub fn open(&self, me: &DeviceIdentity, author_x25519: &[u8; 32]) -> Option<Vec<u8>> {
+        let my_uid = me.public().user_id();
+        let entry = self.entries.iter().find(|e| e.user_id == my_uid)?;
+        crate::dm::open(me, author_x25519, &entry.sealed).ok()
+    }
+}
+
+/// A decrypted channel message surfaced to the application. Carries the source
+/// event's id + wall-clock and the decoded plaintext body so the node can persist it
+/// to the received store (sender-key wire keys are single-use, so history is served
+/// from the store, not by re-opening the event).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedChannelMessage {
     pub channel_id: ConversationId,
@@ -82,6 +155,10 @@ pub struct ReceivedChannelMessage {
     pub from: String,
     pub text: Vec<u8>,
     pub reply_to: Option<EventId>,
+    pub event_id: EventId,
+    pub wall_clock: u64,
+    /// The wrapped `MessageBody` plaintext (text + reply_to), for the received store.
+    pub wrapped: Vec<u8>,
 }
 
 /// A node's view of all the channels it knows: each channel's [`ChannelState`]
@@ -102,6 +179,12 @@ impl ChannelBook {
     /// The state for a known channel, if any.
     pub fn state(&self, channel_id: &ConversationId) -> Option<&ChannelState> {
         self.states.get(channel_id)
+    }
+
+    /// Mutable state for a known channel (needed to seal/open with sender keys, which
+    /// ratchet the chain).
+    pub fn state_mut(&mut self, channel_id: &ConversationId) -> Option<&mut ChannelState> {
+        self.states.get_mut(channel_id)
     }
 
     /// The ids of all channels this book knows.
@@ -138,8 +221,9 @@ impl ChannelBook {
                         match self.states.get_mut(&channel_id) {
                             Some(state) => state.apply_meta(meta),
                             None => {
-                                self.states
-                                    .insert(channel_id, ChannelState::from_meta(channel_id, meta));
+                                let mut state = ChannelState::from_meta(channel_id, meta);
+                                state.set_identity(me.public().user_id());
+                                self.states.insert(channel_id, state);
                             }
                         }
                     }
@@ -160,18 +244,18 @@ impl ChannelBook {
                     else {
                         continue;
                     };
-                    if let Some(key) = open_my_key(me, &author_x25519, &sealed) {
-                        state.record_key(sealed.epoch, key);
+                    if let Some(skd) = open_my_skd(me, &author_x25519, &sealed) {
+                        state.record_sender_chain(author_uid, sealed.epoch, &skd);
                     }
                 }
                 EventKind::Message => {
                     if event.author == my_author || self.emitted.contains(&event.id) {
                         continue; // our own message, or already surfaced
                     }
-                    let Some(state) = self.states.get(&channel_id) else {
+                    let Some(state) = self.states.get_mut(&channel_id) else {
                         continue;
                     };
-                    if let Some(plaintext) = state.open_message(&event.ciphertext) {
+                    if let Some(plaintext) = state.open_sender_message(&event.ciphertext) {
                         let body = MessageBody::decode(&plaintext);
                         let msg = ReceivedChannelMessage {
                             channel_id,
@@ -179,6 +263,9 @@ impl ChannelBook {
                             from: event.author.user_id(),
                             text: body.text,
                             reply_to: body.reply_to,
+                            event_id: event.id,
+                            wall_clock: event.wall_clock,
+                            wrapped: plaintext,
                         };
                         self.emitted.insert(event.id);
                         out.push(msg);
@@ -222,12 +309,33 @@ mod tests {
         log.events(channel)
     }
 
+    /// Build the author's own [`ChannelState`] for `meta`, with its identity set and
+    /// a fresh epoch sender key generated (so it can seal). Returns the state.
+    fn author_state(
+        author: &DeviceIdentity,
+        channel: ConversationId,
+        meta: &ChannelMeta,
+    ) -> ChannelState {
+        let mut state = ChannelState::from_meta(channel, meta.clone());
+        state.set_identity(author.public().user_id());
+        state
+    }
+
     #[test]
     fn sealed_keys_round_trip_and_reject_trailing() {
         let alice = DeviceIdentity::generate();
         let bob = DeviceIdentity::generate();
-        let key = GroupKey::generate();
-        let sealed = seal_keys_for(&alice, &[alice.public(), bob.public()], &key, 0).unwrap();
+        let mut alice_state = author_state(
+            &alice,
+            new_channel_id(),
+            &ChannelMeta {
+                name: "general".into(),
+                members: vec![alice.public(), bob.public()],
+                epoch: 0,
+            },
+        );
+        let skd = alice_state.my_sender_distribution();
+        let sealed = seal_keys_for(&alice, &[alice.public(), bob.public()], &skd, 0).unwrap();
 
         let bytes = sealed.encode();
         assert_eq!(SealedKeys::decode(&bytes), Some(sealed.clone()));
@@ -235,17 +343,27 @@ mod tests {
         junk.push(0xAB);
         assert_eq!(SealedKeys::decode(&junk), None);
         assert_eq!(sealed.entries.len(), 2);
+        assert_eq!(sealed.sender, alice.public().user_id());
     }
 
     #[test]
-    fn a_member_opens_its_own_sealed_key() {
+    fn a_member_opens_its_own_sealed_skd() {
         let alice = DeviceIdentity::generate();
         let bob = DeviceIdentity::generate();
-        let key = GroupKey::generate();
-        let sealed = seal_keys_for(&alice, &[alice.public(), bob.public()], &key, 0).unwrap();
+        let mut alice_state = author_state(
+            &alice,
+            new_channel_id(),
+            &ChannelMeta {
+                name: "general".into(),
+                members: vec![alice.public(), bob.public()],
+                epoch: 0,
+            },
+        );
+        let skd = alice_state.my_sender_distribution();
+        let sealed = seal_keys_for(&alice, &[alice.public(), bob.public()], &skd, 0).unwrap();
 
-        let opened = open_my_key(&bob, &alice.public().x25519_pub, &sealed).unwrap();
-        assert_eq!(opened.as_bytes(), key.as_bytes());
+        let opened = open_my_skd(&bob, &alice.public().x25519_pub, &sealed).unwrap();
+        assert_eq!(opened.encode(), skd.encode());
     }
 
     #[test]
@@ -253,9 +371,18 @@ mod tests {
         let alice = DeviceIdentity::generate();
         let bob = DeviceIdentity::generate();
         let carol = DeviceIdentity::generate();
-        let key = GroupKey::generate();
-        let sealed = seal_keys_for(&alice, &[alice.public(), bob.public()], &key, 0).unwrap();
-        assert!(open_my_key(&carol, &alice.public().x25519_pub, &sealed).is_none());
+        let mut alice_state = author_state(
+            &alice,
+            new_channel_id(),
+            &ChannelMeta {
+                name: "general".into(),
+                members: vec![alice.public(), bob.public()],
+                epoch: 0,
+            },
+        );
+        let skd = alice_state.my_sender_distribution();
+        let sealed = seal_keys_for(&alice, &[alice.public(), bob.public()], &skd, 0).unwrap();
+        assert!(open_my_skd(&carol, &alice.public().x25519_pub, &sealed).is_none());
     }
 
     #[test]
@@ -267,7 +394,6 @@ mod tests {
 
         // Alice creates the channel {Alice, Bob} at epoch 0.
         let mut alice_log = EventLog::default();
-        let key0 = GroupKey::generate();
         let meta0 = ChannelMeta {
             name: "general".into(),
             members: vec![alice.public(), bob.public()],
@@ -280,7 +406,9 @@ mod tests {
             EventKind::MembershipChange,
             meta0.encode(),
         );
-        let sealed0 = seal_keys_for(&alice, &[alice.public(), bob.public()], &key0, 0).unwrap();
+        let mut alice_state = author_state(&alice, channel, &meta0);
+        let skd0 = alice_state.my_sender_distribution();
+        let sealed0 = seal_keys_for(&alice, &meta0.members, &skd0, 0).unwrap();
         append(
             &mut alice_log,
             &alice,
@@ -288,18 +416,15 @@ mod tests {
             EventKind::KeyRotation,
             sealed0.encode(),
         );
-
-        let mut alice_state = ChannelState::from_meta(channel, meta0.clone());
-        alice_state.record_key(0, key0.clone());
         append(
             &mut alice_log,
             &alice,
             channel,
             EventKind::Message,
-            alice_state.seal_message(b"hello team").unwrap(),
+            alice_state.seal_sender_message(b"hello team").unwrap(),
         );
 
-        // Bob reconciles + processes → learns the channel, opens his key, reads it.
+        // Bob reconciles + processes → learns the channel, records Alice's chain, reads it.
         let mut bob_log = EventLog::default();
         reconcile(&mut bob_log, &mut alice_log, channel);
         let mut bob_book = ChannelBook::new();
@@ -309,8 +434,7 @@ mod tests {
         assert_eq!(got[0].from, alice.public().user_id());
         assert_eq!(bob_book.state(&channel).unwrap().epoch(), 0);
 
-        // Alice adds Carol → epoch 1.
-        let key1 = GroupKey::generate();
+        // Alice adds Carol → epoch 1, re-distributing her epoch-1 SKD.
         let meta1 = ChannelMeta {
             name: "general".into(),
             members: vec![alice.public(), bob.public(), carol.public()],
@@ -323,7 +447,9 @@ mod tests {
             EventKind::MembershipChange,
             meta1.encode(),
         );
-        let sealed1 = seal_keys_for(&alice, &meta1.members, &key1, 1).unwrap();
+        alice_state.apply_meta(meta1.clone());
+        let skd1 = alice_state.my_sender_distribution();
+        let sealed1 = seal_keys_for(&alice, &meta1.members, &skd1, 1).unwrap();
         append(
             &mut alice_log,
             &alice,
@@ -331,23 +457,20 @@ mod tests {
             EventKind::KeyRotation,
             sealed1.encode(),
         );
-        alice_state.apply_meta(meta1.clone());
-        alice_state.record_key(1, key1.clone());
         append(
             &mut alice_log,
             &alice,
             channel,
             EventKind::Message,
-            alice_state.seal_message(b"welcome carol").unwrap(),
+            alice_state.seal_sender_message(b"welcome carol").unwrap(),
         );
 
-        // Carol reconciles fresh → gets epoch-1 key only → reads "welcome carol" but NOT epoch-0.
+        // Carol reconciles fresh → gets epoch-1 SKD only → reads "welcome carol".
         let mut carol_log = EventLog::default();
         reconcile(&mut carol_log, &mut alice_log, channel);
         let mut carol_book = ChannelBook::new();
         let carol_got = carol_book.process(&carol, channel, &collect(&carol_log, &channel));
-        assert_eq!(carol_got.len(), 1);
-        assert_eq!(carol_got[0].text, b"welcome carol");
+        assert!(carol_got.iter().any(|m| m.text == b"welcome carol"));
         assert_eq!(carol_book.state(&channel).unwrap().epoch(), 1);
 
         // Bob reconciles the new events and reads the epoch-1 message.
@@ -363,7 +486,6 @@ mod tests {
         let bob = DeviceIdentity::generate();
         let channel = new_channel_id();
         let mut alice_log = EventLog::default();
-        let key0 = GroupKey::generate();
         let meta0 = ChannelMeta {
             name: "general".into(),
             members: vec![alice.public(), bob.public()],
@@ -376,7 +498,9 @@ mod tests {
             EventKind::MembershipChange,
             meta0.encode(),
         );
-        let sealed0 = seal_keys_for(&alice, &meta0.members, &key0, 0).unwrap();
+        let mut alice_state = author_state(&alice, channel, &meta0);
+        let skd0 = alice_state.my_sender_distribution();
+        let sealed0 = seal_keys_for(&alice, &meta0.members, &skd0, 0).unwrap();
         append(
             &mut alice_log,
             &alice,
@@ -384,19 +508,19 @@ mod tests {
             EventKind::KeyRotation,
             sealed0.encode(),
         );
-        let mut alice_state = ChannelState::from_meta(channel, meta0.clone());
-        alice_state.record_key(0, key0);
         append(
             &mut alice_log,
             &alice,
             channel,
             EventKind::Message,
-            alice_state.seal_message(b"hi").unwrap(),
+            alice_state.seal_sender_message(b"hi").unwrap(),
         );
 
         let mut book = ChannelBook::new();
         let first = book.process(&bob, channel, &collect(&alice_log, &channel));
         assert_eq!(first.len(), 1);
+        // Re-feeding the same events does NOT re-open the message (single-use key;
+        // the emitted set + consumed chain key both prevent a second surface).
         let second = book.process(&bob, channel, &collect(&alice_log, &channel));
         assert!(second.is_empty());
     }
