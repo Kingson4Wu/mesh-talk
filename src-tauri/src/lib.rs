@@ -240,7 +240,8 @@ pub fn run_tauri() {
             crate::redesign_commands::redesign_react_dm,
             crate::redesign_commands::redesign_react_channel,
             crate::redesign_commands::redesign_reactions,
-            crate::redesign_commands::redesign_channel_reactions
+            crate::redesign_commands::redesign_channel_reactions,
+            crate::redesign_commands::redesign_search
         ])
         .run(tauri::generate_context!())
         .map_err(|e| log::error!("Error while running tauri application: {}", e))

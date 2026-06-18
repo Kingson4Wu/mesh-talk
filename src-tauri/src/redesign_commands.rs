@@ -358,3 +358,37 @@ pub async fn redesign_channel_reactions(
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     Ok(to_reaction_infos(rt.channel_reactions(channel)))
 }
+
+/// A search result hit for display in the UI.
+#[derive(Serialize)]
+pub struct SearchHitInfo {
+    pub is_channel: bool,
+    pub target: String,
+    pub label: String,
+    pub from_me: bool,
+    pub who: String,
+    pub text: String,
+    pub wall_clock: u64,
+}
+
+#[tauri::command]
+pub async fn redesign_search(
+    state: tauri::State<'_, RedesignState>,
+    query: String,
+) -> Result<Vec<SearchHitInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .search(&query)
+        .into_iter()
+        .map(|h| SearchHitInfo {
+            is_channel: h.is_channel,
+            target: h.target,
+            label: h.label,
+            from_me: h.from_me,
+            who: h.who,
+            text: String::from_utf8_lossy(&h.text).into_owned(),
+            wall_clock: h.wall_clock,
+        })
+        .collect())
+}

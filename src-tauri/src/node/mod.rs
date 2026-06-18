@@ -16,7 +16,7 @@ pub mod session;
 pub mod transport;
 
 pub use filebook::{FileBook, ReceivedFile};
-pub use node::{ChannelSummary, HistoryEntry, Node, NodeError, ReceivedDm};
+pub use node::{ChannelSummary, HistoryEntry, Node, NodeError, ReceivedDm, SearchHit};
 pub use postbox::elected_post_office;
 pub use reaction::{aggregate, ReactionPayload, ReactionView};
 pub use runtime::{RedesignRuntime, RuntimeError};

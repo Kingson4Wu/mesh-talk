@@ -53,6 +53,21 @@ pub struct ChannelSummary {
     pub member_count: usize,
 }
 
+/// A search match: a message whose text contains the query, with enough context to
+/// label it and navigate to its conversation.
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    pub is_channel: bool,
+    /// The peer user-id (DM) or channel id hex (channel) — the navigation target.
+    pub target: String,
+    /// The peer or channel display name.
+    pub label: String,
+    pub from_me: bool,
+    pub who: String,
+    pub text: Vec<u8>,
+    pub wall_clock: u64,
+}
+
 /// A merged conversation-history entry (sent or received), for display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
@@ -789,6 +804,62 @@ impl Node {
             entries.drain(0..entries.len() - limit);
         }
         entries
+    }
+
+    /// Search decrypted history across all known DMs + channels for `query`
+    /// (case-insensitive substring). Reuses the per-conversation history methods, so
+    /// it inherits their decryption + labels. Empty/whitespace query → no hits.
+    pub fn search(&self, query: &str) -> Vec<SearchHit> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        const PER_CONV: usize = 2000;
+        let mut hits: Vec<SearchHit> = Vec::new();
+
+        let peers = self
+            .roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .peers();
+        for peer in peers.iter().filter(|p| !p.post_office) {
+            for entry in self.dm_history(&peer.public, PER_CONV) {
+                if String::from_utf8_lossy(&entry.text)
+                    .to_lowercase()
+                    .contains(&q)
+                {
+                    hits.push(SearchHit {
+                        is_channel: false,
+                        target: peer.public.user_id(),
+                        label: peer.name.clone(),
+                        from_me: entry.from_me,
+                        who: entry.who,
+                        text: entry.text,
+                        wall_clock: entry.wall_clock,
+                    });
+                }
+            }
+        }
+        for ch in self.list_channels() {
+            for entry in self.channel_history(ch.id, PER_CONV) {
+                if String::from_utf8_lossy(&entry.text)
+                    .to_lowercase()
+                    .contains(&q)
+                {
+                    hits.push(SearchHit {
+                        is_channel: true,
+                        target: hex::encode(ch.id.as_bytes()),
+                        label: ch.name.clone(),
+                        from_me: entry.from_me,
+                        who: entry.who,
+                        text: entry.text,
+                        wall_clock: entry.wall_clock,
+                    });
+                }
+            }
+        }
+        hits.sort_by_key(|b| std::cmp::Reverse(b.wall_clock)); // most recent first
+        hits
     }
 
     /// Aggregated reactions in the DM with `peer` (derives the conversation id).
@@ -1676,5 +1747,38 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         assert!(ok, "alice sees bob's reaction");
+    }
+
+    #[tokio::test]
+    async fn search_finds_a_sent_dm_by_keyword() {
+        let me = DeviceIdentity::generate();
+        let peer = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let roster = seed_roster(&peer, "Peer", 1, &me.public().user_id());
+        let (dm, _a) = mpsc::unbounded_channel();
+        let (ch, _b) = mpsc::unbounded_channel();
+        let (f, _c) = mpsc::unbounded_channel();
+        let node = Node::open(
+            me,
+            roster,
+            dm,
+            ch,
+            f,
+            &dir.path().join("m.log"),
+            &dir.path().join("m-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        // No peer is reachable (port 1), but send_dm still records to the sidecar.
+        let peer_uid = peer.public().user_id();
+        let _ = node.send_dm(&peer_uid, b"lunch at noon tomorrow").await; // delivery fails; sidecar written
+        let hits = node.search("NOON");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].from_me);
+        assert_eq!(hits[0].label, "Peer");
+        assert_eq!(hits[0].target, peer_uid);
+        assert!(node.search("   ").is_empty());
+        assert!(node.search("absent-keyword").is_empty());
     }
 }

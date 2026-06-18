@@ -215,6 +215,11 @@ impl RedesignRuntime {
         self.node.channel_history(channel, limit)
     }
 
+    /// Search all DMs + channels for `query`.
+    pub fn search(&self, query: &str) -> Vec<crate::node::SearchHit> {
+        self.node.search(query)
+    }
+
     /// Aggregated reactions in the DM with `peer`.
     pub fn reactions_dm(&self, peer: &PublicIdentity) -> Vec<crate::node::reaction::ReactionView> {
         self.node.reactions_dm(peer)
