@@ -107,6 +107,7 @@ const redesignAPI = {
     invoke("redesign_react_channel", { channelId, target, emoji, remove }),
   reactions: (peer) => invoke("redesign_reactions", { peer }),
   channelReactions: (channelId) => invoke("redesign_channel_reactions", { channelId }),
+  search: (query) => invoke("redesign_search", { query }),
 };
 
 // Combined API service

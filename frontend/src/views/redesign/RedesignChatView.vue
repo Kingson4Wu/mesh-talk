@@ -3,8 +3,30 @@
     <header class="rd-header">
       <h2>Redesign chat <span class="beta">beta</span></h2>
       <div class="me">you: <code>{{ myId || "(starting…)" }}</code></div>
+      <button class="search-toggle" :class="{ active: showSearch }" title="Search messages" @click="showSearch = !showSearch">🔍</button>
       <router-link class="back" :to="{ name: 'chat' }">← Back</router-link>
     </header>
+
+    <div v-if="showSearch" class="search-panel">
+      <form class="search-bar" @submit.prevent="runSearch">
+        <input v-model="searchQuery" placeholder="Search messages…" />
+        <button type="submit" :disabled="!searchQuery.trim()">Search</button>
+      </form>
+      <div class="search-results">
+        <div v-if="searching" class="empty">Searching…</div>
+        <button
+          v-for="(h, i) in searchResults"
+          :key="i"
+          class="search-hit"
+          @click="openHit(h)"
+        >
+          <span class="hit-label">{{ h.is_channel ? "#" : "" }}{{ h.label }}</span>
+          <span class="hit-who">{{ h.from_me ? "you" : h.who }}:</span>
+          <span class="hit-text">{{ h.text }}</span>
+        </button>
+        <div v-if="!searching && searchQuery.trim() && !searchResults.length" class="empty">No matches.</div>
+      </div>
+    </div>
 
     <div class="rd-body">
       <aside class="peers">
@@ -174,6 +196,12 @@ const selectedMembers = reactive({});
 const reactions = ref([]);
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
 
+// --- search ---
+const searchQuery = ref("");
+const searchResults = ref([]);
+const searching = ref(false);
+const showSearch = ref(false);
+
 const myName = computed(() => store.user?.name || "");
 
 // --- @mention autocomplete ---
@@ -266,6 +294,26 @@ async function toggleReaction(message, emoji) {
     else await API.redesign.reactDm(activePeer.value.user_id, message.id, emoji, remove);
     await loadReactions();
   } catch (e) { error.value = String(e); }
+}
+
+async function runSearch() {
+  const q = searchQuery.value.trim();
+  if (!q) { searchResults.value = []; return; }
+  searching.value = true;
+  try { searchResults.value = await API.redesign.search(q); }
+  catch (e) { error.value = String(e); }
+  finally { searching.value = false; }
+}
+
+async function openHit(hit) {
+  showSearch.value = false;
+  if (hit.is_channel) {
+    const c = channels.value.find((c) => c.channel_id === hit.target);
+    if (c) await selectChannel(c);
+  } else {
+    const p = peers.value.find((p) => p.user_id === hit.target);
+    if (p) await selectPeer(p);
+  }
 }
 
 async function refreshPeers() {
@@ -803,4 +851,87 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .mention-item:hover { background: rgba(59, 130, 246, 0.18); }
+.search-toggle {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: rgba(148, 163, 184, 1);
+}
+.search-toggle.active {
+  background: rgba(59, 130, 246, 0.2);
+}
+.search-panel {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(15, 23, 42, 1);
+}
+.search-bar {
+  display: flex;
+  gap: 8px;
+}
+.search-bar input {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(15, 23, 42, 1);
+  color: rgba(226, 232, 240, 1);
+  font-size: 14px;
+}
+.search-bar button {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: none;
+  background: #4ade80;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 14px;
+}
+.search-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(148, 163, 184, 0.08);
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+.search-hit:hover {
+  background: rgba(59, 130, 246, 0.18);
+}
+.hit-label {
+  font-weight: 600;
+  color: #93c5fd;
+  white-space: nowrap;
+}
+.hit-who {
+  color: rgba(148, 163, 184, 1);
+  white-space: nowrap;
+}
+.hit-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>
