@@ -106,6 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shared roster (discovery writes it; the node + REPL read it) and the node.
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
     let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
+    let (channel_tx, _channel_rx) =
+        mpsc::unbounded_channel::<mesh_talk::node::channel::ReceivedChannelMessage>();
     // Derive log paths from the keystore path (sibling files, same directory).
     let keystore_path = std::path::Path::new(&args.keystore);
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
@@ -115,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         identity,
         Arc::clone(&roster),
         incoming_tx,
+        channel_tx,
         &log_path,
         &sent_path,
         &args.password,

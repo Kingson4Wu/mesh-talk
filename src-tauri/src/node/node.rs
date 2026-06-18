@@ -11,6 +11,7 @@ use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::eventlog::persist::PersistentEventLog;
 use crate::eventlog::LogError;
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
+use crate::node::channel::{ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
 use crate::node::postbox::elected_post_office;
 use crate::node::sentlog::SentLog;
@@ -74,6 +75,8 @@ pub struct Node {
     sentlog: Mutex<SentLog>,
     roster: Arc<Mutex<Roster>>,
     incoming: mpsc::UnboundedSender<ReceivedDm>,
+    channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
+    channels: Mutex<ChannelBook>,
     emitted: Mutex<HashSet<EventId>>,
 }
 
@@ -86,6 +89,7 @@ impl Node {
         identity: DeviceIdentity,
         roster: Arc<Mutex<Roster>>,
         incoming: mpsc::UnboundedSender<ReceivedDm>,
+        channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
         log_path: &Path,
         sent_path: &Path,
         password: &str,
@@ -93,12 +97,19 @@ impl Node {
         let log = PersistentEventLog::open(log_path, password)?;
         let sentlog = SentLog::open(sent_path, password)?;
         let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
+        let mut channels = ChannelBook::new();
+        for conv in log.conversations() {
+            let events = log.events(&conv);
+            let _ = channels.process(&identity, conv, &events);
+        }
         Ok(Arc::new(Self {
             identity,
             log: Mutex::new(log),
             sentlog: Mutex::new(sentlog),
             roster,
             incoming,
+            channel_incoming,
+            channels: Mutex::new(channels),
             emitted: Mutex::new(emitted),
         }))
     }
@@ -231,6 +242,24 @@ impl Node {
     pub async fn serve_connection(&self, mut channel: SecureChannel<TcpStream>) {
         while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
             self.emit_new_messages(conv);
+            self.process_channel(conv);
+        }
+    }
+
+    /// Run the channel book over `conv`'s events and stream any newly-decryptable
+    /// channel messages. A no-op for DM conversations (no channel state).
+    fn process_channel(&self, conv: ConversationId) {
+        let events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv).into_iter().cloned().collect()
+        };
+        let refs: Vec<&Event> = events.iter().collect();
+        let messages = {
+            let mut book = self.channels.lock().expect("channels mutex not poisoned");
+            book.process(&self.identity, conv, &refs)
+        };
+        for msg in messages {
+            let _ = self.channel_incoming.send(msg);
         }
     }
 
@@ -389,10 +418,12 @@ mod tests {
         let me = DeviceIdentity::generate();
         let roster = Arc::new(Mutex::new(Roster::default())); // empty
         let (tx, _rx) = mpsc::unbounded_channel();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             tx,
+            ch_tx,
             &dir.path().join("me.log"),
             &dir.path().join("me-sent.log"),
             "pw",
@@ -421,10 +452,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
+        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
+        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_tx,
+            a_ch_tx,
             &dir.path().join("alice.log"),
             &dir.path().join("alice-sent.log"),
             "pw",
@@ -434,6 +468,7 @@ mod tests {
             bob,
             bob_roster,
             bob_tx,
+            b_ch_tx,
             &dir.path().join("bob.log"),
             &dir.path().join("bob-sent.log"),
             "pw",
@@ -528,10 +563,13 @@ mod tests {
 
         let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
+        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
+        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_tx,
+            a_ch_tx,
             &dir.path().join("alice.log"),
             &dir.path().join("alice-sent.log"),
             "pw",
@@ -541,6 +579,7 @@ mod tests {
             bob,
             bob_roster,
             bob_tx,
+            b_ch_tx,
             &dir.path().join("bob.log"),
             &dir.path().join("bob-sent.log"),
             "pw",
@@ -589,10 +628,12 @@ mod tests {
             &me_pub.user_id(),
         );
         let (tx, _rx) = mpsc::unbounded_channel();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             tx,
+            ch_tx,
             &dir.path().join("me.log"),
             &dir.path().join("me-sent.log"),
             "pw",
@@ -681,7 +722,8 @@ mod tests {
             &me_pub.user_id(),
         );
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let node = Node::open(me, roster, tx, &log_path, &sent_path, "pw").unwrap();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let node = Node::open(me, roster, tx, ch_tx, &log_path, &sent_path, "pw").unwrap();
 
         // Restored history must NOT be re-streamed.
         node.emit_new_messages(conv);

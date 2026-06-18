@@ -94,10 +94,13 @@ impl RedesignRuntime {
 
         let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
         let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
+        let (channel_tx, _channel_rx) =
+            mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
         let node = Node::open(
             identity,
             Arc::clone(&roster),
             incoming_tx,
+            channel_tx,
             &dir.join("messages.log"),
             &dir.join("sent.log"),
             password,
