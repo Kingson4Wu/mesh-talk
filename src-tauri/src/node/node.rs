@@ -163,15 +163,37 @@ impl Node {
         sent_path: &Path,
         password: &str,
     ) -> Result<Arc<Self>, LogError> {
-        let log = PersistentEventLog::open(log_path, password)?;
-        let sentlog = SentLog::open(sent_path, password)?;
         let dir = log_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let sessions = RatchetSessions::open(&dir.join("ratchet.sessions"), password)?;
+        // Each store does its own slow, CPU-bound password KDF over an independent
+        // file. Open them on scoped threads so the KDFs run in parallel: on a
+        // multi-core machine the wall-clock cost collapses to roughly one KDF.
+        let (log_res, sent_res, sessions_res, received_res, csenders_res) =
+            std::thread::scope(|s| {
+                let h_log = s.spawn(|| PersistentEventLog::open(log_path, password));
+                let h_sent = s.spawn(|| SentLog::open(sent_path, password));
+                let h_sess =
+                    s.spawn(|| RatchetSessions::open(&dir.join("ratchet.sessions"), password));
+                let h_recv = s.spawn(|| ReceivedLog::open(&dir.join("received.log"), password));
+                let h_csnd =
+                    s.spawn(|| ChannelSenderStore::open(&dir.join("channel.senders"), password));
+                (
+                    h_log.join(),
+                    h_sent.join(),
+                    h_sess.join(),
+                    h_recv.join(),
+                    h_csnd.join(),
+                )
+            });
+        // A join() error means the opening thread panicked; re-raise the panic so it
+        // is not silently swallowed. A normal open failure surfaces as the inner Err.
+        let log = log_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let sentlog = sent_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let sessions = sessions_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let received = received_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let channel_senders = csenders_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let dm_ratchet = DmRatchet::new(sessions);
-        let received = ReceivedLog::open(&dir.join("received.log"), password)?;
-        let channel_senders = ChannelSenderStore::open(&dir.join("channel.senders"), password)?;
         let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
         let mut channels = ChannelBook::new();
         for conv in log.conversations() {
