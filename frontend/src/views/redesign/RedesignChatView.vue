@@ -86,7 +86,12 @@
                 <button v-if="!m.from_me" class="save" @click="saveReceivedFile(m.file)">Save</button>
               </span>
             </template>
-            <span v-else class="text">{{ m.text }}</span>
+            <span v-else class="text" :class="{ 'mentions-me': !m.from_me && mentionsMe(m.text) }">
+              <template v-for="(seg, si) in mentionParts(m.text)" :key="si">
+                <span v-if="seg.mention" class="mention">{{ seg.text }}</span>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </span>
             <div v-if="m.id" class="reactions">
               <button
                 v-for="r in reactionsFor(m.id)"
@@ -106,11 +111,24 @@
           <div v-if="!messages.length" class="empty">No messages yet.</div>
         </div>
         <form class="composer" @submit.prevent="send">
+          <div v-if="mentionOpen && mentionCandidates.length" class="mention-pop">
+            <button
+              v-for="p in mentionCandidates"
+              :key="p.user_id"
+              type="button"
+              class="mention-item"
+              @click="applyMention(p)"
+            >
+              @{{ p.name || p.user_id.slice(0, 8) }}
+            </button>
+          </div>
           <input
             v-model="draft"
             :placeholder="activeChannel
               ? `Message #${activeChannel.name}…`
               : `Message ${activePeer.name || activePeer.user_id.slice(0, 8)}…`"
+            @input="onDraftInput"
+            @keydown.esc="mentionOpen = false"
           />
           <button type="button" class="attach" title="Send a file" @click="attachFile">📎</button>
           <button type="submit" :disabled="!draft.trim()">Send</button>
@@ -127,7 +145,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "../../stores/appStore";
 import { API } from "../../services/api";
@@ -155,6 +173,66 @@ const selectedMembers = reactive({});
 
 const reactions = ref([]);
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
+
+const myName = computed(() => store.user?.name || "");
+
+// --- @mention autocomplete ---
+const mentionOpen = ref(false);
+const mentionQuery = ref("");
+const mentionCandidates = computed(() => {
+  if (!mentionOpen.value) return [];
+  const q = mentionQuery.value.toLowerCase();
+  return peers.value
+    .filter((p) => (p.name || p.user_id).toLowerCase().startsWith(q))
+    .slice(0, 6);
+});
+
+// Called on composer input: detect a trailing "@word" being typed.
+function onDraftInput() {
+  const m = /@(\S*)$/.exec(draft.value);
+  if (m) {
+    mentionOpen.value = true;
+    mentionQuery.value = m[1];
+  } else {
+    mentionOpen.value = false;
+  }
+}
+
+function applyMention(peer) {
+  const name = peer.name || peer.user_id.slice(0, 8);
+  // Replace the trailing "@word" with "@name ".
+  draft.value = draft.value.replace(/@(\S*)$/, `@${name} `);
+  mentionOpen.value = false;
+}
+
+// --- rendering helpers ---
+// Split text into segments, marking @mentions (a run of non-space chars after @).
+function mentionParts(text) {
+  if (!text) return [];
+  const parts = [];
+  const re = /@[^\s@]+/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push({ text: text.slice(last, m.index), mention: false });
+    parts.push({ text: m[0], mention: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), mention: false });
+  return parts;
+}
+
+// True if a (received) message mentions the current user.
+function mentionsMe(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  const n = myName.value.toLowerCase();
+  return (
+    t.includes("@all") ||
+    t.includes("@everyone") ||
+    (n.length > 0 && t.includes("@" + n))
+  );
+}
 
 let refreshTimer = null;
 let unlisten = null;
@@ -597,6 +675,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid rgba(148, 163, 184, 0.25);
+  position: relative;
 }
 .composer input {
   flex: 1;
@@ -700,4 +779,28 @@ onBeforeUnmount(() => {
   padding: 2px;
   line-height: 1;
 }
+.mention { color: #93c5fd; font-weight: 600; }
+.text.mentions-me { border-left: 3px solid #fbbf24; padding-left: 6px; }
+.mention-pop {
+  position: absolute;
+  bottom: 100%;
+  left: 16px;
+  margin-bottom: 4px;
+  background: rgba(15, 23, 42, 1);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 10;
+}
+.mention-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+}
+.mention-item:hover { background: rgba(59, 130, 246, 0.18); }
 </style>
