@@ -4,6 +4,7 @@
 
 pub mod crypto;
 pub mod model;
+pub mod sender_key;
 
 pub use crypto::{
     open_channel_message, open_group_key, seal_channel_message, seal_group_key, ChannelError,

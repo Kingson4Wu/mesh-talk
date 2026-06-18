@@ -6,4 +6,6 @@
 mod kdf;
 pub mod state;
 
+pub(crate) use kdf::{kdf_ck, message_keys};
+
 pub use state::{init_alice, init_bob, Header, RatchetError, RatchetState};
