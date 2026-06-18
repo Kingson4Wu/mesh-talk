@@ -10,14 +10,19 @@
 
 use crate::eventlog::event::ConversationId;
 use crate::eventlog::sync::{
-    build_request, handle_followup, handle_request, handle_response, ApplyReport, SyncFollowup,
-    SyncRequest, SyncResponse, SyncStore,
+    build_request, handle_followup, handle_request_bounded, handle_response_bounded, ApplyReport,
+    SyncFollowup, SyncRequest, SyncResponse, SyncStore,
 };
-use crate::transport::{SecureChannel, TransportError};
+use crate::transport::{SecureChannel, TransportError, MAX_PLAINTEXT};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
+
+/// Backstop on sync rounds for one conversation (a peer that resends
+/// non-applying events forever can't spin us indefinitely). Generous: a round
+/// transfers up to ~one frame, so this bounds a single conversation's transfer.
+const MAX_SYNC_ROUNDS: usize = 10_000;
 
 /// One framed sync message on the wire.
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,25 +90,39 @@ where
     S: SyncStore,
     IO: AsyncRead + AsyncWrite + Unpin,
 {
-    let request = {
-        let store = store.lock().expect("store mutex not poisoned");
-        build_request(&*store, conversation)
-    };
-    channel.send(&encode(&SyncWire::Request(request))?).await?;
+    let mut total = ApplyReport::default();
+    for _ in 0..MAX_SYNC_ROUNDS {
+        let request = {
+            let store = store.lock().expect("store mutex not poisoned");
+            build_request(&*store, conversation)
+        };
+        channel.send(&encode(&SyncWire::Request(request))?).await?;
 
-    let response = match decode(&channel.recv().await?)? {
-        SyncWire::Response(r) => r,
-        _ => return Err(SessionError::UnexpectedMessage),
-    };
+        let response = match decode(&channel.recv().await?)? {
+            SyncWire::Response(r) => r,
+            _ => return Err(SessionError::UnexpectedMessage),
+        };
 
-    let (report, followup) = {
-        let mut store = store.lock().expect("store mutex not poisoned");
-        handle_response(&mut *store, &response)
-    };
-    channel
-        .send(&encode(&SyncWire::Followup(followup))?)
-        .await?;
-    Ok(report)
+        let (report, followup) = {
+            let mut store = store.lock().expect("store mutex not poisoned");
+            handle_response_bounded(&mut *store, &response, MAX_PLAINTEXT)
+        };
+        let made_progress = report.applied > 0;
+        let more_to_push = !followup.events.is_empty();
+
+        channel
+            .send(&encode(&SyncWire::Followup(followup))?)
+            .await?;
+
+        total.applied += report.applied;
+        total.duplicates += report.duplicates;
+        total.rejected.extend(report.rejected);
+
+        if !made_progress && !more_to_push {
+            break;
+        }
+    }
+    Ok(total)
 }
 
 /// The outcome of serving one inbound wire message.
@@ -136,7 +155,7 @@ where
             let conversation = request.conversation;
             let response = {
                 let store = store.lock().expect("store mutex not poisoned");
-                handle_request(&*store, &request)
+                handle_request_bounded(&*store, &request, MAX_PLAINTEXT)
             };
             channel
                 .send(&encode(&SyncWire::Response(response))?)
@@ -191,26 +210,23 @@ mod tests {
         });
         let event_id = event.id;
 
-        // Responder: accept the channel and serve two messages (Request, then Followup).
+        // Responder: accept the channel and serve until the requester closes.
         let server = tokio::spawn(async move {
             let mut b_ch = SecureChannel::accept(b_io, &b_id).await.unwrap();
             let b_store = Mutex::new(EventLog::default());
-            // Request → Response
-            assert!(matches!(
-                serve_one(&mut b_ch, &b_store).await.unwrap(),
-                Served::Handled(_)
-            ));
-            // Followup (carries A's event)
-            assert!(matches!(
-                serve_one(&mut b_ch, &b_store).await.unwrap(),
-                Served::Handled(_)
-            ));
+            loop {
+                match serve_one(&mut b_ch, &b_store).await.unwrap() {
+                    Served::Closed => break,
+                    Served::Handled(_) => {}
+                }
+            }
             b_store.into_inner().unwrap()
         });
 
-        // Requester: connect and run one round.
+        // Requester: connect and run request_round (loops until converged), then drop.
         let mut a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
         request_round(&mut a_ch, &a_store, conv()).await.unwrap();
+        drop(a_ch);
 
         let b_log = server.await.unwrap();
         assert!(
@@ -246,21 +262,19 @@ mod tests {
                 log.append(event.clone()).unwrap();
                 log
             });
-            // Request → Response (this Response carries B's event to A)
-            assert!(matches!(
-                serve_one(&mut b_ch, &b_store).await.unwrap(),
-                Served::Handled(_)
-            ));
-            // Followup (A has nothing new for B)
-            assert!(matches!(
-                serve_one(&mut b_ch, &b_store).await.unwrap(),
-                Served::Handled(_)
-            ));
+            // Serve until the requester closes the channel.
+            loop {
+                match serve_one(&mut b_ch, &b_store).await.unwrap() {
+                    Served::Closed => break,
+                    Served::Handled(_) => {}
+                }
+            }
         });
 
         let a_store = Mutex::new(EventLog::default());
         let mut a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
         request_round(&mut a_ch, &a_store, conv()).await.unwrap();
+        drop(a_ch);
         server.await.unwrap();
 
         assert!(
@@ -285,5 +299,78 @@ mod tests {
         let a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
         drop(a_ch); // hang up immediately
         assert!(matches!(server.await.unwrap(), Served::Closed));
+    }
+
+    /// Build a responder store with `n` events in `conv`, each carrying a `payload_size`-byte
+    /// ciphertext, so the combined encoded size can exceed MAX_PLAINTEXT.
+    fn build_large_responder_store(
+        id: &DeviceIdentity,
+        conv: ConversationId,
+        n: usize,
+        payload_size: usize,
+    ) -> EventLog {
+        let mut log = EventLog::default();
+        for i in 0..n {
+            let ciphertext = vec![0xABu8; payload_size];
+            let event = Event::new(
+                id,
+                conv,
+                (i + 1) as u64,
+                vec![],
+                1,
+                0,
+                EventKind::Message,
+                ciphertext,
+            );
+            log.append(event).unwrap();
+        }
+        log
+    }
+
+    #[tokio::test]
+    async fn request_round_syncs_a_conversation_larger_than_one_frame() {
+        // Build a responder store with 4 events of ~20 KB each (~80 KB total > MAX_PLAINTEXT=65519).
+        // request_round loops internally until all events are transferred; assert full sync.
+        let a_id = DeviceIdentity::generate();
+        let b_id = DeviceIdentity::generate();
+        // Large duplex buffer so multiple frames can be in-flight.
+        let (a_io, b_io) = tokio::io::duplex(512 * 1024);
+
+        let conv_id = ConversationId::new([2u8; 32]);
+        const EVENT_PAYLOAD: usize = 20 * 1024; // ~20 KB each → 4 events ≈ 80 KB > one frame
+        const NUM_EVENTS: usize = 4;
+
+        let b_log = build_large_responder_store(&b_id, conv_id, NUM_EVENTS, EVENT_PAYLOAD);
+        let responder_event_count = b_log.event_ids(&conv_id).len();
+        assert_eq!(responder_event_count, NUM_EVENTS);
+
+        let server = tokio::spawn(async move {
+            let mut b_ch = SecureChannel::accept(b_io, &b_id).await.unwrap();
+            let b_store = Mutex::new(b_log);
+            // Serve messages until the requester closes the channel (multi-round loop).
+            loop {
+                match serve_one(&mut b_ch, &b_store).await.unwrap() {
+                    Served::Closed => break,
+                    Served::Handled(_) => {}
+                }
+            }
+            b_store.into_inner().unwrap()
+        });
+
+        // Requester starts empty; request_round loops until fully synced.
+        let a_store = Mutex::new(EventLog::default());
+        let mut a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
+        request_round(&mut a_ch, &a_store, conv_id).await.unwrap();
+        // Drop the channel so the server's serve loop sees Closed and exits.
+        drop(a_ch);
+
+        let b_final = server.await.unwrap();
+        let requester_count = a_store.lock().unwrap().event_ids(&conv_id).len();
+        assert_eq!(
+            requester_count, responder_event_count,
+            "requester should have all {responder_event_count} events after multi-round sync"
+        );
+        // Responder also still has all events.
+        assert_eq!(b_final.event_ids(&conv_id).len(), responder_event_count);
     }
 }
