@@ -235,6 +235,7 @@ pub fn run_tauri() {
             crate::redesign_commands::redesign_create_channel,
             crate::redesign_commands::redesign_add_channel_member,
             crate::redesign_commands::redesign_remove_channel_member,
+            crate::redesign_commands::redesign_channel_members,
             crate::redesign_commands::redesign_send_channel_message,
             crate::redesign_commands::redesign_channel_history,
             crate::redesign_commands::redesign_send_file_dm,

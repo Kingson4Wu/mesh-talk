@@ -262,6 +262,14 @@ impl Node {
             .collect()
     }
 
+    /// The current members of `channel` (empty if the channel is unknown).
+    pub fn channel_members(&self, channel: ConversationId) -> Vec<PublicIdentity> {
+        let book = self.channels.lock().expect("channels mutex not poisoned");
+        book.state(&channel)
+            .map(|s| s.members().to_vec())
+            .unwrap_or_default()
+    }
+
     /// Send a DM to `recipient` (a known peer): seal it, append the Message event
     /// locally, then deliver it. Delivery is best-effort DIRECT (the recipient may
     /// be offline) plus ALWAYS replicating to the elected post office (so an

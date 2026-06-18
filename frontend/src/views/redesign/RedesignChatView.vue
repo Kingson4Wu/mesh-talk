@@ -138,19 +138,27 @@
           <div v-if="!messages.length" class="empty">No messages yet.</div>
         </div>
         <div v-if="activeChannel" class="members-bar">
-          <button class="members-toggle" :class="{ active: showMembers }" @click="showMembers = !showMembers">
+          <button class="members-toggle" :class="{ active: showMembers }" @click="toggleMembers">
             👥 Members
           </button>
           <span v-if="memberNotice" class="members-notice">{{ memberNotice }}</span>
         </div>
         <div v-if="activeChannel && showMembers" class="members-panel">
-          <div class="members-hint">Add a peer to <strong>#{{ activeChannel.name }}</strong>:</div>
+          <div class="members-hint">Members of <strong>#{{ activeChannel.name }}</strong>:</div>
           <div class="members-list">
-            <div v-for="p in peers" :key="p.user_id" class="members-row">
+            <div v-for="m in channelMembers" :key="m.user_id" class="members-row">
+              <span class="members-name">{{ m.name || m.user_id.slice(0, 8) }}</span>
+              <button class="members-remove" @click="removeMember(m)">Remove</button>
+            </div>
+            <span v-if="!channelMembers.length" class="empty">No members loaded.</span>
+          </div>
+          <div class="members-hint">Add a peer:</div>
+          <div class="members-list">
+            <div v-for="p in addablePeers" :key="p.user_id" class="members-row">
               <span class="members-name">{{ p.name || p.user_id.slice(0, 8) }}</span>
               <button class="members-add" @click="addMember(p)">Add</button>
             </div>
-            <span v-if="!peers.length" class="empty">No peers to add.</span>
+            <span v-if="!addablePeers.length" class="empty">No peers to add.</span>
           </div>
         </div>
         <div v-if="replyingTo" class="reply-banner">
@@ -220,6 +228,7 @@ const selectedMembers = reactive({});
 const showMembers = ref(false);
 const memberNotice = ref("");
 let memberNoticeTimer = null;
+const channelMembers = ref([]);
 
 const reactions = ref([]);
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
@@ -493,12 +502,49 @@ async function createChannel() {
   }
 }
 
+async function loadMembers() {
+  if (!activeChannel.value) {
+    channelMembers.value = [];
+    return;
+  }
+  try {
+    channelMembers.value = await API.redesign.channelMembers(activeChannel.value.channel_id);
+  } catch (_e) {
+    // best-effort; leave the list as-is
+  }
+}
+
+// Peers not already in the channel (the addable set).
+const addablePeers = computed(() => {
+  const ids = new Set(channelMembers.value.map((m) => m.user_id));
+  return peers.value.filter((p) => !ids.has(p.user_id));
+});
+
+async function toggleMembers() {
+  showMembers.value = !showMembers.value;
+  if (showMembers.value) await loadMembers();
+}
+
 async function addMember(peer) {
   if (!activeChannel.value) return;
   error.value = "";
   try {
     await API.redesign.addChannelMember(activeChannel.value.channel_id, peer.user_id);
     flashMemberNotice(`Added ${peer.name || peer.user_id.slice(0, 8)}`);
+    await loadMembers();
+    await refreshChannels();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function removeMember(member) {
+  if (!activeChannel.value) return;
+  error.value = "";
+  try {
+    await API.redesign.removeChannelMember(activeChannel.value.channel_id, member.user_id);
+    flashMemberNotice(`Removed ${member.name || member.user_id.slice(0, 8)}`);
+    await loadMembers();
     await refreshChannels();
   } catch (e) {
     error.value = String(e);
@@ -1103,6 +1149,15 @@ onBeforeUnmount(() => {
   border: none;
   background: #4ade80;
   color: #0f172a;
+  cursor: pointer;
+  font-size: 12px;
+}
+.members-remove {
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: 1px solid #f87171;
+  background: transparent;
+  color: #f87171;
   cursor: pointer;
   font-size: 12px;
 }

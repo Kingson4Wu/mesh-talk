@@ -206,6 +206,14 @@ impl RedesignRuntime {
         self.node.list_channels()
     }
 
+    /// The current members of a channel (empty if unknown).
+    pub fn channel_members(
+        &self,
+        channel: crate::eventlog::event::ConversationId,
+    ) -> Vec<PublicIdentity> {
+        self.node.channel_members(channel)
+    }
+
     /// History of a channel (all senders).
     pub fn channel_history(
         &self,

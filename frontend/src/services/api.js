@@ -112,6 +112,7 @@ const redesignAPI = {
   search: (query) => invoke("redesign_search", { query }),
   addChannelMember: (channelId, memberId) => invoke("redesign_add_channel_member", { channelId, memberId }),
   removeChannelMember: (channelId, memberId) => invoke("redesign_remove_channel_member", { channelId, memberId }),
+  channelMembers: (channelId) => invoke("redesign_channel_members", { channelId }),
 };
 
 // Combined API service

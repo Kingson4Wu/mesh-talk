@@ -52,6 +52,13 @@ pub struct ReactionInfo {
     pub who: Vec<String>,
 }
 
+/// A channel member as shown in the redesign UI.
+#[derive(Serialize)]
+pub struct ChannelMemberInfo {
+    pub user_id: String,
+    pub name: String,
+}
+
 const NOT_STARTED: &str = "redesign node not started";
 
 #[tauri::command]
@@ -177,6 +184,35 @@ pub async fn redesign_list_channels(
             channel_id: hex::encode(c.id.as_bytes()),
             name: c.name,
             member_count: c.member_count,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn redesign_channel_members(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+) -> Result<Vec<ChannelMemberInfo>, String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    // Build a user_id -> display name map from the known roster so members show a
+    // friendly name when we know one; otherwise fall back to the user_id.
+    let names: std::collections::HashMap<String, String> = rt
+        .peers()
+        .into_iter()
+        .map(|p| (p.public.user_id(), p.name))
+        .collect();
+    Ok(rt
+        .channel_members(channel)
+        .into_iter()
+        .map(|p| {
+            let user_id = p.user_id();
+            let name = names
+                .get(&user_id)
+                .cloned()
+                .unwrap_or_else(|| user_id.clone());
+            ChannelMemberInfo { user_id, name }
         })
         .collect())
 }
