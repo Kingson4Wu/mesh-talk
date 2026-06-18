@@ -32,6 +32,7 @@ pub mod notifications;
 pub mod perf;
 pub mod platform;
 pub mod postoffice;
+pub mod ratchet;
 pub mod redesign_commands;
 pub mod services;
 pub mod state;
