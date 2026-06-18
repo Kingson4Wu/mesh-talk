@@ -29,6 +29,12 @@ use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+/// Maximum raw file size for `send_file_*`. The sync layer currently delivers a
+/// conversation's missing events in ONE transport frame (`MAX_PLAINTEXT` ≈ 64 KiB),
+/// so a file's chunk events must fit one frame; this cap keeps a transfer from
+/// silently failing mid-send. Lifted once bounded/streaming sync lands.
+const MAX_FILE_SIZE: usize = 56 * 1024;
+
 /// A received direct message, surfaced to the application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedDm {
@@ -67,6 +73,9 @@ pub enum NodeError {
     Session(SessionError),
     /// A channel operation failed (unknown channel, or key/message sealing).
     Channel(String),
+    /// A file operation failed (read/seal/reassemble/write, unknown file, or a file
+    /// too large for the current single-frame sync — see `send_file_*`).
+    File(String),
 }
 
 impl std::fmt::Display for NodeError {
@@ -77,6 +86,7 @@ impl std::fmt::Display for NodeError {
             NodeError::Log(e) => write!(f, "log error: {e}"),
             NodeError::Session(e) => write!(f, "session error: {e}"),
             NodeError::Channel(m) => write!(f, "channel error: {m}"),
+            NodeError::File(m) => write!(f, "file error: {m}"),
         }
     }
 }
@@ -318,13 +328,17 @@ impl Node {
         };
         let mut surfaced: Vec<ReceivedFile> = Vec::new();
         for event in manifest_events {
+            if self
+                .files
+                .lock()
+                .expect("files mutex not poisoned")
+                .is_emitted(&event.id)
             {
-                let mut files = self.files.lock().expect("files mutex not poisoned");
-                if files.is_emitted(&event.id) {
-                    continue;
-                }
-                files.mark_emitted(event.id);
+                continue;
             }
+            // NB: we mark emitted only AFTER a successful open+decode (below), so a
+            // manifest we can't open yet — e.g. a DM whose sender isn't in the roster
+            // until discovery catches up — is retried on a later sync, not lost.
             let plaintext = if is_channel {
                 let book = self.channels.lock().expect("channels mutex not poisoned");
                 match book
@@ -359,10 +373,11 @@ impl Node {
                 mime: manifest.mime.clone(),
                 file_conv: manifest.file_conv,
             };
-            self.files
-                .lock()
-                .expect("files mutex not poisoned")
-                .record(manifest);
+            {
+                let mut files = self.files.lock().expect("files mutex not poisoned");
+                files.mark_emitted(event.id);
+                files.record(manifest);
+            }
             surfaced.push(received);
         }
         for rf in surfaced {
@@ -535,7 +550,7 @@ impl Node {
                 .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
             let sealed = state
                 .seal_message(&manifest.encode())
-                .map_err(|e| NodeError::Channel(format!("manifest sealing failed: {e}")))?;
+                .map_err(|e| NodeError::File(format!("manifest sealing failed: {e}")))?;
             (sealed, state.members().to_vec())
         };
         self.append_event(channel, EventKind::FileManifest, sealed)?;
@@ -548,8 +563,18 @@ impl Node {
     /// chunk event per piece), and build the (unsealed) manifest. Shared by both
     /// send paths. The caller seals + posts the manifest into the original conv.
     fn stage_file(&self, path: &Path) -> Result<(FileManifest, ConversationId), NodeError> {
-        let data =
-            std::fs::read(path).map_err(|e| NodeError::Channel(format!("read file: {e}")))?;
+        let data = std::fs::read(path).map_err(|e| NodeError::File(format!("read file: {e}")))?;
+        // The sync layer currently batches a conversation's missing events into ONE
+        // transport frame (capped at `MAX_PLAINTEXT` ≈ 64 KiB), so a file's chunk
+        // events must collectively fit one frame. We cap raw file size accordingly so
+        // a transfer never SILENTLY fails mid-send. Bounded/streaming sync (a separate
+        // slice) lifts this; until then files larger than this are rejected up front.
+        if data.len() > MAX_FILE_SIZE {
+            return Err(NodeError::File(format!(
+                "file too large: {} bytes (max {MAX_FILE_SIZE} until streaming sync lands)",
+                data.len()
+            )));
+        }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -560,8 +585,8 @@ impl Node {
         let chunks = split_chunks(&data);
         let chunk_count = chunks.len() as u32;
         for chunk in &chunks {
-            let sealed = seal_chunk(&key, chunk)
-                .map_err(|e| NodeError::Channel(format!("chunk seal: {e}")))?;
+            let sealed =
+                seal_chunk(&key, chunk).map_err(|e| NodeError::File(format!("chunk seal: {e}")))?;
             self.append_event(file_conv, EventKind::Message, sealed)?;
         }
         let manifest = FileManifest {
@@ -586,7 +611,7 @@ impl Node {
             .expect("files mutex not poisoned")
             .manifest(&file_conv)
             .cloned()
-            .ok_or_else(|| NodeError::Channel("unknown file".into()))?;
+            .ok_or_else(|| NodeError::File("unknown file".into()))?;
         let chunks: Vec<Vec<u8>> = {
             let log = self.log.lock().expect("log mutex not poisoned");
             log.events(&file_conv)
@@ -596,15 +621,15 @@ impl Node {
                 .collect()
         };
         if chunks.len() as u32 != manifest.chunk_count {
-            return Err(NodeError::Channel(format!(
+            return Err(NodeError::File(format!(
                 "file incomplete: {}/{} chunks",
                 chunks.len(),
                 manifest.chunk_count
             )));
         }
         let data = reassemble_and_verify(&manifest, &chunks)
-            .map_err(|e| NodeError::Channel(format!("reassemble: {e}")))?;
-        std::fs::write(dest, data).map_err(|e| NodeError::Channel(format!("write file: {e}")))?;
+            .map_err(|e| NodeError::File(format!("reassemble: {e}")))?;
+        std::fs::write(dest, data).map_err(|e| NodeError::File(format!("write file: {e}")))?;
         Ok(())
     }
 
