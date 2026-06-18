@@ -4,6 +4,7 @@ use crate::discovery::roster::{Roster, UserId};
 use crate::dm;
 use crate::eventlog::event::{ConversationId, Event, EventId, EventKind};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
+use crate::node::message::MessageBody;
 use sha2::{Digest, Sha256};
 
 /// Domain separator for DM conversation-id derivation.
@@ -62,14 +63,15 @@ pub fn open_dm_event(
     recipient: &DeviceIdentity,
     roster: &Roster,
     event: &Event,
-) -> Option<(UserId, String, Vec<u8>)> {
+) -> Option<(UserId, String, Vec<u8>, Option<EventId>)> {
     if event.kind != EventKind::Message {
         return None;
     }
     let author_user_id = event.author.user_id();
     let peer = roster.get(&author_user_id)?;
     let plaintext = dm::open(recipient, &peer.public.x25519_pub, &event.ciphertext).ok()?;
-    Some((author_user_id, peer.name.clone(), plaintext))
+    let body = MessageBody::decode(&plaintext);
+    Some((author_user_id, peer.name.clone(), body.text, body.reply_to))
 }
 
 #[cfg(test)]
@@ -116,7 +118,7 @@ mod tests {
 
         // Bob's roster knows Alice (so he can find her X25519 key to decrypt).
         let roster = roster_knowing(&alice, "Alice", &bob.public().user_id());
-        let (from, name, text) = open_dm_event(&bob, &roster, &event).expect("bob opens");
+        let (from, name, text, _reply) = open_dm_event(&bob, &roster, &event).expect("bob opens");
         assert_eq!(from, alice.public().user_id());
         assert_eq!(name, "Alice");
         assert_eq!(text, b"hi bob");

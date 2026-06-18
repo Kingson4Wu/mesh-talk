@@ -2,6 +2,7 @@
 //! per-session [`RedesignRuntime`] held in managed [`RedesignState`] (populated on
 //! login, cleared on logout). All are thin pass-throughs over the node API.
 
+use crate::eventlog::event::{ConversationId, EventId};
 use crate::node::runtime::RedesignRuntime;
 use serde::Serialize;
 use std::sync::Arc;
@@ -35,10 +36,20 @@ pub struct PeerInfo {
 /// One merged history line (sent or received) for display.
 #[derive(Serialize)]
 pub struct HistoryItem {
+    pub id: String, // hex EventId
     pub from_me: bool,
     pub who: String,
     pub text: String,
     pub wall_clock: u64,
+    pub reply_to: Option<String>, // hex EventId of the parent message, if any
+}
+
+/// Aggregated reaction for display.
+#[derive(Serialize)]
+pub struct ReactionInfo {
+    pub target: String, // hex EventId
+    pub emoji: String,
+    pub who: Vec<String>,
 }
 
 const NOT_STARTED: &str = "redesign node not started";
@@ -73,6 +84,7 @@ pub async fn redesign_send_dm(
     state: tauri::State<'_, RedesignState>,
     recipient: String,
     text: String,
+    reply_to: Option<String>,
 ) -> Result<(), String> {
     // Snapshot the node handle, then release the state lock before the .await send.
     let node = {
@@ -80,7 +92,11 @@ pub async fn redesign_send_dm(
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
-    node.send_dm(&recipient, text.as_bytes())
+    let reply = match reply_to {
+        Some(h) => Some(parse_event_id(&h)?),
+        None => None,
+    };
+    node.send_dm_reply(&recipient, text.as_bytes(), reply)
         .await
         .map_err(|e| e.to_string())
 }
@@ -103,6 +119,285 @@ pub async fn redesign_history(
         .history(&public, limit)
         .into_iter()
         .map(|h| HistoryItem {
+            id: hex::encode(h.id.as_bytes()),
+            from_me: h.from_me,
+            who: h.who,
+            text: String::from_utf8_lossy(&h.text).into_owned(),
+            wall_clock: h.wall_clock,
+            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
+        })
+        .collect())
+}
+
+/// A channel as shown in the redesign UI.
+#[derive(Serialize)]
+pub struct ChannelInfo {
+    pub channel_id: String, // hex
+    pub name: String,
+    pub member_count: usize,
+}
+
+fn parse_channel_id(hex_id: &str) -> Result<ConversationId, String> {
+    let bytes = hex::decode(hex_id).map_err(|_| "invalid channel id".to_string())?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "channel id must be 32 bytes".to_string())?;
+    Ok(ConversationId::new(arr))
+}
+
+fn parse_event_id(hex_id: &str) -> Result<EventId, String> {
+    let bytes = hex::decode(hex_id).map_err(|_| "invalid event id".to_string())?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "event id must be 32 bytes".to_string())?;
+    Ok(EventId::new(arr))
+}
+
+fn to_reaction_infos(views: Vec<crate::node::reaction::ReactionView>) -> Vec<ReactionInfo> {
+    views
+        .into_iter()
+        .map(|v| ReactionInfo {
+            target: v.target,
+            emoji: v.emoji,
+            who: v.who,
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn redesign_list_channels(
+    state: tauri::State<'_, RedesignState>,
+) -> Result<Vec<ChannelInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .list_channels()
+        .into_iter()
+        .map(|c| ChannelInfo {
+            channel_id: hex::encode(c.id.as_bytes()),
+            name: c.name,
+            member_count: c.member_count,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn redesign_create_channel(
+    state: tauri::State<'_, RedesignState>,
+    name: String,
+    member_ids: Vec<String>,
+) -> Result<String, String> {
+    let (node, members) = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let mut members = Vec::new();
+        for uid in &member_ids {
+            let p = rt
+                .peer_public(uid)
+                .ok_or_else(|| format!("unknown peer: {uid}"))?;
+            members.push(p);
+        }
+        (rt.handle(), members)
+    };
+    let id = node
+        .create_channel(&name, members)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(id.as_bytes()))
+}
+
+#[tauri::command]
+pub async fn redesign_send_channel_message(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    text: String,
+    reply_to: Option<String>,
+) -> Result<(), String> {
+    let id = parse_channel_id(&channel_id)?;
+    let reply = match reply_to {
+        Some(h) => Some(parse_event_id(&h)?),
+        None => None,
+    };
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.send_channel_message_reply(id, text.as_bytes(), reply)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_send_file_dm(
+    state: tauri::State<'_, RedesignState>,
+    recipient: String,
+    path: String,
+) -> Result<String, String> {
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let id = node
+        .send_file_dm(&recipient, std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(id.as_bytes()))
+}
+
+#[tauri::command]
+pub async fn redesign_send_file_channel(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    path: String,
+) -> Result<String, String> {
+    let id = parse_channel_id(&channel_id)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let file_conv = node
+        .send_file_channel(id, std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(file_conv.as_bytes()))
+}
+
+#[tauri::command]
+pub async fn redesign_save_file(
+    state: tauri::State<'_, RedesignState>,
+    file_conv: String,
+    dest: String,
+) -> Result<(), String> {
+    let id = parse_channel_id(&file_conv)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    // save_file is synchronous (reads chunk events, decrypts, writes) — run it on a
+    // blocking thread so it doesn't stall the async runtime on a large file.
+    tokio::task::spawn_blocking(move || node.save_file(id, std::path::Path::new(&dest)))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_channel_history(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    limit: usize,
+) -> Result<Vec<HistoryItem>, String> {
+    let limit = limit.min(500);
+    let id = parse_channel_id(&channel_id)?;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .channel_history(id, limit)
+        .into_iter()
+        .map(|h| HistoryItem {
+            id: hex::encode(h.id.as_bytes()),
+            from_me: h.from_me,
+            who: h.who,
+            text: String::from_utf8_lossy(&h.text).into_owned(),
+            wall_clock: h.wall_clock,
+            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn redesign_react_dm(
+    state: tauri::State<'_, RedesignState>,
+    recipient: String,
+    target: String,
+    emoji: String,
+    remove: bool,
+) -> Result<(), String> {
+    let id = parse_event_id(&target)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.react_dm(&recipient, id, &emoji, remove)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_react_channel(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+    target: String,
+    emoji: String,
+    remove: bool,
+) -> Result<(), String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let id = parse_event_id(&target)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.react_channel(channel, id, &emoji, remove)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_reactions(
+    state: tauri::State<'_, RedesignState>,
+    peer: String,
+) -> Result<Vec<ReactionInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let public = rt
+        .peer_public(&peer)
+        .ok_or_else(|| format!("unknown peer: {peer}"))?;
+    Ok(to_reaction_infos(rt.reactions_dm(&public)))
+}
+
+#[tauri::command]
+pub async fn redesign_channel_reactions(
+    state: tauri::State<'_, RedesignState>,
+    channel_id: String,
+) -> Result<Vec<ReactionInfo>, String> {
+    let channel = parse_channel_id(&channel_id)?;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(to_reaction_infos(rt.channel_reactions(channel)))
+}
+
+/// A search result hit for display in the UI.
+#[derive(Serialize)]
+pub struct SearchHitInfo {
+    pub is_channel: bool,
+    pub target: String,
+    pub label: String,
+    pub from_me: bool,
+    pub who: String,
+    pub text: String,
+    pub wall_clock: u64,
+}
+
+#[tauri::command]
+pub async fn redesign_search(
+    state: tauri::State<'_, RedesignState>,
+    query: String,
+) -> Result<Vec<SearchHitInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .search(&query)
+        .into_iter()
+        .map(|h| SearchHitInfo {
+            is_channel: h.is_channel,
+            target: h.target,
+            label: h.label,
             from_me: h.from_me,
             who: h.who,
             text: String::from_utf8_lossy(&h.text).into_owned(),

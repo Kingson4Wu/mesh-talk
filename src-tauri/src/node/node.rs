@@ -6,13 +6,21 @@
 //! module provides the pieces and proves them with an in-process two-node
 //! exchange over loopback TCP.
 
+use crate::channel::{ChannelMeta, GroupKey};
 use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::eventlog::persist::PersistentEventLog;
 use crate::eventlog::LogError;
+use crate::file::{
+    file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
+};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
+use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::conversation::{build_dm_event, dm_conversation_id, open_dm_event};
+use crate::node::filebook::{FileBook, ReceivedFile};
+use crate::node::message::MessageBody;
 use crate::node::postbox::elected_post_office;
+use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
 use crate::node::sentlog::SentLog;
 use crate::node::session::{request_round, serve_one, Served, SessionError};
 use crate::node::transport::{accept, dial};
@@ -23,21 +31,54 @@ use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+/// Maximum raw file size for `send_file_*`. Bounded multi-round sync transfers a
+/// file's chunk events across frames now, so the practical limit is the `have`
+/// id-set size (a conversation's full id-set still travels in one frame): ~8 MB of
+/// 48 KiB chunks ≈ 180 ids ≈ 7 KB, comfortably within a frame. Lifting further
+/// needs id-set compaction (a separate slice).
+const MAX_FILE_SIZE: usize = 8 * 1024 * 1024;
+
 /// A received direct message, surfaced to the application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedDm {
     pub from: UserId,
     pub from_name: String,
     pub text: Vec<u8>,
+    pub reply_to: Option<EventId>,
+}
+
+/// A channel summary for listing in the UI.
+#[derive(Debug, Clone)]
+pub struct ChannelSummary {
+    pub id: ConversationId,
+    pub name: String,
+    pub member_count: usize,
+}
+
+/// A search match: a message whose text contains the query, with enough context to
+/// label it and navigate to its conversation.
+#[derive(Debug, Clone)]
+pub struct SearchHit {
+    pub is_channel: bool,
+    /// The peer user-id (DM) or channel id hex (channel) — the navigation target.
+    pub target: String,
+    /// The peer or channel display name.
+    pub label: String,
+    pub from_me: bool,
+    pub who: String,
+    pub text: Vec<u8>,
+    pub wall_clock: u64,
 }
 
 /// A merged conversation-history entry (sent or received), for display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEntry {
+    pub id: EventId,
     pub from_me: bool,
     pub who: String,
     pub text: Vec<u8>,
     pub wall_clock: u64,
+    pub reply_to: Option<EventId>,
 }
 
 /// Errors from node operations.
@@ -51,6 +92,11 @@ pub enum NodeError {
     Log(crate::eventlog::LogError),
     /// The networked sync session failed.
     Session(SessionError),
+    /// A channel operation failed (unknown channel, or key/message sealing).
+    Channel(String),
+    /// A file operation failed (read/seal/reassemble/write, unknown file, or a file
+    /// too large for the current single-frame sync — see `send_file_*`).
+    File(String),
 }
 
 impl std::fmt::Display for NodeError {
@@ -60,6 +106,8 @@ impl std::fmt::Display for NodeError {
             NodeError::Seal(e) => write!(f, "seal error: {e}"),
             NodeError::Log(e) => write!(f, "log error: {e}"),
             NodeError::Session(e) => write!(f, "session error: {e}"),
+            NodeError::Channel(m) => write!(f, "channel error: {m}"),
+            NodeError::File(m) => write!(f, "file error: {m}"),
         }
     }
 }
@@ -74,7 +122,14 @@ pub struct Node {
     sentlog: Mutex<SentLog>,
     roster: Arc<Mutex<Roster>>,
     incoming: mpsc::UnboundedSender<ReceivedDm>,
+    channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
+    channels: Mutex<ChannelBook>,
     emitted: Mutex<HashSet<EventId>>,
+    file_incoming: mpsc::UnboundedSender<ReceivedFile>,
+    files: Mutex<FileBook>,
+    /// Own DM reactions: sealed to the peer so un-openable from our own log.
+    /// Stored in memory so `reactions` can merge them. Lost on restart (MVP limitation).
+    my_dm_reactions: Mutex<Vec<(ConversationId, ReactionPayload)>>,
 }
 
 impl Node {
@@ -86,6 +141,8 @@ impl Node {
         identity: DeviceIdentity,
         roster: Arc<Mutex<Roster>>,
         incoming: mpsc::UnboundedSender<ReceivedDm>,
+        channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
+        file_incoming: mpsc::UnboundedSender<ReceivedFile>,
         log_path: &Path,
         sent_path: &Path,
         password: &str,
@@ -93,19 +150,55 @@ impl Node {
         let log = PersistentEventLog::open(log_path, password)?;
         let sentlog = SentLog::open(sent_path, password)?;
         let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
+        let mut channels = ChannelBook::new();
+        for conv in log.conversations() {
+            let events = log.events(&conv);
+            let _ = channels.process(&identity, conv, &events);
+        }
+        // Seed the file book's emitted set so existing manifests are not re-surfaced
+        // after restart. Opening them needs roster/channel crypto unavailable at open
+        // time — persisting opened manifests across restart is deferred.
+        let mut files = FileBook::new();
+        for conv in log.conversations() {
+            for event in log.events(&conv) {
+                if event.kind == EventKind::FileManifest {
+                    files.mark_emitted(event.id);
+                }
+            }
+        }
         Ok(Arc::new(Self {
             identity,
             log: Mutex::new(log),
             sentlog: Mutex::new(sentlog),
             roster,
             incoming,
+            channel_incoming,
+            channels: Mutex::new(channels),
             emitted: Mutex::new(emitted),
+            file_incoming,
+            files: Mutex::new(files),
+            my_dm_reactions: Mutex::new(Vec::new()),
         }))
     }
 
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> UserId {
         self.identity.public().user_id()
+    }
+
+    /// Summaries of all channels this node is a member of.
+    pub fn list_channels(&self) -> Vec<ChannelSummary> {
+        let book = self.channels.lock().expect("channels mutex not poisoned");
+        book.channel_ids()
+            .into_iter()
+            .filter_map(|id| {
+                book.state(&id).map(|s| ChannelSummary {
+                    id,
+                    name: s.name().to_string(),
+                    member_count: s.members().len(),
+                })
+            })
+            .collect()
     }
 
     /// Send a DM to `recipient` (a known peer): seal it, append the Message event
@@ -115,6 +208,16 @@ impl Node {
     /// delivery or a post office accepted the event; errors only if the recipient
     /// is unreachable and no post office is available.
     pub async fn send_dm(&self, recipient: &str, text: &[u8]) -> Result<(), NodeError> {
+        self.send_dm_reply(recipient, text, None).await
+    }
+
+    /// Send a DM that replies to `reply_to` (or `None` for a normal message).
+    pub async fn send_dm_reply(
+        &self,
+        recipient: &str,
+        text: &[u8],
+        reply_to: Option<EventId>,
+    ) -> Result<(), NodeError> {
         let peer = self
             .roster
             .lock()
@@ -123,6 +226,7 @@ impl Node {
             .cloned()
             .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
 
+        let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
         let conv = dm_conversation_id(&self.identity.public(), &peer.public);
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
         let wall_clock = now_millis();
@@ -144,7 +248,7 @@ impl Node {
                 parents,
                 lamport,
                 wall_clock,
-                text,
+                &wrapped,
             )
             .map_err(NodeError::Seal)?;
             log.append(event).map_err(NodeError::Log)?;
@@ -157,7 +261,7 @@ impl Node {
             .sentlog
             .lock()
             .expect("sentlog mutex not poisoned")
-            .record(conv, seq, wall_clock, text);
+            .record(conv, seq, wall_clock, &wrapped);
 
         // Best-effort direct delivery (the recipient may be offline) plus always
         // replicating to the elected post office (store-and-forward).
@@ -231,6 +335,106 @@ impl Node {
     pub async fn serve_connection(&self, mut channel: SecureChannel<TcpStream>) {
         while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
             self.emit_new_messages(conv);
+            self.process_channel(conv);
+            self.process_file_events(conv);
+        }
+    }
+
+    /// Open and surface any new `FileManifest` events in `conv`. Channel manifests
+    /// open with the channel group key; DM manifests with the DM sealed-box (the
+    /// author's X25519 from the roster). A no-op for conversations with no new
+    /// manifest events. Own manifests are skipped (the sender already knows).
+    fn process_file_events(&self, conv: ConversationId) {
+        let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
+        let manifest_events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::FileManifest && e.author != self_author)
+                .cloned()
+                .collect()
+        };
+        if manifest_events.is_empty() {
+            return;
+        }
+        // Is this a channel conversation? If so, open with its group key.
+        let is_channel = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.state(&conv).is_some()
+        };
+        let mut surfaced: Vec<ReceivedFile> = Vec::new();
+        for event in manifest_events {
+            if self
+                .files
+                .lock()
+                .expect("files mutex not poisoned")
+                .is_emitted(&event.id)
+            {
+                continue;
+            }
+            // NB: we mark emitted only AFTER a successful open+decode (below), so a
+            // manifest we can't open yet — e.g. a DM whose sender isn't in the roster
+            // until discovery catches up — is retried on a later sync, not lost.
+            let plaintext = if is_channel {
+                let book = self.channels.lock().expect("channels mutex not poisoned");
+                match book
+                    .state(&conv)
+                    .and_then(|s| s.open_message(&event.ciphertext))
+                {
+                    Some(p) => p,
+                    None => continue,
+                }
+            } else {
+                let author_uid = event.author.user_id();
+                let sender_x25519 = {
+                    let roster = self.roster.lock().expect("roster mutex not poisoned");
+                    match roster.get(&author_uid) {
+                        Some(p) => p.public.x25519_pub,
+                        None => continue, // author unknown → can't open yet
+                    }
+                };
+                match crate::dm::open(&self.identity, &sender_x25519, &event.ciphertext) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                }
+            };
+            let Some(manifest) = FileManifest::decode(&plaintext) else {
+                continue;
+            };
+            let received = ReceivedFile {
+                conv,
+                from: event.author.user_id(),
+                name: manifest.name.clone(),
+                size: manifest.size,
+                mime: manifest.mime.clone(),
+                file_conv: manifest.file_conv,
+            };
+            {
+                let mut files = self.files.lock().expect("files mutex not poisoned");
+                files.mark_emitted(event.id);
+                files.record(manifest);
+            }
+            surfaced.push(received);
+        }
+        for rf in surfaced {
+            let _ = self.file_incoming.send(rf);
+        }
+    }
+
+    /// Run the channel book over `conv`'s events and stream any newly-decryptable
+    /// channel messages. A no-op for DM conversations (no channel state).
+    fn process_channel(&self, conv: ConversationId) {
+        let events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv).into_iter().cloned().collect()
+        };
+        let refs: Vec<&Event> = events.iter().collect();
+        let messages = {
+            let mut book = self.channels.lock().expect("channels mutex not poisoned");
+            book.process(&self.identity, conv, &refs)
+        };
+        for msg in messages {
+            let _ = self.channel_incoming.send(msg);
         }
     }
 
@@ -257,7 +461,307 @@ impl Node {
                 return; // channel broke; the next drain re-dials
             }
             self.emit_new_messages(conv);
+            self.process_file_events(conv);
         }
+        // Drain known channel conversations as well.
+        let channel_ids: Vec<ConversationId> = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.channel_ids()
+        };
+        for cid in channel_ids {
+            if request_round(&mut channel, &self.log, cid).await.is_err() {
+                return;
+            }
+            self.process_channel(cid);
+            self.process_file_events(cid);
+        }
+        // Drain per-file conversations the file book knows (so a recipient pulls
+        // chunks the PO holds).
+        let file_convs: Vec<ConversationId> = {
+            let book = self.files.lock().expect("files mutex not poisoned");
+            book.file_convs()
+        };
+        for fc in file_convs {
+            if request_round(&mut channel, &self.log, fc).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Create a channel named `name` with `members` (the creator is added
+    /// automatically). Mints a channel id, generates the epoch-0 group key, posts
+    /// the membership + sealed-keys events, and distributes them to the members.
+    pub async fn create_channel(
+        &self,
+        name: &str,
+        mut members: Vec<PublicIdentity>,
+    ) -> Result<ConversationId, NodeError> {
+        let me = self.identity.public();
+        if !members.iter().any(|m| m.user_id() == me.user_id()) {
+            members.push(me);
+        }
+        let channel = crate::channel::new_channel_id();
+        let key = GroupKey::generate();
+        let meta = ChannelMeta {
+            name: name.to_string(),
+            members: members.clone(),
+            epoch: 0,
+        };
+        let sealed = seal_keys_for(&self.identity, &members, &key, 0)
+            .map_err(|e| NodeError::Channel(format!("key sealing failed: {e}")))?;
+
+        self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
+        self.append_event(channel, EventKind::KeyRotation, sealed.encode())?;
+        // Build our own channel state by replaying our own events (opens our key).
+        self.process_channel(channel);
+
+        self.distribute_channel(channel, &members).await;
+        Ok(channel)
+    }
+
+    /// Send a message to a channel we hold the key for. Distribution is best-effort
+    /// and fail-soft: returns `Ok(())` once the event is appended locally, regardless
+    /// of how many members were reachable (an offline member catches up via sync).
+    pub async fn send_channel_message(
+        &self,
+        channel: ConversationId,
+        text: &[u8],
+    ) -> Result<(), NodeError> {
+        self.send_channel_message_reply(channel, text, None).await
+    }
+
+    /// Send a channel message that replies to `reply_to` (or `None` for a normal message).
+    pub async fn send_channel_message_reply(
+        &self,
+        channel: ConversationId,
+        text: &[u8],
+        reply_to: Option<EventId>,
+    ) -> Result<(), NodeError> {
+        let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
+        let (payload, members) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            let payload = state
+                .seal_message(&wrapped)
+                .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?;
+            (payload, state.members().to_vec())
+        };
+        self.append_event(channel, EventKind::Message, payload)?;
+        self.distribute_channel(channel, &members).await;
+        Ok(())
+    }
+
+    /// Send the file at `path` to a DM peer. Chunks + seals it into a fresh per-file
+    /// conversation, seals the manifest to the recipient, posts a `FileManifest`
+    /// event into the DM conversation, and distributes both. Returns the per-file
+    /// conversation id (the handle for the recipient to save).
+    pub async fn send_file_dm(
+        &self,
+        recipient: &str,
+        path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        let peer = self
+            .roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .get(recipient)
+            .cloned()
+            .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
+
+        let (manifest, file_conv) = self.stage_file(path)?;
+        let sealed = crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest.encode())
+            .map_err(NodeError::Seal)?;
+        let dm_conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        self.append_event(dm_conv, EventKind::FileManifest, sealed)?;
+
+        self.deliver_direct(&peer, file_conv).await.ok();
+        self.replicate_to_post_office(file_conv).await.ok();
+        self.deliver_direct(&peer, dm_conv).await.ok();
+        self.replicate_to_post_office(dm_conv).await.ok();
+        Ok(file_conv)
+    }
+
+    /// Send the file at `path` to a channel we hold the key for.
+    pub async fn send_file_channel(
+        &self,
+        channel: ConversationId,
+        path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        let (manifest, file_conv) = self.stage_file(path)?;
+        let (sealed, members) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            let sealed = state
+                .seal_message(&manifest.encode())
+                .map_err(|e| NodeError::File(format!("manifest sealing failed: {e}")))?;
+            (sealed, state.members().to_vec())
+        };
+        self.append_event(channel, EventKind::FileManifest, sealed)?;
+        self.distribute_channel(file_conv, &members).await;
+        self.distribute_channel(channel, &members).await;
+        Ok(file_conv)
+    }
+
+    /// Read `path`, chunk + seal it into a fresh per-file conversation (appending a
+    /// chunk event per piece), and build the (unsealed) manifest. Shared by both
+    /// send paths. The caller seals + posts the manifest into the original conv.
+    fn stage_file(&self, path: &Path) -> Result<(FileManifest, ConversationId), NodeError> {
+        let data = std::fs::read(path).map_err(|e| NodeError::File(format!("read file: {e}")))?;
+        // Bounded multi-round sync now transfers chunk events across frames, so files
+        // up to MAX_FILE_SIZE (8 MB) are supported. The practical limit is the have
+        // id-set fitting one frame; files over the cap are rejected up front.
+        if data.len() > MAX_FILE_SIZE {
+            return Err(NodeError::File(format!(
+                "file too large: {} bytes (max {MAX_FILE_SIZE} until streaming sync lands)",
+                data.len()
+            )));
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_string());
+        let key = FileKey::generate();
+        let checksum = file_checksum(&data);
+        let file_conv = crate::channel::new_channel_id();
+        let chunks = split_chunks(&data);
+        let chunk_count = chunks.len() as u32;
+        for chunk in &chunks {
+            let sealed =
+                seal_chunk(&key, chunk).map_err(|e| NodeError::File(format!("chunk seal: {e}")))?;
+            self.append_event(file_conv, EventKind::Message, sealed)?;
+        }
+        let manifest = FileManifest {
+            name,
+            size: data.len() as u64,
+            mime: "application/octet-stream".to_string(),
+            checksum,
+            file_key: *key.as_bytes(),
+            file_conv,
+            chunk_count,
+        };
+        Ok((manifest, file_conv))
+    }
+
+    /// Save a received file (identified by its per-file conversation id) to `dest`:
+    /// gather the chunk events, reassemble, verify the checksum, and write. Errors if
+    /// the manifest is unknown, not all chunks have synced yet, or verification fails.
+    pub fn save_file(&self, file_conv: ConversationId, dest: &Path) -> Result<(), NodeError> {
+        let manifest = self
+            .files
+            .lock()
+            .expect("files mutex not poisoned")
+            .manifest(&file_conv)
+            .cloned()
+            .ok_or_else(|| NodeError::File("unknown file".into()))?;
+        let chunks: Vec<Vec<u8>> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&file_conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::Message)
+                .map(|e| e.ciphertext.clone())
+                .collect()
+        };
+        if chunks.len() as u32 != manifest.chunk_count {
+            return Err(NodeError::File(format!(
+                "file incomplete: {}/{} chunks",
+                chunks.len(),
+                manifest.chunk_count
+            )));
+        }
+        let data = reassemble_and_verify(&manifest, &chunks)
+            .map_err(|e| NodeError::File(format!("reassemble: {e}")))?;
+        std::fs::write(dest, data).map_err(|e| NodeError::File(format!("write file: {e}")))?;
+        Ok(())
+    }
+
+    /// Append a channel event, sequencing it from the channel's log position.
+    fn append_event(
+        &self,
+        channel: ConversationId,
+        kind: EventKind,
+        ciphertext: Vec<u8>,
+    ) -> Result<(), NodeError> {
+        let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
+        let mut log = self.log.lock().expect("log mutex not poisoned");
+        let (parents, lamport) = log.prepare(&channel);
+        let seq = log
+            .version_vector(&channel)
+            .get(&self_author)
+            .copied()
+            .unwrap_or(0)
+            + 1;
+        let event = Event::new(
+            &self.identity,
+            channel,
+            seq,
+            parents,
+            lamport,
+            now_millis(),
+            kind,
+            ciphertext,
+        );
+        log.append(event).map_err(NodeError::Log)?;
+        Ok(())
+    }
+
+    /// Push the channel conversation to each known online member (dial + sync) and
+    /// replicate it to the elected post office. Best-effort and fail-soft.
+    async fn distribute_channel(&self, channel: ConversationId, members: &[PublicIdentity]) {
+        let me = self.identity.public().user_id();
+        let targets: Vec<PeerRecord> = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            members
+                .iter()
+                .filter(|m| m.user_id() != me)
+                .filter_map(|m| roster.get(&m.user_id()).cloned())
+                .collect()
+        };
+        for peer in targets {
+            if let Ok(mut ch) = dial(peer.addr, &self.identity, Some(&peer.public)).await {
+                let _ = request_round(&mut ch, &self.log, channel).await;
+            }
+        }
+        let _ = self.replicate_to_post_office(channel).await;
+    }
+
+    /// The last `limit` messages of a channel (all directions), decrypted with the
+    /// group key we hold (the sender holds the key too, so own messages decrypt).
+    pub fn channel_history(&self, channel: ConversationId, limit: usize) -> Vec<HistoryEntry> {
+        let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
+        let events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&channel).into_iter().cloned().collect()
+        };
+        let book = self.channels.lock().expect("channels mutex not poisoned");
+        let Some(state) = book.state(&channel) else {
+            return Vec::new();
+        };
+        let mut out: Vec<HistoryEntry> = Vec::new();
+        for event in &events {
+            if event.kind != EventKind::Message {
+                continue;
+            }
+            if let Some(plaintext) = state.open_message(&event.ciphertext) {
+                let body = MessageBody::decode(&plaintext);
+                out.push(HistoryEntry {
+                    id: event.id,
+                    from_me: event.author == self_author,
+                    who: event.author.user_id(),
+                    text: body.text,
+                    wall_clock: event.wall_clock,
+                    reply_to: body.reply_to,
+                });
+            }
+        }
+        out.sort_by_key(|e| e.wall_clock);
+        if out.len() > limit {
+            out.drain(0..out.len() - limit);
+        }
+        out
     }
 
     /// The last `limit` messages of the DM with `peer`, both directions, in time
@@ -278,6 +782,15 @@ impl Node {
             log.events(&conversation).into_iter().cloned().collect()
         };
 
+        // Map our own Message events' seq -> id, to give sent sidecar entries an id.
+        let mut my_msg_ids: std::collections::HashMap<u64, EventId> =
+            std::collections::HashMap::new();
+        for event in &events {
+            if event.kind == EventKind::Message && event.author == self_author {
+                my_msg_ids.insert(event.seq, event.id);
+            }
+        }
+
         let mut entries: Vec<HistoryEntry> = Vec::new();
         {
             let roster = self.roster.lock().expect("roster mutex not poisoned");
@@ -285,12 +798,16 @@ impl Node {
                 if event.kind != EventKind::Message || event.author == self_author {
                     continue; // our own sent events come from the sidecar (below)
                 }
-                if let Some((_uid, name, text)) = open_dm_event(&self.identity, &roster, event) {
+                if let Some((_uid, name, text, reply_to)) =
+                    open_dm_event(&self.identity, &roster, event)
+                {
                     entries.push(HistoryEntry {
+                        id: event.id,
                         from_me: false,
                         who: name,
                         text,
                         wall_clock: event.wall_clock,
+                        reply_to,
                     });
                 }
             }
@@ -301,11 +818,17 @@ impl Node {
             .expect("sentlog mutex not poisoned")
             .entries(&conversation)
         {
+            let sent_body = MessageBody::decode(&sent.plaintext);
             entries.push(HistoryEntry {
+                id: my_msg_ids
+                    .get(&sent.seq)
+                    .copied()
+                    .unwrap_or(EventId::new([0u8; 32])),
                 from_me: true,
                 who: "you".to_string(),
-                text: sent.plaintext,
+                text: sent_body.text,
                 wall_clock: sent.wall_clock,
+                reply_to: sent_body.reply_to,
             });
         }
         entries.sort_by_key(|e| e.wall_clock);
@@ -313,6 +836,183 @@ impl Node {
             entries.drain(0..entries.len() - limit);
         }
         entries
+    }
+
+    /// Search decrypted history across all known DMs + channels for `query`
+    /// (case-insensitive substring). Reuses the per-conversation history methods, so
+    /// it inherits their decryption + labels. Empty/whitespace query → no hits.
+    pub fn search(&self, query: &str) -> Vec<SearchHit> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        const PER_CONV: usize = 2000;
+        let mut hits: Vec<SearchHit> = Vec::new();
+
+        let peers = self
+            .roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .peers();
+        for peer in peers.iter().filter(|p| !p.post_office) {
+            for entry in self.dm_history(&peer.public, PER_CONV) {
+                if String::from_utf8_lossy(&entry.text)
+                    .to_lowercase()
+                    .contains(&q)
+                {
+                    hits.push(SearchHit {
+                        is_channel: false,
+                        target: peer.public.user_id(),
+                        label: peer.name.clone(),
+                        from_me: entry.from_me,
+                        who: entry.who,
+                        text: entry.text,
+                        wall_clock: entry.wall_clock,
+                    });
+                }
+            }
+        }
+        for ch in self.list_channels() {
+            for entry in self.channel_history(ch.id, PER_CONV) {
+                if String::from_utf8_lossy(&entry.text)
+                    .to_lowercase()
+                    .contains(&q)
+                {
+                    hits.push(SearchHit {
+                        is_channel: true,
+                        target: hex::encode(ch.id.as_bytes()),
+                        label: ch.name.clone(),
+                        from_me: entry.from_me,
+                        who: entry.who,
+                        text: entry.text,
+                        wall_clock: entry.wall_clock,
+                    });
+                }
+            }
+        }
+        hits.sort_by_key(|b| std::cmp::Reverse(b.wall_clock)); // most recent first
+        hits
+    }
+
+    /// Aggregated reactions in the DM with `peer` (derives the conversation id).
+    pub fn reactions_dm(&self, peer: &PublicIdentity) -> Vec<ReactionView> {
+        let conv = dm_conversation_id(&self.identity.public(), peer);
+        self.reactions(conv)
+    }
+
+    /// React to a message in a DM (toggle off with `remove = true`).
+    pub async fn react_dm(
+        &self,
+        recipient: &str,
+        target: EventId,
+        emoji: &str,
+        remove: bool,
+    ) -> Result<(), NodeError> {
+        let peer = self
+            .roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .get(recipient)
+            .cloned()
+            .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
+        let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        let payload = ReactionPayload {
+            target,
+            emoji: emoji.to_string(),
+            remove,
+        };
+        let sealed = crate::dm::seal(&self.identity, &peer.public.x25519_pub, &payload.encode())
+            .map_err(NodeError::Seal)?;
+        self.append_event(conv, EventKind::React, sealed)?;
+        // Our own DM reaction is sealed to the peer; record it so `reactions` can
+        // include it (we can't open it from our own log).
+        self.my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned")
+            .push((conv, payload));
+        self.deliver_direct(&peer, conv).await.ok();
+        self.replicate_to_post_office(conv).await.ok();
+        Ok(())
+    }
+
+    /// React to a message in a channel we hold the key for.
+    pub async fn react_channel(
+        &self,
+        channel: ConversationId,
+        target: EventId,
+        emoji: &str,
+        remove: bool,
+    ) -> Result<(), NodeError> {
+        let payload = ReactionPayload {
+            target,
+            emoji: emoji.to_string(),
+            remove,
+        };
+        let (sealed, members) = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            let state = book
+                .state(&channel)
+                .ok_or_else(|| NodeError::Channel(format!("unknown channel {channel:?}")))?;
+            let sealed = state
+                .seal_message(&payload.encode())
+                .map_err(|e| NodeError::Channel(format!("reaction seal failed: {e}")))?;
+            (sealed, state.members().to_vec())
+        };
+        self.append_event(channel, EventKind::React, sealed)?;
+        self.distribute_channel(channel, &members).await;
+        Ok(())
+    }
+
+    /// Aggregated reactions for a conversation (DM or channel). Opens each `React`
+    /// event with the conversation crypto, merges our own (un-openable) DM reactions,
+    /// and folds them per `(target, emoji)`.
+    pub fn reactions(&self, conv: ConversationId) -> Vec<ReactionView> {
+        let self_uid = self.identity.public().user_id();
+        let react_events: Vec<Event> = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::React)
+                .cloned()
+                .collect()
+        };
+        let is_channel = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.state(&conv).is_some()
+        };
+        let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
+        for event in &react_events {
+            let plaintext = if is_channel {
+                let book = self.channels.lock().expect("channels mutex not poisoned");
+                book.state(&conv)
+                    .and_then(|s| s.open_message(&event.ciphertext))
+            } else {
+                let author_uid = event.author.user_id();
+                let sender_x25519 = {
+                    let roster = self.roster.lock().expect("roster mutex not poisoned");
+                    roster.get(&author_uid).map(|p| p.public.x25519_pub)
+                };
+                sender_x25519
+                    .and_then(|x| crate::dm::open(&self.identity, &x, &event.ciphertext).ok())
+            };
+            if let Some(p) = plaintext.and_then(|b| ReactionPayload::decode(&b)) {
+                decoded.push((event.author.user_id(), p));
+            }
+        }
+        // Merge our own DM reactions for this conversation (not in the openable log).
+        if !is_channel {
+            for (c, p) in self
+                .my_dm_reactions
+                .lock()
+                .expect("my_dm_reactions mutex not poisoned")
+                .iter()
+            {
+                if *c == conv {
+                    decoded.push((self_uid.clone(), p.clone()));
+                }
+            }
+        }
+        aggregate(&decoded)
     }
 
     /// Decrypt and emit any not-yet-emitted, non-self `Message` events in `conv`.
@@ -340,11 +1040,14 @@ impl Node {
         };
         let roster = self.roster.lock().expect("roster mutex not poisoned");
         for event in fresh {
-            if let Some((from, from_name, text)) = open_dm_event(&self.identity, &roster, &event) {
+            if let Some((from, from_name, text, reply_to)) =
+                open_dm_event(&self.identity, &roster, &event)
+            {
                 let _ = self.incoming.send(ReceivedDm {
                     from,
                     from_name,
                     text,
+                    reply_to,
                 });
             }
         }
@@ -389,10 +1092,14 @@ mod tests {
         let me = DeviceIdentity::generate();
         let roster = Arc::new(Mutex::new(Roster::default())); // empty
         let (tx, _rx) = mpsc::unbounded_channel();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             tx,
+            ch_tx,
+            file_tx,
             &dir.path().join("me.log"),
             &dir.path().join("me-sent.log"),
             "pw",
@@ -421,10 +1128,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
+        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
+        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
+        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
+        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_tx,
+            a_ch_tx,
+            a_file_tx,
             &dir.path().join("alice.log"),
             &dir.path().join("alice-sent.log"),
             "pw",
@@ -434,6 +1147,8 @@ mod tests {
             bob,
             bob_roster,
             bob_tx,
+            b_ch_tx,
+            b_file_tx,
             &dir.path().join("bob.log"),
             &dir.path().join("bob-sent.log"),
             "pw",
@@ -528,10 +1243,16 @@ mod tests {
 
         let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
         let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
+        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
+        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
+        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
+        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
         let alice_node = Node::open(
             alice,
             alice_roster,
             alice_tx,
+            a_ch_tx,
+            a_file_tx,
             &dir.path().join("alice.log"),
             &dir.path().join("alice-sent.log"),
             "pw",
@@ -541,6 +1262,8 @@ mod tests {
             bob,
             bob_roster,
             bob_tx,
+            b_ch_tx,
+            b_file_tx,
             &dir.path().join("bob.log"),
             &dir.path().join("bob-sent.log"),
             "pw",
@@ -589,10 +1312,14 @@ mod tests {
             &me_pub.user_id(),
         );
         let (tx, _rx) = mpsc::unbounded_channel();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
         let node = Node::open(
             me,
             roster,
             tx,
+            ch_tx,
+            file_tx,
             &dir.path().join("me.log"),
             &dir.path().join("me-sent.log"),
             "pw",
@@ -681,7 +1408,9 @@ mod tests {
             &me_pub.user_id(),
         );
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let node = Node::open(me, roster, tx, &log_path, &sent_path, "pw").unwrap();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let node = Node::open(me, roster, tx, ch_tx, file_tx, &log_path, &sent_path, "pw").unwrap();
 
         // Restored history must NOT be re-streamed.
         node.emit_new_messages(conv);
@@ -703,5 +1432,508 @@ mod tests {
         node.emit_new_messages(conv);
         let got = rx.try_recv().expect("a new message is emitted");
         assert_eq!(got.text, b"new");
+    }
+
+    #[tokio::test]
+    async fn two_nodes_exchange_a_channel_message_over_loopback_tcp() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_pub = bob.public();
+        let dir = tempfile::tempdir().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
+        let bob_roster = Arc::new(Mutex::new(Roster::default()));
+
+        let (alice_dm_tx, _alice_dm_rx) = mpsc::unbounded_channel();
+        let (alice_ch_tx, _alice_ch_rx) = mpsc::unbounded_channel();
+        let (alice_file_tx, _alice_file_rx) = mpsc::unbounded_channel();
+        let (bob_dm_tx, _bob_dm_rx) = mpsc::unbounded_channel();
+        let (bob_ch_tx, mut bob_ch_rx) = mpsc::unbounded_channel();
+        let (bob_file_tx, _bob_file_rx) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            alice_dm_tx,
+            alice_ch_tx,
+            alice_file_tx,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            bob_dm_tx,
+            bob_ch_tx,
+            bob_file_tx,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+        let channel = alice_node
+            .create_channel("general", vec![bob_pub])
+            .await
+            .unwrap();
+        alice_node
+            .send_channel_message(channel, b"hello channel")
+            .await
+            .unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), bob_ch_rx.recv())
+            .await
+            .expect("bob received a channel message within 5s")
+            .expect("channel stream open");
+        assert_eq!(got.text, b"hello channel");
+        assert_eq!(got.from, alice_node.user_id());
+        assert_eq!(got.channel_name, "general");
+
+        // Alice's own channel_history shows her sent message (group key decrypts own).
+        let hist = alice_node.channel_history(channel, 10);
+        assert_eq!(hist.len(), 1);
+        assert!(hist[0].from_me);
+        assert_eq!(hist[0].text, b"hello channel");
+    }
+
+    #[tokio::test]
+    async fn list_channels_reports_created_channels() {
+        let me = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let roster = Arc::new(Mutex::new(Roster::default()));
+        let (dm_tx, _dm_rx) = mpsc::unbounded_channel();
+        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+        let (file_tx, _file_rx) = mpsc::unbounded_channel();
+        let node = Node::open(
+            me,
+            roster,
+            dm_tx,
+            ch_tx,
+            file_tx,
+            &dir.path().join("m.log"),
+            &dir.path().join("m-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        assert!(node.list_channels().is_empty());
+        let id = node.create_channel("general", vec![]).await.unwrap();
+        let channels = node.list_channels();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].id, id);
+        assert_eq!(channels[0].name, "general");
+        assert_eq!(channels[0].member_count, 1); // just the creator
+    }
+
+    #[tokio::test]
+    async fn two_nodes_transfer_a_file_over_loopback_tcp() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        // Bob knows Alice (to open her DM-sealed manifest); Alice knows Bob (to dial).
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
+        let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_f, _a_f_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+        // A multi-chunk payload.
+        let payload = vec![0xABu8; crate::file::CHUNK_SIZE + 1234];
+        let src = dir.path().join("photo.bin");
+        std::fs::write(&src, &payload).unwrap();
+
+        let bob_uid = bob_node.user_id();
+        let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
+
+        // Bob surfaces the received file.
+        let rf = tokio::time::timeout(std::time::Duration::from_secs(5), b_f_r.recv())
+            .await
+            .expect("bob received a file within 5s")
+            .expect("file stream open");
+        assert_eq!(rf.name, "photo.bin");
+        assert_eq!(rf.size, payload.len() as u64);
+        assert_eq!(rf.file_conv, file_conv);
+        assert_eq!(rf.from, alice_node.user_id());
+
+        // Bob saves it and the bytes match. Retry briefly: the file_conv chunk
+        // sync runs in a separate task and may land just after the manifest
+        // notification fires (separate TCP connection, same loopback).
+        let dest = dir.path().join("saved.bin");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match bob_node.save_file(rf.file_conv, &dest) {
+                    Ok(()) => break,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                }
+            }
+        })
+        .await
+        .expect("bob saved the file within 5s");
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn two_nodes_transfer_a_multi_chunk_file_over_loopback_tcp() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
+        let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
+
+        let (a_dm, _a) = mpsc::unbounded_channel();
+        let (a_ch, _b) = mpsc::unbounded_channel();
+        let (a_f, _c) = mpsc::unbounded_channel();
+        let (b_dm, _d) = mpsc::unbounded_channel();
+        let (b_ch, _e) = mpsc::unbounded_channel();
+        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+        // ~5 chunks → the file_conv batch far exceeds one frame → multiple rounds.
+        let payload = vec![0x5Au8; crate::file::CHUNK_SIZE * 4 + 999];
+        let src = dir.path().join("big.bin");
+        std::fs::write(&src, &payload).unwrap();
+
+        let bob_uid = bob_node.user_id();
+        let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
+
+        let rf = tokio::time::timeout(std::time::Duration::from_secs(10), b_f_r.recv())
+            .await
+            .expect("received within 10s")
+            .expect("stream open");
+        assert_eq!(rf.size, payload.len() as u64);
+
+        // Saving may need a brief retry while the file_conv chunks finish syncing.
+        let dest = dir.path().join("big-saved.bin");
+        let mut saved = false;
+        for _ in 0..100 {
+            if bob_node.save_file(rf.file_conv, &dest).is_ok() {
+                saved = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(saved, "bob saved the multi-chunk file");
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+        let _ = file_conv;
+    }
+
+    #[tokio::test]
+    async fn a_dm_reaction_is_visible_to_both_peers() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Capture public identities BEFORE moving into Node::open.
+        let alice_pub = alice.public();
+        let bob_pub = bob.public();
+        let alice_uid = alice_pub.user_id();
+        let bob_uid = bob_pub.user_id();
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = listener.local_addr().unwrap();
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_pub.user_id());
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_pub.user_id());
+
+        let (a_dm, _a1) = mpsc::unbounded_channel();
+        let (a_ch, _a2) = mpsc::unbounded_channel();
+        let (a_f, _a3) = mpsc::unbounded_channel();
+        let (b_dm, mut b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b2) = mpsc::unbounded_channel();
+        let (b_f, _b3) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+
+        // Alice DMs Bob; Bob receives it and learns its event id from history.
+        alice_node.send_dm(&bob_uid, b"hi bob").await.unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), b_dm_r.recv())
+            .await
+            .expect("bob got the dm")
+            .expect("stream open");
+        assert_eq!(got.text, b"hi bob");
+
+        // Derive the DM conversation id from the two public identities.
+        let conv = dm_conversation_id(&alice_pub, &bob_pub);
+
+        let target = {
+            let h = bob_node.dm_history(&alice_pub, 10);
+            h.iter()
+                .find(|e| !e.from_me)
+                .map(|e| e.id)
+                .expect("bob has the message id")
+        };
+
+        // Bob reacts; it distributes to Alice.
+        bob_node
+            .react_dm(&alice_uid, target, "👍", false)
+            .await
+            .unwrap();
+
+        // Bob sees his own reaction (from my_dm_reactions).
+        let bob_views = bob_node.reactions(conv);
+        assert!(
+            bob_views
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
+            "bob sees his own reaction"
+        );
+
+        // Give the distribution a moment, then check Alice.
+        let mut ok = false;
+        for _ in 0..50 {
+            let av = alice_node.reactions(conv);
+            if av
+                .iter()
+                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
+            {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(ok, "alice sees bob's reaction");
+    }
+
+    #[tokio::test]
+    async fn search_finds_a_sent_dm_by_keyword() {
+        let me = DeviceIdentity::generate();
+        let peer = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let roster = seed_roster(&peer, "Peer", 1, &me.public().user_id());
+        let (dm, _a) = mpsc::unbounded_channel();
+        let (ch, _b) = mpsc::unbounded_channel();
+        let (f, _c) = mpsc::unbounded_channel();
+        let node = Node::open(
+            me,
+            roster,
+            dm,
+            ch,
+            f,
+            &dir.path().join("m.log"),
+            &dir.path().join("m-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        // No peer is reachable (port 1), but send_dm still records to the sidecar.
+        let peer_uid = peer.public().user_id();
+        let _ = node.send_dm(&peer_uid, b"lunch at noon tomorrow").await; // delivery fails; sidecar written
+        let hits = node.search("NOON");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].from_me);
+        assert_eq!(hits[0].label, "Peer");
+        assert_eq!(hits[0].target, peer_uid);
+        assert!(node.search("   ").is_empty());
+        assert!(node.search("absent-keyword").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reply_round_trips_with_its_reply_to() {
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+
+        // Capture public identities BEFORE moving into Node::open.
+        let alice_pub = alice.public();
+        let bob_pub = bob.public();
+        let alice_uid = alice_pub.user_id();
+        let bob_uid = bob_pub.user_id();
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+
+        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_pub.user_id());
+        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_pub.user_id());
+
+        let (a_dm, mut a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch) = mpsc::unbounded_channel();
+        let (a_f, _a_f) = mpsc::unbounded_channel();
+        let (b_dm, mut b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch) = mpsc::unbounded_channel();
+        let (b_f, _b_f) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open(
+            alice,
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open(
+            bob,
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+
+        // Alice sends a normal DM to Bob (no reply_to).
+        alice_node
+            .send_dm(&bob_uid, b"hi")
+            .await
+            .expect("alice sends hi");
+
+        // Bob receives it.
+        let got = tokio::time::timeout(Duration::from_secs(5), b_dm_r.recv())
+            .await
+            .expect("bob got alice's dm within 5s")
+            .expect("stream open");
+        assert_eq!(got.text, b"hi");
+        assert_eq!(got.reply_to, None, "normal message has no reply_to");
+
+        // Bob looks up the parent message id from his history.
+        let parent_id = bob_node
+            .dm_history(&alice_pub, 10)
+            .into_iter()
+            .find(|e| !e.from_me)
+            .map(|e| e.id)
+            .expect("bob has alice's message in history");
+
+        // Bob replies to Alice's message.
+        bob_node
+            .send_dm_reply(&alice_uid, b"hey back", Some(parent_id))
+            .await
+            .expect("bob sends reply");
+
+        // Alice receives the reply with reply_to set.
+        let reply = tokio::time::timeout(Duration::from_secs(5), a_dm_r.recv())
+            .await
+            .expect("alice got bob's reply within 5s")
+            .expect("stream open");
+        assert_eq!(reply.text, b"hey back");
+        assert_eq!(
+            reply.reply_to,
+            Some(parent_id),
+            "alice's ReceivedDm carries reply_to"
+        );
+
+        // Alice's dm_history shows the reply entry with reply_to.
+        let alice_hist = alice_node.dm_history(&bob_pub, 10);
+        let reply_entry = alice_hist
+            .iter()
+            .find(|e| !e.from_me)
+            .expect("alice has bob's reply in history");
+        assert_eq!(reply_entry.text, b"hey back");
+        assert_eq!(
+            reply_entry.reply_to,
+            Some(parent_id),
+            "history entry carries reply_to"
+        );
+
+        // A normal send_dm (no reply) yields reply_to == None in history.
+        alice_node.send_dm(&bob_uid, b"just a message").await.ok();
+        let alice_hist2 = alice_node.dm_history(&bob_pub, 10);
+        let normal_sent = alice_hist2
+            .iter()
+            .find(|e| e.from_me && e.text == b"just a message")
+            .expect("alice's normal sent message is in history");
+        assert_eq!(
+            normal_sent.reply_to, None,
+            "normal send_dm yields reply_to == None"
+        );
     }
 }

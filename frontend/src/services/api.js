@@ -92,8 +92,24 @@ const networkAPI = {
 const redesignAPI = {
   myId: () => invoke("redesign_my_id"),
   listPeers: () => invoke("redesign_list_peers"),
-  sendDm: (recipient, text) => invoke("redesign_send_dm", { recipient, text }),
+  sendDm: (recipient, text, replyTo = null) =>
+    invoke("redesign_send_dm", { recipient, text, replyTo }),
   history: (peer, limit) => invoke("redesign_history", { peer, limit }),
+  listChannels: () => invoke("redesign_list_channels"),
+  createChannel: (name, memberIds) => invoke("redesign_create_channel", { name, memberIds }),
+  sendChannelMessage: (channelId, text, replyTo = null) =>
+    invoke("redesign_send_channel_message", { channelId, text, replyTo }),
+  channelHistory: (channelId, limit) => invoke("redesign_channel_history", { channelId, limit }),
+  sendFileDm: (recipient, path) => invoke("redesign_send_file_dm", { recipient, path }),
+  sendFileChannel: (channelId, path) => invoke("redesign_send_file_channel", { channelId, path }),
+  saveFile: (fileConv, dest) => invoke("redesign_save_file", { fileConv, dest }),
+  reactDm: (recipient, target, emoji, remove) =>
+    invoke("redesign_react_dm", { recipient, target, emoji, remove }),
+  reactChannel: (channelId, target, emoji, remove) =>
+    invoke("redesign_react_channel", { channelId, target, emoji, remove }),
+  reactions: (peer) => invoke("redesign_reactions", { peer }),
+  channelReactions: (channelId) => invoke("redesign_channel_reactions", { channelId }),
+  search: (query) => invoke("redesign_search", { query }),
 };
 
 // Combined API service

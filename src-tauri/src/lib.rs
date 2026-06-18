@@ -23,6 +23,7 @@ pub mod domain;
 pub mod error;
 pub mod eventlog;
 pub mod events;
+pub mod file;
 pub mod identity;
 pub mod logger;
 pub mod network;
@@ -228,7 +229,19 @@ pub fn run_tauri() {
             crate::redesign_commands::redesign_my_id,
             crate::redesign_commands::redesign_list_peers,
             crate::redesign_commands::redesign_send_dm,
-            crate::redesign_commands::redesign_history
+            crate::redesign_commands::redesign_history,
+            crate::redesign_commands::redesign_list_channels,
+            crate::redesign_commands::redesign_create_channel,
+            crate::redesign_commands::redesign_send_channel_message,
+            crate::redesign_commands::redesign_channel_history,
+            crate::redesign_commands::redesign_send_file_dm,
+            crate::redesign_commands::redesign_send_file_channel,
+            crate::redesign_commands::redesign_save_file,
+            crate::redesign_commands::redesign_react_dm,
+            crate::redesign_commands::redesign_react_channel,
+            crate::redesign_commands::redesign_reactions,
+            crate::redesign_commands::redesign_channel_reactions,
+            crate::redesign_commands::redesign_search
         ])
         .run(tauri::generate_context!())
         .map_err(|e| log::error!("Error while running tauri application: {}", e))
