@@ -255,7 +255,9 @@ impl ChannelBook {
                     let Some(state) = self.states.get_mut(&channel_id) else {
                         continue;
                     };
-                    if let Some(plaintext) = state.open_sender_message(&event.author.user_id(), &event.ciphertext) {
+                    if let Some(plaintext) =
+                        state.open_sender_message(&event.author.user_id(), &event.ciphertext)
+                    {
                         let body = MessageBody::decode(&plaintext);
                         let msg = ReceivedChannelMessage {
                             channel_id,
@@ -478,6 +480,182 @@ mod tests {
         let bob_got2 = bob_book.process(&bob, channel, &collect(&bob_log, &channel));
         assert!(bob_got2.iter().any(|m| m.text == b"welcome carol"));
         assert_eq!(bob_book.state(&channel).unwrap().epoch(), 1);
+    }
+
+    #[test]
+    fn late_joiner_cannot_read_pre_join_history() {
+        // Carol is added at epoch 1. She must read epoch-1 messages but NOT the epoch-0
+        // message sent before she joined (she never receives an epoch-0 sender chain).
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let carol = DeviceIdentity::generate();
+        let channel = new_channel_id();
+        let mut alice_log = EventLog::default();
+
+        let meta0 = ChannelMeta {
+            name: "general".into(),
+            members: vec![alice.public(), bob.public()],
+            epoch: 0,
+        };
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            meta0.encode(),
+        );
+        let mut alice_state = author_state(&alice, channel, &meta0);
+        let skd0 = alice_state.my_sender_distribution();
+        let sealed0 = seal_keys_for(&alice, &meta0.members, &skd0, 0).unwrap();
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::KeyRotation,
+            sealed0.encode(),
+        );
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::Message,
+            alice_state.seal_sender_message(b"secret pre-join").unwrap(),
+        );
+
+        // Add Carol at epoch 1 and send a post-join message.
+        let meta1 = ChannelMeta {
+            name: "general".into(),
+            members: vec![alice.public(), bob.public(), carol.public()],
+            epoch: 1,
+        };
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            meta1.encode(),
+        );
+        alice_state.apply_meta(meta1.clone());
+        let skd1 = alice_state.my_sender_distribution();
+        let sealed1 = seal_keys_for(&alice, &meta1.members, &skd1, 1).unwrap();
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::KeyRotation,
+            sealed1.encode(),
+        );
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::Message,
+            alice_state.seal_sender_message(b"post-join hello").unwrap(),
+        );
+
+        // Carol syncs the FULL log (incl. the epoch-0 message) and processes it.
+        let mut carol_log = EventLog::default();
+        reconcile(&mut carol_log, &mut alice_log, channel);
+        let mut carol_book = ChannelBook::new();
+        let got = carol_book.process(&carol, channel, &collect(&carol_log, &channel));
+        let texts: Vec<&[u8]> = got.iter().map(|m| m.text.as_slice()).collect();
+        assert!(
+            texts.contains(&&b"post-join hello"[..]),
+            "must read post-join"
+        );
+        assert!(
+            !texts.contains(&&b"secret pre-join"[..]),
+            "late joiner must NOT read pre-join history",
+        );
+    }
+
+    #[test]
+    fn removed_member_cannot_read_post_removal_messages() {
+        // Group forward security: after Bob is removed (epoch bump + a re-key that
+        // excludes him), Bob cannot decrypt messages sent in the new epoch.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let channel = new_channel_id();
+        let mut alice_log = EventLog::default();
+
+        let meta0 = ChannelMeta {
+            name: "general".into(),
+            members: vec![alice.public(), bob.public()],
+            epoch: 0,
+        };
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            meta0.encode(),
+        );
+        let mut alice_state = author_state(&alice, channel, &meta0);
+        let skd0 = alice_state.my_sender_distribution();
+        let sealed0 = seal_keys_for(&alice, &meta0.members, &skd0, 0).unwrap();
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::KeyRotation,
+            sealed0.encode(),
+        );
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::Message,
+            alice_state.seal_sender_message(b"before removal").unwrap(),
+        );
+
+        // Bob is up to date and reads the epoch-0 message.
+        let mut bob_log = EventLog::default();
+        reconcile(&mut bob_log, &mut alice_log, channel);
+        let mut bob_book = ChannelBook::new();
+        assert!(bob_book
+            .process(&bob, channel, &collect(&bob_log, &channel))
+            .iter()
+            .any(|m| m.text == b"before removal"));
+
+        // Alice removes Bob → epoch 1, re-keying ONLY to the remaining member (herself).
+        let meta1 = ChannelMeta {
+            name: "general".into(),
+            members: vec![alice.public()],
+            epoch: 1,
+        };
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            meta1.encode(),
+        );
+        alice_state.apply_meta(meta1.clone());
+        let skd1 = alice_state.my_sender_distribution();
+        let sealed1 = seal_keys_for(&alice, &meta1.members, &skd1, 1).unwrap();
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::KeyRotation,
+            sealed1.encode(),
+        );
+        append(
+            &mut alice_log,
+            &alice,
+            channel,
+            EventKind::Message,
+            alice_state.seal_sender_message(b"after removal").unwrap(),
+        );
+
+        // Bob syncs everything and processes — he must NOT be able to read the epoch-1
+        // message (the re-key excluded him; he holds no epoch-1 chain).
+        reconcile(&mut bob_log, &mut alice_log, channel);
+        let got = bob_book.process(&bob, channel, &collect(&bob_log, &channel));
+        assert!(
+            !got.iter().any(|m| m.text == b"after removal"),
+            "removed member must NOT read post-removal messages",
+        );
     }
 
     #[test]
