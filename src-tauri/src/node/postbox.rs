@@ -38,8 +38,22 @@ pub async fn serve_relay_connection<IO>(
 ) where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
-    while let Ok(Served::Handled(_)) = serve_one(&mut channel, &store).await {}
+    // Bound the connection so a buggy/malicious peer can't pin the always-on relay: cap
+    // the number of sync rounds (a real reconciliation converges well under this) and
+    // drop the connection if the peer goes idle mid-stream.
+    for _ in 0..MAX_RELAY_ROUNDS {
+        match tokio::time::timeout(RELAY_IDLE_TIMEOUT, serve_one(&mut channel, &store)).await {
+            Ok(Ok(Served::Handled(_))) => continue,
+            // peer closed, transport/protocol error, or idle past the timeout
+            _ => break,
+        }
+    }
 }
+
+/// Per-connection round ceiling (matches the requester-side `MAX_SYNC_ROUNDS`).
+const MAX_RELAY_ROUNDS: usize = 10_000;
+/// Drop a relay connection that sends nothing for this long.
+const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Accept inbound connections on `listener` and serve each as a relay connection
 /// on its own task, sharing the one durable store. A failed handshake backs off
