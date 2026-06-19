@@ -14,6 +14,7 @@ pub mod net;
 pub mod node;
 pub mod pairing;
 pub mod postbox;
+pub mod queries;
 pub mod ratchet_sessions;
 pub mod reaction;
 pub mod received_log;
