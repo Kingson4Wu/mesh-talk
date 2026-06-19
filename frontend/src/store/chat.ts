@@ -96,6 +96,9 @@ interface ChatState {
   send: (text: string, replyTo: string | null) => Promise<void>;
   sendFile: (path: string) => Promise<void>;
   toggleReaction: (target: string, emoji: string) => Promise<void>;
+  createChannel: (name: string, memberIds: string[]) => Promise<void>;
+  addMember: (memberId: string) => Promise<void>;
+  removeMember: (memberId: string) => Promise<void>;
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -234,6 +237,28 @@ export const useChat = create<ChatState>((set, get) => ({
     } catch {
       /* ignore */
     }
+  },
+
+  createChannel: async (name, memberIds) => {
+    const id = await chat.createChannel(name, memberIds);
+    await get().refreshRoster();
+    await get().open({ kind: "channel", id, name });
+  },
+
+  addMember: async (memberId) => {
+    const c = get().active;
+    if (!c || c.kind !== "channel") return;
+    await chat.addChannelMember(c.id, memberId);
+    set({ members: await chat.channelMembers(c.id) });
+    void get().refreshRoster();
+  },
+
+  removeMember: async (memberId) => {
+    const c = get().active;
+    if (!c || c.kind !== "channel") return;
+    await chat.removeChannelMember(c.id, memberId);
+    set({ members: await chat.channelMembers(c.id) });
+    void get().refreshRoster();
   },
 }));
 

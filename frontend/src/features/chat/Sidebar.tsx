@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortId } from "@/lib/format";
+import { CreateChannelDialog } from "./CreateChannelDialog";
 import { useAuth } from "@/store/auth";
 import {
   convKey,
@@ -53,10 +54,17 @@ function Row({
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({
+  children,
+  action,
+}: {
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
   return (
-    <div className="px-2.5 pb-1 pt-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
+    <div className="flex items-center justify-between px-2.5 pb-1 pt-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <span>{children}</span>
+      {action}
     </div>
   );
 }
@@ -104,7 +112,7 @@ export function Sidebar() {
           />
         ))}
 
-        <SectionLabel>Channels</SectionLabel>
+        <SectionLabel action={<CreateChannelDialog />}>Channels</SectionLabel>
         {channels.length === 0 && (
           <p className="px-2.5 py-2 text-xs text-muted-foreground">No channels yet.</p>
         )}

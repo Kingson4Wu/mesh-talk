@@ -3,6 +3,7 @@ import { Hash, MessagesSquare } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
+import { MembersDialog } from "./MembersDialog";
 import { shortId } from "@/lib/format";
 import { convKey, useChat, type ChatMessage } from "@/store/chat";
 
@@ -64,7 +65,7 @@ export function ConversationView() {
         ) : (
           <Avatar name={active.name} id={active.id} className="h-9 w-9" />
         )}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="truncate font-semibold">{active.name}</div>
           <div className="truncate text-xs text-muted-foreground">
             {isChannel
@@ -72,6 +73,7 @@ export function ConversationView() {
               : `Direct message · ${shortId(active.id, 12)}`}
           </div>
         </div>
+        {isChannel && <MembersDialog />}
       </header>
 
       {/* messages */}
