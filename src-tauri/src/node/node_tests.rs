@@ -1,9 +1,12 @@
 use super::*;
 use crate::discovery::announce::Announce;
+use crate::node::conversation::dm_conversation_id;
+use crate::node::message::MessageBody;
 use crate::node::postbox::run_relay_accept_loop;
 use crate::postoffice::PostOffice;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
+use tokio::net::TcpListener;
 
 fn seed_roster(
     peer: &DeviceIdentity,
