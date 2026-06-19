@@ -248,10 +248,14 @@ impl RatchetState {
             ns: self.ns,
             nr: self.nr,
             pn: self.pn,
+            // Emit in `skipped_order` (true FIFO insertion order), NOT HashMap order,
+            // so a reload reconstructs the same eviction order — otherwise the oldest-
+            // first cap (MAX_SKIPPED_TOTAL) would drop arbitrary keys after a restart,
+            // losing legitimately-buffered out-of-order messages.
             skipped: self
-                .skipped
+                .skipped_order
                 .iter()
-                .map(|((pub_, n), mk)| (*pub_, *n, *mk))
+                .filter_map(|key| self.skipped.get(key).map(|mk| (key.0, key.1, *mk)))
                 .collect(),
         };
         bincode::DefaultOptions::new()
@@ -295,6 +299,12 @@ impl RatchetState {
     #[cfg(test)]
     pub fn skipped_len(&self) -> usize {
         self.skipped.len()
+    }
+
+    /// Test-only accessor: buffered skipped-key positions in FIFO (insertion) order.
+    #[cfg(test)]
+    pub fn skipped_order_ns(&self) -> Vec<u32> {
+        self.skipped_order.iter().map(|(_, n)| *n).collect()
     }
 }
 
@@ -384,6 +394,31 @@ mod tests {
         assert_eq!(bob.ratchet_decrypt(&h2, &c2).unwrap(), b"m2");
         assert_eq!(bob.ratchet_decrypt(&h0, &c0).unwrap(), b"m0");
         assert_eq!(bob.ratchet_decrypt(&h1, &c1).unwrap(), b"m1");
+    }
+
+    #[test]
+    fn skipped_key_fifo_order_survives_serialization() {
+        // Regression: serialize must emit skipped keys in FIFO (skipped_order) order,
+        // not HashMap order, so the oldest-first eviction cap stays correct after a
+        // reload (which happens on every restart). Otherwise a reload would evict
+        // arbitrary buffered keys, silently dropping out-of-order messages under load.
+        let (mut alice, mut bob) = pair();
+        let msgs: Vec<(Header, Vec<u8>)> = (0..5u8)
+            .map(|i| alice.ratchet_encrypt(&[i]).unwrap())
+            .collect();
+        // Bob receives the last first → buffers positions 0..=3 as skipped, in order.
+        bob.ratchet_decrypt(&msgs[4].0, &msgs[4].1).unwrap();
+        assert_eq!(bob.skipped_order_ns(), vec![0, 1, 2, 3]);
+
+        // The FIFO order must round-trip through serialize/deserialize unchanged.
+        let mut restored = RatchetState::deserialize(&bob.serialize()).unwrap();
+        assert_eq!(restored.skipped_order_ns(), vec![0, 1, 2, 3]);
+
+        // And the restored state still opens the oldest buffered message.
+        assert_eq!(
+            restored.ratchet_decrypt(&msgs[0].0, &msgs[0].1).unwrap(),
+            &[0u8]
+        );
     }
 
     #[test]
