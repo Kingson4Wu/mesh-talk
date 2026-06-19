@@ -30,11 +30,11 @@ jobs:
 
     steps:
       # 1️⃣ Checkout
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 2️⃣ Setup Node.js
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -58,7 +58,7 @@ jobs:
 
       # 4️⃣ Cache Cargo
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -138,7 +138,7 @@ jobs:
 
       # 9️⃣ Install cosign
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3.6.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       # 🔟 Package and sign artifacts
       - name: Package and sign artifacts
@@ -196,7 +196,7 @@ jobs:
 
       # 1️⃣1️⃣ Upload zipped artifacts + bundle to GitHub Release
       - name: Upload zipped artifacts and signature bundle to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: release_zips/*
