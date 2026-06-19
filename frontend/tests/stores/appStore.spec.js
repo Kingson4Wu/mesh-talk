@@ -3,199 +3,91 @@ import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "../../src/stores/appStore.js";
 import { useFeedbackStore } from "../../src/stores/feedbackStore.js";
 
-const { mockInvoke, mockListen } = vi.hoisted(() => ({
-  mockInvoke: vi.fn(),
-  mockListen: vi.fn(),
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: mockInvoke,
-}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: mockListen,
-}));
-
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/plugin-shell", () => ({
-  open: vi.fn(),
-}));
-
-const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-describe("appStore real-time messaging integration", () => {
+// After the legacy stack was retired the app store holds only auth/session state;
+// messaging/peers/channels live in the /redesign view (API.redesign), not here.
+describe("appStore (auth)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     mockInvoke.mockReset();
-    mockListen.mockReset();
     const feedback = useFeedbackStore();
     feedback.clearToasts();
     feedback.beginTask = vi.fn();
     feedback.endTask = vi.fn();
     feedback.showInfo = vi.fn();
+    feedback.showSuccess = vi.fn();
+    feedback.showError = vi.fn();
+    feedback.clearLastError = vi.fn();
   });
 
-  it("refreshes store state when a message event arrives", async () => {
+  it("starts unauthenticated", () => {
     const store = useAppStore();
-    store.user = { user_id: "test-user-uuid-1", address: "self.node" };
-
-    const inboundMessage = {
-      id: "test-message-uuid-42", // Use UUID string instead of number
-      from_address: "peer.node",
-      to_address: "self.node",
-      to_user_id: "test-user-uuid-1", // Match the user's user_id
-      status: 0,
-      content: "hello there",
-    };
-
-    mockInvoke.mockImplementation((command, payload) => {
-      switch (command) {
-        case "get_messages":
-          return Promise.resolve([inboundMessage]);
-        case "mark_message_read":
-          return Promise.resolve({
-            ...inboundMessage,
-            status: 2,
-            read_at: Date.now(),
-          });
-        default:
-          return Promise.resolve({ success: true });
-      }
-    });
-
-    const handlers = {};
-    mockListen.mockImplementation((eventName, handler) => {
-      handlers[eventName] = handler;
-      return Promise.resolve(() => {});
-    });
-
-    store.ensureEventListeners();
-    await flushPromises();
-
-    await handlers["message-received"]({
-      payload: {
-        message: inboundMessage,
-        sender_address: "peer.node",
-        sender_name: "Peer Node",
-        contact_id: "test-contact-uuid",
-      },
-    });
-    await flushPromises();
-
-    expect(mockInvoke).toHaveBeenCalledWith("mark_message_read", {
-      messageId: "test-message-uuid-42",
-    });
-    expect(store.messages).toHaveLength(1);
-    expect(store.messages[0].status).toBe(2);
-    expect(store.activeConversation).toBe("peer.node");
-    expect(store.contacts[0].address).toBe("peer.node");
-    expect(store.unreadCount).toBe(0);
+    expect(store.isAuthenticated).toBe(false);
+    expect(store.user).toBeNull();
   });
 
-  it("updates network status and tears down listeners", async () => {
+  it("login sets the user and authenticates", async () => {
     const store = useAppStore();
-
-    const handlers = {};
-    const unlistenSpy = vi.fn();
-
-    mockInvoke.mockResolvedValue({ success: true });
-    mockListen.mockImplementation((eventName, handler) => {
-      handlers[eventName] = handler;
-      return Promise.resolve(unlistenSpy);
+    mockInvoke.mockResolvedValueOnce({
+      success: true,
+      user: { id: "u1", name: "Alice" },
     });
 
-    store.ensureEventListeners();
-    await flushPromises();
+    const result = await store.login("alice", "password123");
 
-    await handlers["network-status-changed"]({
-      payload: { status: "connected", peer_count: 2 },
-    });
-
-    expect(store.networkStatus).toBe("connected");
-    expect(store.peerCount).toBe(2);
-
-    await store.teardownEventListeners();
-    // Every listener that was registered must be torn down — assert against the
-    // actual registration count rather than a brittle hard-coded number.
-    expect(unlistenSpy).toHaveBeenCalledTimes(mockListen.mock.calls.length);
-  });
-
-  it("updates node info when the port changes", async () => {
-    const store = useAppStore();
-
-    const handlers = {};
-    mockInvoke.mockResolvedValue({ success: true });
-    mockListen.mockImplementation((eventName, handler) => {
-      handlers[eventName] = handler;
-      return Promise.resolve(() => {});
-    });
-
-    store.ensureEventListeners();
-    await flushPromises();
-
-    await handlers["node-port-changed"]({ payload: { port: 8123 } });
-    expect(store.nodeInfo?.port).toBe(8123);
-
-    await handlers["node-port-changed"]({ payload: { port: 9000 } });
-    expect(store.nodeInfo?.port).toBe(9000);
-
-    await store.teardownEventListeners();
-  });
-
-  it("updates contact details via updateContact", async () => {
-    const store = useAppStore();
-    store.user = { user_id: "test-user-uuid-1", address: "self.node" };
-
-    const updatedContact = {
-      id: 1,
-      name: "Bobby",
-      address: "10.0.0.5:7000",
-      status: "offline",
-      is_online: false,
-      added_at: Date.now(),
-      notes: "Runner",
-    };
-
-    mockInvoke.mockImplementation((command, payload) => {
-      switch (command) {
-        case "update_contact":
-          expect(payload).toEqual({
-            id: 1,
-            name: "Bobby",
-            address: undefined,
-            notes: "Runner",
-          });
-          return Promise.resolve({
-            success: true,
-            contact: updatedContact,
-            contacts: [updatedContact],
-          });
-        default:
-          return Promise.resolve({ success: true });
-      }
-    });
-
-    store.contacts = [
-      {
-        id: 1,
-        name: "Bob",
-        address: "10.0.0.5:7000",
-        status: "offline",
-        is_online: false,
-        added_at: Date.now(),
-        notes: null,
-      },
-    ];
-
-    const result = await store.updateContact(1, {
-      name: "Bobby",
-      notes: "Runner",
-    });
     expect(result.success).toBe(true);
-    expect(store.contacts[0].name).toBe("Bobby");
-    expect(store.contacts[0].notes).toBe("Runner");
+    expect(store.isAuthenticated).toBe(true);
+    expect(store.user).toEqual({ id: "u1", name: "Alice" });
+    expect(mockInvoke).toHaveBeenCalledWith("login", {
+      username: "alice",
+      password: "password123",
+    });
+  });
+
+  it("login failure surfaces an error and stays unauthenticated", async () => {
+    const store = useAppStore();
+    mockInvoke.mockRejectedValueOnce(new Error("Invalid username or password"));
+
+    const result = await store.login("alice", "wrong");
+
+    expect(result.success).toBe(false);
+    expect(store.isAuthenticated).toBe(false);
+    expect(store.error).toContain("Unable to login");
+  });
+
+  it("logout clears the session", async () => {
+    const store = useAppStore();
+    mockInvoke.mockResolvedValueOnce({
+      success: true,
+      user: { id: "u1", name: "Alice" },
+    });
+    await store.login("alice", "password123");
+    expect(store.isAuthenticated).toBe(true);
+
+    mockInvoke.mockResolvedValueOnce({ success: true });
+    await store.logout();
+
+    expect(store.isAuthenticated).toBe(false);
+    expect(store.user).toBeNull();
+    expect(mockInvoke).toHaveBeenCalledWith("logout");
+  });
+
+  it("register forwards to the backend", async () => {
+    const store = useAppStore();
+    mockInvoke.mockResolvedValueOnce({
+      success: true,
+      user: { id: "u2", name: "Bob" },
+    });
+
+    const result = await store.register("bob", "password123");
+
+    expect(result.success).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith("register", {
+      username: "bob",
+      password: "password123",
+    });
   });
 });

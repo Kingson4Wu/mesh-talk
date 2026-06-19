@@ -7,9 +7,7 @@
         <span v-if="accountId" class="acct" title="Your account (shared across your devices)">acct: <code>{{ accountId.slice(0, 8) }}…</code></span>
       </div>
       <button class="search-toggle" :class="{ active: linkOpen }" title="Link a device" @click="linkOpen = !linkOpen">🔗</button>
-      <button class="search-toggle" :class="{ active: showSearch }" title="Search messages" @click="showSearch = !showSearch">🔍</button>
-      <router-link class="back" :to="{ name: 'chat' }">← Back</router-link>
-    </header>
+      <button class="search-toggle" :class="{ active: showSearch }" title="Search messages" @click="showSearch = !showSearch">🔍</button>    </header>
 
     <div v-if="linkOpen" class="link-panel">
       <p class="link-acct">This device's account: <code>{{ accountId ? accountId.slice(0, 12) + "…" : "—" }}</code></p>
