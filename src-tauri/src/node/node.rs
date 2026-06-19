@@ -18,7 +18,8 @@ use crate::file::{
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::channel_senders::ChannelSenderStore;
-use crate::node::conversation::dm_conversation_id;
+use crate::node::conversation::{account_conversation_id, dm_conversation_id};
+use crate::node::dm_envelope::DmEnvelope;
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
@@ -393,6 +394,88 @@ impl Node {
             (Err(e), Ok(false)) => Err(NodeError::Session(e)), // offline peer, no PO
             (Err(_), Err(e)) => Err(NodeError::Session(e)),    // both paths failed
         }
+    }
+
+    /// Send a DM to an ACCOUNT: fan out a per-device ratcheted copy to every known
+    /// device of `target_account_id`, and self-sync a copy to this user's own other
+    /// devices. Records ONE sent entry under the account conversation (so own history
+    /// shows it once). Best-effort delivery per device (direct, else post office).
+    /// Errors only if there is no known device of the target account to send to.
+    pub async fn send_to_account(
+        &self,
+        target_account_id: &str,
+        text: &[u8],
+        reply_to: Option<EventId>,
+    ) -> Result<(), NodeError> {
+        let my_account = self.account_id.clone();
+        let inner = MessageBody::new(text.to_vec(), reply_to).encode();
+        let envelope = DmEnvelope::new(
+            my_account.clone(),
+            target_account_id.to_string(),
+            inner.clone(),
+        )
+        .encode();
+
+        // Resolve destinations: the target account's devices + our OWN other devices.
+        let me = self.identity.public().user_id();
+        let (targets, own): (Vec<PeerRecord>, Vec<PeerRecord>) = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            let targets = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(target_account_id))
+                .collect();
+            let own = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(my_account.as_str()))
+                .filter(|p| p.public.user_id() != me)
+                .collect();
+            (targets, own)
+        };
+
+        if targets.is_empty() {
+            return Err(NodeError::UnknownPeer(target_account_id.to_string()));
+        }
+
+        // Record one plaintext copy for our own account history (the from_me side).
+        let conv_account = account_conversation_id(&my_account, target_account_id);
+        let wall_clock = now_millis();
+        {
+            let mut sentlog = self.sentlog.lock().expect("sentlog mutex not poisoned");
+            let seq = sentlog.entries(&conv_account).len() as u64 + 1;
+            let _ = sentlog.record(conv_account, seq, wall_clock, &inner);
+        }
+
+        // Fan out: seal+append+deliver one copy per destination device.
+        for peer in targets.iter().chain(own.iter()) {
+            self.deliver_enveloped(peer, &envelope).await;
+        }
+        Ok(())
+    }
+
+    /// Seal `plaintext` to `peer`'s device ratchet, append it to the device-pair
+    /// conversation's event log, and deliver it (direct, then post office). Best-effort:
+    /// transport failures are swallowed (the event is durably logged and syncs later).
+    /// The conversation id here is the per-DEVICE-pair id (the transport layer).
+    async fn deliver_enveloped(&self, peer: &PeerRecord, plaintext: &[u8]) {
+        let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        let wire = {
+            let mut r = self
+                .dm_ratchet
+                .lock()
+                .expect("dm_ratchet mutex not poisoned");
+            match r.encrypt(&self.identity, &peer.public, plaintext) {
+                Ok(w) => w,
+                Err(_) => return,
+            }
+        };
+        if self.append_event(conv, EventKind::Message, wire).is_err() {
+            return;
+        }
+        let _ = self.deliver_direct(peer, conv).await;
+        let _ = self.replicate_to_post_office(conv).await;
+        self.emit_new_messages(conv);
     }
 
     /// Dial `peer` directly and run one sync round for `conv`. Best-effort: the
@@ -1088,6 +1171,56 @@ impl Node {
         self.history(conv, limit)
     }
 
+    /// Account-level conversation history with `peer_account_id`, merging our sent
+    /// copies (recorded once under the account conversation) and the per-device copies
+    /// we received and filed under it. `from_me` is derived from the recorded sender
+    /// account, so self-synced copies of our own sends show as ours.
+    pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
+        let conv = account_conversation_id(&self.account_id, peer_account_id);
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+
+        for sent in self
+            .sentlog
+            .lock()
+            .expect("sentlog mutex not poisoned")
+            .entries(&conv)
+        {
+            let body = MessageBody::decode(&sent.plaintext);
+            entries.push(HistoryEntry {
+                id: EventId::new([0u8; 32]),
+                from_me: true,
+                who: "you".to_string(),
+                text: body.text,
+                wall_clock: sent.wall_clock,
+                reply_to: body.reply_to,
+            });
+        }
+
+        for rcv in self
+            .received
+            .lock()
+            .expect("received mutex not poisoned")
+            .entries(&conv)
+        {
+            let body = MessageBody::decode(&rcv.plaintext);
+            let from_me = rcv.from == self.account_id;
+            entries.push(HistoryEntry {
+                id: rcv.event_id,
+                from_me,
+                who: if from_me { "you".to_string() } else { rcv.from },
+                text: body.text,
+                wall_clock: rcv.wall_clock,
+                reply_to: body.reply_to,
+            });
+        }
+
+        entries.sort_by_key(|e| e.wall_clock);
+        if entries.len() > limit {
+            entries.drain(0..entries.len() - limit);
+        }
+        entries
+    }
+
     /// The last `limit` messages of `conversation`, both directions, sorted by
     /// wall-clock: our own sent plaintext from the local sidecar, plus the plaintext
     /// of peer-authored messages we decrypted on receipt (from the received store).
@@ -1383,7 +1516,24 @@ impl Node {
                     Err(_) => continue, // not yet decryptable / not a ratchet DM (NOT emitted)
                 }
             };
-            let body = MessageBody::decode(&wrapped);
+            // Account-addressed (multi-device) envelope? File it under the ACCOUNT
+            // conversation, recording the route's sender account (account history
+            // derives `from_me` from it). A legacy plaintext keeps today's device-pair
+            // behavior. The live `ReceivedDm` still carries the author device's
+            // id/name — it is just a "something changed" poke; display reads history.
+            let (record_conv, record_from, inner_body) = match DmEnvelope::decode(&wrapped) {
+                Some(env) => {
+                    let counterparty = if env.route.sender_account == self.account_id {
+                        env.route.recipient_account.clone() // self-synced copy of our own send
+                    } else {
+                        env.route.sender_account.clone()
+                    };
+                    let acct_conv = account_conversation_id(&self.account_id, &counterparty);
+                    (acct_conv, env.route.sender_account.clone(), env.body)
+                }
+                None => (conv, author_uid.clone(), wrapped.clone()),
+            };
+            let body = MessageBody::decode(&inner_body);
             // Persist the received plaintext (the wire key is single-use/gone), then
             // mark emitted — only AFTER a successful decrypt + record.
             let _ = self
@@ -1391,10 +1541,10 @@ impl Node {
                 .lock()
                 .expect("received mutex not poisoned")
                 .record(
-                    conv,
-                    author_uid.clone(),
+                    record_conv,
+                    record_from,
                     event.wall_clock,
-                    &wrapped,
+                    &inner_body,
                     event.id,
                 );
             self.emitted
@@ -3179,5 +3329,233 @@ mod tests {
             dhist.iter().map(|e| e.text.clone()).collect::<Vec<_>>(),
             vec![b"m0".to_vec(), b"m1".to_vec(), b"m2".to_vec()]
         );
+    }
+
+    /// Seed `roster` with `peer` advertised under `account`, reachable at `port`.
+    fn add_account_peer(
+        roster: &Arc<Mutex<Roster>>,
+        peer: &DeviceIdentity,
+        account: &crate::identity::account::Account,
+        name: &str,
+        port: u16,
+        self_user_id: &str,
+    ) {
+        roster.lock().unwrap().update(
+            &Announce::new_with_account(peer, account, name, port),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            self_user_id,
+        );
+    }
+
+    #[tokio::test]
+    async fn send_to_account_delivers_to_a_peer_account_over_loopback() {
+        use crate::identity::account::Account;
+        let alice = DeviceIdentity::generate();
+        let alice_acct = Account::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_acct = Account::generate();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        let alice_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(
+            &alice_roster,
+            &bob,
+            &bob_acct,
+            "Bob",
+            bob_addr.port(),
+            &alice_uid,
+        );
+        let bob_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(&bob_roster, &alice, &alice_acct, "Alice", 4000, &bob_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_f, _a_f_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+        let (b_f, _b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open_with_account(
+            alice,
+            alice_acct.account_id(),
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open_with_account(
+            bob,
+            bob_acct.account_id(),
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        alice_node
+            .send_to_account(&bob_acct.account_id(), b"hi account", None)
+            .await
+            .unwrap();
+
+        // Bob's account history (keyed by Alice's account) shows the message.
+        let mut bob_hist = Vec::new();
+        for _ in 0..50 {
+            bob_hist = bob_node.account_history(&alice_acct.account_id(), 10);
+            if !bob_hist.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            bob_hist.len(),
+            1,
+            "bob received the account-addressed message"
+        );
+        assert!(!bob_hist[0].from_me);
+        assert_eq!(bob_hist[0].text, b"hi account");
+
+        // Alice's own account history shows it once, from her.
+        let a_hist = alice_node.account_history(&bob_acct.account_id(), 10);
+        assert_eq!(a_hist.len(), 1);
+        assert!(a_hist[0].from_me);
+        assert_eq!(a_hist[0].text, b"hi account");
+    }
+
+    #[tokio::test]
+    async fn send_to_account_self_syncs_to_own_other_device() {
+        use crate::identity::account::Account;
+        // Alice has TWO devices sharing one account; Bob is a separate account.
+        let a1 = DeviceIdentity::generate();
+        let a2 = DeviceIdentity::generate();
+        let alice_acct = Account::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_acct = Account::generate();
+        let a1_uid = a1.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        let a2_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a2_addr = a2_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        // A1 knows its sibling A2 (same account) and Bob (other account).
+        let a1_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(&a1_roster, &a2, &alice_acct, "A2", a2_addr.port(), &a1_uid);
+        add_account_peer(&a1_roster, &bob, &bob_acct, "Bob", bob_addr.port(), &a1_uid);
+        let a2_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(
+            &a2_roster,
+            &a1,
+            &alice_acct,
+            "A1",
+            4000,
+            &a2.public().user_id(),
+        );
+        let bob_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(
+            &bob_roster,
+            &a1,
+            &alice_acct,
+            "A1",
+            4000,
+            &bob.public().user_id(),
+        );
+
+        let (a1_dm, _x1) = mpsc::unbounded_channel();
+        let (a1_ch, _x2) = mpsc::unbounded_channel();
+        let (a1_f, _x3) = mpsc::unbounded_channel();
+        let (a2_dm, _x4) = mpsc::unbounded_channel();
+        let (a2_ch, _x5) = mpsc::unbounded_channel();
+        let (a2_f, _x6) = mpsc::unbounded_channel();
+        let (b_dm, _x7) = mpsc::unbounded_channel();
+        let (b_ch, _x8) = mpsc::unbounded_channel();
+        let (b_f, _x9) = mpsc::unbounded_channel();
+
+        let a1_node = Node::open_with_account(
+            a1,
+            alice_acct.account_id(),
+            a1_roster,
+            a1_dm,
+            a1_ch,
+            a1_f,
+            &dir.path().join("a1.log"),
+            &dir.path().join("a1-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let a2_node = Node::open_with_account(
+            a2,
+            alice_acct.account_id(),
+            a2_roster,
+            a2_dm,
+            a2_ch,
+            a2_f,
+            &dir.path().join("a2.log"),
+            &dir.path().join("a2-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open_with_account(
+            bob,
+            bob_acct.account_id(),
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&a2_node).run_accept_loop(a2_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        a1_node
+            .send_to_account(&bob_acct.account_id(), b"to bob", None)
+            .await
+            .unwrap();
+
+        // A2 (Alice's other device) shows the message in the Alice↔Bob conversation,
+        // marked from_me (it was sent by Alice's account).
+        let mut a2_hist = Vec::new();
+        for _ in 0..50 {
+            a2_hist = a2_node.account_history(&bob_acct.account_id(), 10);
+            if !a2_hist.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(a2_hist.len(), 1, "A2 self-synced the message");
+        assert!(a2_hist[0].from_me, "shown as ours on the other device");
+        assert_eq!(a2_hist[0].text, b"to bob");
+
+        // Bob receives it once, not from_me.
+        let mut b_hist = Vec::new();
+        for _ in 0..50 {
+            b_hist = bob_node.account_history(&alice_acct.account_id(), 10);
+            if !b_hist.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(b_hist.len(), 1);
+        assert!(!b_hist[0].from_me);
+        assert_eq!(b_hist[0].text, b"to bob");
     }
 }
