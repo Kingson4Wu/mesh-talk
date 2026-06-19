@@ -1,4 +1,5 @@
 pub mod account;
+pub mod account_keystore;
 pub mod auth;
 pub mod device;
 pub mod errors;
