@@ -18,6 +18,5 @@ per-phase implementation plans: **`docs/superpowers/specs/`** and
 ## Known follow-ups (not blocking)
 - Device linking has no SAS/key-pinning (LAN MITM window); backfill history travels as
   plaintext over the Noise channel.
-- `node/node.rs` could be split further by domain (the test module is already extracted).
 - A `glib 0.20` bump is gated on tauri's gtk stack (auto-watched by
   `.github/workflows/glib-0.20-watch.yml`).
