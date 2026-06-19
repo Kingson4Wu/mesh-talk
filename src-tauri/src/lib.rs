@@ -23,9 +23,7 @@ pub mod file;
 pub mod identity;
 pub mod logger;
 pub mod node;
-pub mod notifications;
 pub mod perf;
-pub mod platform;
 pub mod postoffice;
 pub mod ratchet;
 pub mod redesign_commands;
@@ -34,20 +32,6 @@ pub mod state;
 pub mod storage;
 pub mod transport;
 pub mod tray;
-pub mod user_friendly_errors;
-pub mod utils;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_user_friendly_error_module() {
-        let error = error::MeshTalkError::auth("test error");
-        let friendly_message = user_friendly_errors::format_user_friendly_error(&error);
-        assert!(friendly_message.contains("Authentication failed"));
-    }
-}
 
 use crate::state::AppState;
 use std::sync::Arc;
