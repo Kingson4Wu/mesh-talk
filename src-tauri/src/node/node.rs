@@ -155,11 +155,9 @@ pub struct Node {
     emitted: Mutex<HashSet<EventId>>,
     file_incoming: mpsc::UnboundedSender<ReceivedFile>,
     files: Mutex<FileBook>,
-    // wired up in Task 2
-    #[allow(dead_code)]
+    /// Per-peer Double Ratchet sessions (forward-secret DM crypto), encrypted on disk.
     dm_ratchet: Mutex<DmRatchet>,
-    // wired up in Task 2
-    #[allow(dead_code)]
+    /// Decrypted received-message plaintext, for serving history after the wire key is gone.
     received: Mutex<ReceivedLog>,
     /// Own DM reactions: sealed to the peer so un-openable from our own log.
     /// Stored in memory so `reactions` can merge them. Lost on restart (MVP limitation).
