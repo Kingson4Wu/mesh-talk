@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 const PAIR_DOMAIN: &[u8] = b"mesh-talk-pairing-v1";
 const REQ_MAGIC: &[u8] = b"MTPQ1";
 const RESP_MAGIC: &[u8] = b"MTPS1";
+const BACKFILL_MAGIC: &[u8] = b"MTBF1";
 
 /// A one-time, high-entropy linking code shown by the linker and entered on the joiner.
 #[derive(Clone)]
@@ -99,6 +100,28 @@ impl PairingResponse {
     }
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         unframe(RESP_MAGIC, bytes)
+    }
+}
+
+/// One account-history message a linker hands a freshly-linked device so it starts
+/// populated. Keyed by the account conversation id (a hash of account ids, identical
+/// on both devices once linked) so the joiner can store it directly. `from` is the
+/// reacting/sending account; account history derives `from_me` from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackfillRecord {
+    pub conv: [u8; 32],
+    pub from: String,
+    pub wall_clock: u64,
+    pub plaintext: Vec<u8>,
+    pub event_id: [u8; 32],
+}
+
+impl BackfillRecord {
+    pub fn encode(&self) -> Vec<u8> {
+        frame(BACKFILL_MAGIC, self)
+    }
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        unframe(BACKFILL_MAGIC, bytes)
     }
 }
 

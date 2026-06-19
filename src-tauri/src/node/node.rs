@@ -24,7 +24,7 @@ use crate::node::dm_envelope::{DmEnvelope, ReactionEnvelope};
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
-use crate::node::pairing::{PairingCode, PairingRequest, PairingResponse};
+use crate::node::pairing::{BackfillRecord, PairingCode, PairingRequest, PairingResponse};
 use crate::node::postbox::elected_post_office;
 use crate::node::ratchet_sessions::RatchetSessions;
 use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
@@ -552,6 +552,24 @@ impl Node {
         {
             return Err(NodeError::Channel("pairing cert invalid".into()));
         }
+        // Receive the linker's account-history backfill (records until an empty frame),
+        // so this device starts populated. Best-effort: stop on any recv error.
+        let mut backfill = Vec::new();
+        loop {
+            let frame = match channel.recv().await {
+                Ok(f) => f,
+                Err(_) => break,
+            };
+            if frame.is_empty() {
+                break; // terminator
+            }
+            match BackfillRecord::decode(&frame) {
+                Some(rec) => backfill.push(rec),
+                None => break,
+            }
+        }
+        self.import_account_backfill(&backfill);
+
         let account = Account::from_secret_bytes(resp.account_secret);
         Ok(LinkedAccount {
             secret: resp.account_secret,
@@ -586,8 +604,76 @@ impl Node {
             account_ed25519_pub: self.account.public().ed25519_pub,
             cert,
         };
-        if channel.send(&resp.encode()).await.is_ok() {
-            self.stop_linking(); // single-use
+        if channel.send(&resp.encode()).await.is_err() {
+            return;
+        }
+        self.stop_linking(); // single-use
+                             // Backfill: stream our account history so the new device starts populated,
+                             // then an empty frame as terminator. Best-effort — failures just mean the
+                             // joiner backfills nothing.
+        for rec in self.export_account_backfill() {
+            if channel.send(&rec.encode()).await.is_err() {
+                return;
+            }
+        }
+        let _ = channel.send(&[]).await;
+    }
+
+    /// Export every account-history message we hold (sent + received) as transferable
+    /// [`BackfillRecord`]s — for handing to a freshly-linked device. Only entries that
+    /// are account `DmEnvelope`s are included (device DMs / channels are skipped). Sent
+    /// entries are attributed to our own account; received to the recorded sender.
+    fn export_account_backfill(&self) -> Vec<BackfillRecord> {
+        let my_account = self.account.account_id();
+        let mut out = Vec::new();
+        {
+            let sentlog = self.sentlog.lock().expect("sentlog mutex not poisoned");
+            for conv in sentlog.conversations() {
+                for e in sentlog.entries(&conv) {
+                    if let Some(env) = DmEnvelope::decode(&e.plaintext) {
+                        out.push(BackfillRecord {
+                            conv: *conv.as_bytes(),
+                            from: my_account.clone(),
+                            wall_clock: e.wall_clock,
+                            plaintext: e.plaintext.clone(),
+                            event_id: env.msg_id,
+                        });
+                    }
+                }
+            }
+        }
+        {
+            let received = self.received.lock().expect("received mutex not poisoned");
+            for conv in received.conversations() {
+                for e in received.entries(&conv) {
+                    if DmEnvelope::decode(&e.plaintext).is_some() {
+                        out.push(BackfillRecord {
+                            conv: *conv.as_bytes(),
+                            from: e.from.clone(),
+                            wall_clock: e.wall_clock,
+                            plaintext: e.plaintext.clone(),
+                            event_id: *e.event_id.as_bytes(),
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Import backfilled account history into our received store (used by a freshly
+    /// linked device). Each record is keyed by its account conversation id, which is
+    /// identical on both devices once they share the account.
+    fn import_account_backfill(&self, records: &[BackfillRecord]) {
+        let mut received = self.received.lock().expect("received mutex not poisoned");
+        for r in records {
+            let _ = received.record(
+                ConversationId::new(r.conv),
+                r.from.clone(),
+                r.wall_clock,
+                &r.plaintext,
+                EventId::new(r.event_id),
+            );
         }
     }
 
@@ -4202,5 +4288,70 @@ mod tests {
         let a_views = alice_node.account_reactions(&bob_acct.account_id());
         assert_eq!(a_views.len(), 1);
         assert!(a_views[0].who.contains(&alice_acct.account_id()));
+    }
+
+    #[tokio::test]
+    async fn account_history_backfills_to_a_linked_device() {
+        use crate::identity::account::Account;
+        let alice = DeviceIdentity::generate();
+        let alice_acct = Account::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_acct = Account::generate();
+        let alice_uid = alice.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Alice (account A) has one past account message to Bob's account.
+        let alice_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(&alice_roster, &bob, &bob_acct, "Bob", 4000, &alice_uid);
+        let (a_dm, _a) = mpsc::unbounded_channel();
+        let (a_ch, _b) = mpsc::unbounded_channel();
+        let (a_f, _c) = mpsc::unbounded_channel();
+        let alice_node = Node::open_with_account(
+            alice,
+            Account::from_secret_bytes(alice_acct.secret_bytes()),
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        alice_node
+            .send_to_account(&bob_acct.account_id(), b"old message", None)
+            .await
+            .unwrap();
+
+        let records = alice_node.export_account_backfill();
+        assert!(!records.is_empty(), "there is history to back-fill");
+
+        // A new device links into account A: import the backfill, then it shows history.
+        let alice2 = DeviceIdentity::generate();
+        let (d, _d) = mpsc::unbounded_channel();
+        let (e, _e) = mpsc::unbounded_channel();
+        let (f, _f) = mpsc::unbounded_channel();
+        let alice2_node = Node::open_with_account(
+            alice2,
+            Account::from_secret_bytes(alice_acct.secret_bytes()), // adopted account A
+            Arc::new(Mutex::new(Roster::default())),
+            d,
+            e,
+            f,
+            &dir.path().join("a2.log"),
+            &dir.path().join("a2-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        alice2_node.import_account_backfill(&records);
+
+        let hist = alice2_node.account_history(&bob_acct.account_id(), 10);
+        assert_eq!(
+            hist.len(),
+            1,
+            "the linked device sees the back-filled message"
+        );
+        assert!(hist[0].from_me, "it was sent by our (shared) account");
+        assert_eq!(hist[0].text, b"old message");
     }
 }
