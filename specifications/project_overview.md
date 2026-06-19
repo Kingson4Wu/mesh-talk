@@ -1,28 +1,25 @@
 # Mesh-Talk Project Overview
 
-Mesh-Talk is a local network chat tool written in Rust that enables users to communicate directly with others on the same network using UDP broadcast and TCP connections.
+Mesh-Talk is a **decentralized, end-to-end-encrypted LAN messenger** — a Tauri desktop
+app (Rust backend + Vue 3 frontend) with no server. Peers discover each other over
+Ed25519-signed UDP broadcasts, connect directly over a Noise-encrypted channel, and
+store messages as an append-only, hash-linked event log that syncs CRDT-style; an
+elected "post office" peer stores-and-forwards (still-encrypted) events when a recipient
+is offline.
 
-## Project Goals
+## Goals
 
-1. Create a local network chat application without reliance on central servers
-2. Enable direct communication between devices on the same network
-3. Implement efficient peer discovery using UDP broadcast
-4. Provide reliable message delivery using TCP connections
-5. Support cross-platform deployment (macOS, Windows, Linux)
-6. Provide a simple command-line interface
+1. Messaging with no central server — direct peer-to-peer on the local network.
+2. End-to-end encryption with forward secrecy.
+3. Automatic signed peer discovery; offline delivery via an elected relay.
+4. Cross-platform desktop (macOS, Windows, Linux).
 
-## Core Features
+## Features
 
-- Local network communication without a central server
-- Automatic peer discovery using UDP broadcast
-- Real-time messaging between connected peers via TCP
-- Command-line interface
-- Cross-platform support
+1:1 DMs and group channels (forward-secret via Double Ratchet / sender-key), file
+sharing, reactions, replies/threads, @mentions, search, and multi-device (one account
+across devices via device linking + account-addressed fan-out).
 
-## Target Audience
-
-This project is designed for:
-- Users who want a simple, local network chat tool
-- Developers learning Rust and network programming concepts
-- Teams requiring internal communication tools without internet dependencies
-- Anyone interested in understanding UDP broadcast and TCP communication
+> The authoritative technical description is **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)**
+> (layers, crypto, event log/sync, networking, binaries, security posture). This file is
+> just the elevator pitch.

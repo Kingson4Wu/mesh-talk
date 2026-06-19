@@ -35,21 +35,23 @@ A local network chat tool written in Rust that enables users to communicate dire
 
 ```
 mesh-talk/
-├── src-tauri/              # Rust backend (Tauri + business logic)
+├── src-tauri/              # Rust backend (Tauri shell + the serverless node)
 │   ├── src/
-│   │   ├── main.rs         # Tauri main entry
-│   │   ├── lib.rs          # Main library module
-│   │   ├── api.rs          # Command-line argument parsing
-│   │   ├── domain/         # Domain models
-│   │   ├── services/       # Business logic services
-│   │   ├── network/        # Network layer
-│   │   └── utils.rs        # Utility functions
+│   │   ├── main.rs         # `mesh-talk` desktop binary
+│   │   ├── lib.rs          # Tauri setup + IPC registration
+│   │   ├── commands.rs     # auth IPC (redesign_commands.rs = messaging IPC)
+│   │   ├── node/           # the serverless node: orchestration
+│   │   ├── identity/ transport/ discovery/ eventlog/ ratchet/ channel/ dm.rs file/ postoffice/
+│   │   ├── storage/        # at-rest encryption (PBKDF2 + AES-GCM)
+│   │   ├── services/       # auth only
+│   │   └── bin/mesh-talk-node.rs  # headless node CLI (--post-office relay mode)
 │   ├── Cargo.toml
 │   └── tauri.conf.json
-├── frontend/               # Vue frontend
-├── specifications/         # Project documentation
-├── Makefile               # Build and development commands
-└── Cargo.toml             # Workspace configuration
+├── frontend/               # Vue 3 frontend
+├── docs/ARCHITECTURE.md    # architecture reference
+├── specifications/         # overview + process/convention docs
+├── Makefile
+└── Cargo.toml              # workspace configuration
 ```
 
 ## Prerequisites
@@ -105,12 +107,12 @@ cargo run -- --name YourName --port 8000
 
 ## Development
 
-This project follows a professional Rust project structure with:
-- Domain models in `src-tauri/src/domain/`
-- Business logic in `src-tauri/src/services/`
-- Network handling in `src-tauri/src/network/`
-- Command-line interface in `src-tauri/src/api.rs`
-- Utility functions in `src-tauri/src/utils.rs`
+This project follows a professional Rust project structure:
+- Node orchestration in `src-tauri/src/node/`
+- Crypto in `identity/`, `transport/` (Noise), `ratchet/`, `channel/`, `dm.rs`
+- Event log + sync in `src-tauri/src/eventlog/`; signed discovery in `discovery/`
+- At-rest encryption in `src-tauri/src/storage/`; auth in `services/`
+- Full architecture reference: `docs/ARCHITECTURE.md`
 
 ## Automation and Code Quality
 

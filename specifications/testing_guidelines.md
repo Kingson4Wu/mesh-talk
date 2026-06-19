@@ -28,9 +28,8 @@ For tests that involve multiple modules or test the system as a whole, place the
 
 ```
 src-tauri/
-├── tests/
-│   ├── node_service_test.rs
-│   └── network_test.rs
+├── tests/                     # integration / end-to-end suites
+└── src/node/node_tests.rs     # node behaviour (unit + integration), inline modules elsewhere
 ```
 
 Execute all tests with:

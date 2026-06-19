@@ -237,11 +237,12 @@ node --version  # Should be 16 or higher
 2. Check that all nodes are on the same local network
 3. Verify that broadcast is enabled on your network
 
-#### Database Issues
-Mesh-Talk uses SQLite for local storage. If you encounter database issues:
+#### Local Storage Issues
+Mesh-Talk stores data as encrypted files under `~/.mesh-talk` (no database). If a store
+appears corrupt:
 1. Close the application
-2. Backup and remove the database file (usually in the application data directory)
-3. Restart the application to create a new database
+2. Back up and remove the affected per-account directory under `~/.mesh-talk/redesign/`
+3. Restart the application to re-create the stores (history not held by a peer/post office is lost)
 
 ### Platform-Specific Troubleshooting
 
