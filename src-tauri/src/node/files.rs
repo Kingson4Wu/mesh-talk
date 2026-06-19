@@ -1,10 +1,12 @@
 //! File transfer: chunked send (DM/account/channel) and save. Split out of node.rs (one `impl Node` block per domain).
 
-use super::*;
 use super::node::MAX_FILE_SIZE;
+use super::*;
 use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{ConversationId, EventKind};
-use crate::file::{file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest};
+use crate::file::{
+    file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
+};
 use crate::node::conversation::dm_conversation_id;
 use std::path::Path;
 
@@ -57,6 +59,7 @@ impl Node {
                 .peers()
                 .into_iter()
                 .filter(|p| p.account_id.as_deref() == Some(target_account_id))
+                .filter(|p| p.public.user_id() != me) // never seal to ourselves
                 .collect();
             let own = roster
                 .peers()
@@ -72,7 +75,14 @@ impl Node {
 
         let (manifest, file_conv) = self.stage_file(path)?;
         let manifest_bytes = manifest.encode();
+        // De-dupe by user-id: when the target is our own account, `targets`/`own` overlap.
+        let mut delivered: Vec<String> = Vec::new();
         for peer in targets.iter().chain(own.iter()) {
+            let uid = peer.public.user_id();
+            if delivered.contains(&uid) {
+                continue;
+            }
+            delivered.push(uid);
             let sealed =
                 match crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest_bytes) {
                     Ok(s) => s,
@@ -133,7 +143,10 @@ impl Node {
     /// Read `path`, chunk + seal it into a fresh per-file conversation (appending a
     /// chunk event per piece), and build the (unsealed) manifest. Shared by both
     /// send paths. The caller seals + posts the manifest into the original conv.
-    pub(in crate::node) fn stage_file(&self, path: &Path) -> Result<(FileManifest, ConversationId), NodeError> {
+    pub(in crate::node) fn stage_file(
+        &self,
+        path: &Path,
+    ) -> Result<(FileManifest, ConversationId), NodeError> {
         let data = std::fs::read(path).map_err(|e| NodeError::File(format!("read file: {e}")))?;
         // Bounded multi-round sync now transfers chunk events across frames, so files
         // up to MAX_FILE_SIZE (8 MB) are supported. The practical limit is the have
@@ -201,5 +214,4 @@ impl Node {
         std::fs::write(dest, data).map_err(|e| NodeError::File(format!("write file: {e}")))?;
         Ok(())
     }
-
 }

@@ -116,7 +116,24 @@ impl ChannelState {
     /// its name/members/epoch. Older or equal snapshots are ignored — idempotent
     /// replay regardless of event arrival order.
     pub fn apply_meta(&mut self, meta: ChannelMeta) {
-        if meta.epoch >= self.epoch {
+        use std::cmp::Ordering;
+        let take = match meta.epoch.cmp(&self.epoch) {
+            Ordering::Greater => true,
+            // Two concurrent membership changes can mint the SAME epoch with different
+            // member sets. Without a tie-break the result would depend on arrival order
+            // (nodes diverge). Converge deterministically: keep the canonically-greater
+            // snapshot (by encoded bytes), so every node lands on the same membership.
+            Ordering::Equal => {
+                let current = ChannelMeta {
+                    name: self.name.clone(),
+                    members: self.members.clone(),
+                    epoch: self.epoch,
+                };
+                meta.encode() > current.encode()
+            }
+            Ordering::Less => false,
+        };
+        if take {
             self.name = meta.name;
             self.members = meta.members;
             self.epoch = meta.epoch;
@@ -288,6 +305,32 @@ mod tests {
         state.apply_meta(meta("general", &[&a], 0));
         assert_eq!(state.epoch(), 1);
         assert_eq!(state.members().len(), 2);
+    }
+
+    #[test]
+    fn concurrent_same_epoch_membership_converges() {
+        // Two membership changes minted at the SAME epoch (concurrent edits) must
+        // converge to identical membership on every node regardless of arrival order —
+        // otherwise nodes disagree on who is in the channel (and who gets re-keyed).
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let c = DeviceIdentity::generate();
+        let id = new_channel_id();
+        let add_c = meta("general", &[&a, &b, &c], 1);
+        let remove_b = meta("general", &[&a], 1);
+
+        let mut s1 = ChannelState::from_meta(id, meta("general", &[&a, &b], 0));
+        s1.apply_meta(add_c.clone());
+        s1.apply_meta(remove_b.clone());
+
+        let mut s2 = ChannelState::from_meta(id, meta("general", &[&a, &b], 0));
+        s2.apply_meta(remove_b.clone());
+        s2.apply_meta(add_c.clone());
+
+        assert_eq!(s1.epoch(), s2.epoch());
+        let m1: Vec<String> = s1.members().iter().map(|p| p.user_id()).collect();
+        let m2: Vec<String> = s2.members().iter().map(|p| p.user_id()).collect();
+        assert_eq!(m1, m2, "concurrent same-epoch membership must converge");
     }
 
     // --- sender-key path ---

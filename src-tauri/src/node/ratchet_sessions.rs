@@ -140,9 +140,13 @@ impl RatchetSessions {
         Ok(())
     }
 
-    /// Returns `true` if there is a stored session for `peer`.
+    /// Returns `true` if there is a stored session for `peer` that actually decodes.
+    /// Goes through `get` (not just key-presence) so `has`/`get` can't disagree: a blob
+    /// that authenticates but fails to deserialize must not report `has == true` while
+    /// `get == None` (which would silently re-bootstrap the session and break the peer's
+    /// decryption).
     pub fn has(&self, peer: &str) -> bool {
-        self.latest.contains_key(peer)
+        self.get(peer).is_some()
     }
 }
 

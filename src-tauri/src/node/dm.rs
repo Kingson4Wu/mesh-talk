@@ -1,7 +1,7 @@
 //! Direct + account-addressed message sends and DM reactions. Split out of node.rs (one `impl Node` block per domain).
 
-use super::*;
 use super::node::{now_millis, random_msg_id};
+use super::*;
 use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{Author, Event, EventId, EventKind};
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
@@ -125,6 +125,7 @@ impl Node {
                 .peers()
                 .into_iter()
                 .filter(|p| p.account_id.as_deref() == Some(target_account_id))
+                .filter(|p| p.public.user_id() != me) // never seal to ourselves
                 .collect();
             let own = roster
                 .peers()
@@ -150,8 +151,17 @@ impl Node {
             let _ = sentlog.record(conv_account, seq, wall_clock, &envelope);
         }
 
-        // Fan out: seal+append+deliver one copy per destination device.
+        // Fan out: seal+append+deliver one copy per destination device, de-duped by
+        // user-id. When the target IS our own account (note-to-self), `targets` and `own`
+        // overlap — without the dedup each device would receive (and surface) the message
+        // twice.
+        let mut delivered: Vec<String> = Vec::new();
         for peer in targets.iter().chain(own.iter()) {
+            let uid = peer.public.user_id();
+            if delivered.contains(&uid) {
+                continue;
+            }
+            delivered.push(uid);
             self.deliver_enveloped(peer, &envelope).await;
         }
         Ok(())
@@ -180,5 +190,4 @@ impl Node {
         let _ = self.replicate_to_post_office(conv).await;
         self.emit_new_messages(conv);
     }
-
 }
