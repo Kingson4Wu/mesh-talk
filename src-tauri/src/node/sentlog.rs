@@ -247,4 +247,36 @@ mod tests {
         assert_eq!(c1.len(), 1); // the torn record is dropped, the good one survives
         assert_eq!(c1[0].plaintext, b"good");
     }
+
+    #[test]
+    fn tampered_ciphertext_fails_to_load() {
+        // A flipped byte in a stored record's ciphertext/tag must fail AEAD on reload
+        // (this store is the ONLY copy of our sent plaintext — it must not silently
+        // accept tampered data).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sent.log");
+        {
+            let mut s = SentLog::open(&path, "pw").unwrap();
+            s.record(conv(1), 1, 1000, b"secret").unwrap();
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        let n = bytes.len();
+        bytes[n - 1] ^= 0xFF; // last byte = the final record's AEAD tag
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            SentLog::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
+
+    #[test]
+    fn bad_magic_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sent.log");
+        std::fs::write(&path, b"XXXXXXnot-a-sentlog").unwrap();
+        assert!(matches!(
+            SentLog::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
 }

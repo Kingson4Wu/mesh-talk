@@ -203,4 +203,33 @@ mod tests {
             Err(LogError::CorruptFile(_))
         ));
     }
+
+    #[test]
+    fn tampered_ciphertext_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel.senders");
+        {
+            let mut store = ChannelSenderStore::open(&path, "pw").unwrap();
+            store.put(&new_channel_id(), &[(0u64, vec![1])]).unwrap();
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        let n = bytes.len();
+        bytes[n - 1] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            ChannelSenderStore::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
+
+    #[test]
+    fn bad_magic_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel.senders");
+        std::fs::write(&path, b"XXXXXXjunk").unwrap();
+        assert!(matches!(
+            ChannelSenderStore::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
 }

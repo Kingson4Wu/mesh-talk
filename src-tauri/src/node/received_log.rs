@@ -267,4 +267,34 @@ mod tests {
         assert_eq!(c1.len(), 1); // the torn record is dropped, the good one survives
         assert_eq!(c1[0].plaintext, b"good");
     }
+
+    #[test]
+    fn tampered_ciphertext_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recv.log");
+        {
+            let mut r = ReceivedLog::open(&path, "pw").unwrap();
+            r.record(conv(1), "alice".into(), 1, b"secret", EventId::new([1; 32]))
+                .unwrap();
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        let n = bytes.len();
+        bytes[n - 1] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            ReceivedLog::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
+
+    #[test]
+    fn bad_magic_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recv.log");
+        std::fs::write(&path, b"XXXXXXnot-a-recv-log").unwrap();
+        assert!(matches!(
+            ReceivedLog::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
 }

@@ -217,4 +217,34 @@ mod tests {
             Err(LogError::CorruptFile(_))
         ));
     }
+
+    #[test]
+    fn tampered_ciphertext_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        {
+            let (alice, _) = make_pair();
+            let mut store = RatchetSessions::open(&path, "pw").unwrap();
+            store.put("peer1", &alice).unwrap();
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        let n = bytes.len();
+        bytes[n - 1] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            RatchetSessions::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
+
+    #[test]
+    fn bad_magic_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        std::fs::write(&path, b"XXXXXXjunk").unwrap();
+        assert!(matches!(
+            RatchetSessions::open(&path, "pw"),
+            Err(LogError::CorruptFile(_))
+        ));
+    }
 }
