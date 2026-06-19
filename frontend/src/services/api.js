@@ -113,6 +113,15 @@ const redesignAPI = {
   addChannelMember: (channelId, memberId) => invoke("redesign_add_channel_member", { channelId, memberId }),
   removeChannelMember: (channelId, memberId) => invoke("redesign_remove_channel_member", { channelId, memberId }),
   channelMembers: (channelId) => invoke("redesign_channel_members", { channelId }),
+  // Multi-device: account identity, account-addressed messaging, and device linking.
+  accountId: () => invoke("redesign_account_id"),
+  sendToAccount: (account, text, replyTo = null) =>
+    invoke("redesign_send_to_account", { account, text, replyTo }),
+  accountHistory: (account, limit) => invoke("redesign_account_history", { account, limit }),
+  listAccounts: () => invoke("redesign_list_accounts"),
+  startLinking: () => invoke("redesign_start_linking"),
+  stopLinking: () => invoke("redesign_stop_linking"),
+  linkDevice: (peer, code) => invoke("redesign_link_device", { peer, code }),
 };
 
 // Combined API service

@@ -2,10 +2,35 @@
   <div class="redesign">
     <header class="rd-header">
       <h2>Redesign chat <span class="beta">beta</span></h2>
-      <div class="me">you: <code>{{ myId || "(starting…)" }}</code></div>
+      <div class="me">
+        you: <code>{{ myId || "(starting…)" }}</code>
+        <span v-if="accountId" class="acct" title="Your account (shared across your devices)">acct: <code>{{ accountId.slice(0, 8) }}…</code></span>
+      </div>
+      <button class="search-toggle" :class="{ active: linkOpen }" title="Link a device" @click="linkOpen = !linkOpen">🔗</button>
       <button class="search-toggle" :class="{ active: showSearch }" title="Search messages" @click="showSearch = !showSearch">🔍</button>
       <router-link class="back" :to="{ name: 'chat' }">← Back</router-link>
     </header>
+
+    <div v-if="linkOpen" class="link-panel">
+      <p class="link-acct">This device's account: <code>{{ accountId ? accountId.slice(0, 12) + "…" : "—" }}</code></p>
+      <div class="link-row">
+        <span class="link-label">Add another of your devices:</span>
+        <button type="button" @click="showLinkCode">Show pairing code</button>
+        <code v-if="linkCode" class="pair-code">{{ linkCode }}</code>
+      </div>
+      <div class="link-row">
+        <span class="link-label">Have a code from your other device?</span>
+        <select v-model="joinPeer">
+          <option value="">Pick the device…</option>
+          <option v-for="p in peers" :key="p.user_id" :value="p.user_id">
+            {{ p.name || "(unnamed)" }} ({{ p.user_id.slice(0, 8) }})
+          </option>
+        </select>
+        <input v-model="joinCode" placeholder="pairing code" />
+        <button type="button" :disabled="!joinPeer || !joinCode.trim()" @click="doLink">Link this device</button>
+      </div>
+      <p v-if="linkMsg" class="link-msg">{{ linkMsg }}</p>
+    </div>
 
     <div v-if="showSearch" class="search-panel">
       <form class="search-bar" @submit.prevent="runSearch">
@@ -214,6 +239,13 @@ const myId = ref("");
 const peers = ref([]);
 const activePeer = ref(null);
 const messages = ref([]);
+// Multi-device: account id + "link a device" panel state.
+const accountId = ref("");
+const linkOpen = ref(false);
+const linkCode = ref("");
+const joinPeer = ref("");
+const joinCode = ref("");
+const linkMsg = ref("");
 const draft = ref("");
 const error = ref("");
 const unread = reactive({});
@@ -601,6 +633,26 @@ async function scrollDown() {
   }
 }
 
+async function showLinkCode() {
+  linkMsg.value = "";
+  try {
+    linkCode.value = await API.redesign.startLinking();
+  } catch (e) {
+    linkMsg.value = String(e);
+  }
+}
+
+async function doLink() {
+  linkMsg.value = "";
+  try {
+    const adopted = await API.redesign.linkDevice(joinPeer.value.trim(), joinCode.value.trim());
+    linkMsg.value = `Linked! Adopted account ${adopted.slice(0, 8)}… — restart the app to use it.`;
+    joinCode.value = "";
+  } catch (e) {
+    linkMsg.value = `Link failed: ${e}`;
+  }
+}
+
 onMounted(async () => {
   if (!store.isAuthenticated) {
     router.replace({ name: "login" });
@@ -608,6 +660,7 @@ onMounted(async () => {
   }
   try {
     myId.value = await API.redesign.myId();
+    accountId.value = await API.redesign.accountId();
   } catch (_e) {
     error.value = "Redesign node not started yet — give it a moment after login.";
   }
@@ -635,6 +688,49 @@ onBeforeUnmount(() => {
   height: 100vh;
   color: rgba(226, 232, 240, 1);
   background: rgba(15, 23, 42, 1);
+}
+.me .acct {
+  margin-left: 10px;
+  opacity: 0.75;
+}
+.link-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.6);
+}
+.link-panel .link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.link-panel .link-label {
+  min-width: 220px;
+  opacity: 0.85;
+}
+.link-panel .pair-code {
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: #4ade80;
+  background: rgba(15, 23, 42, 0.8);
+  padding: 2px 8px;
+  border-radius: 6px;
+  user-select: all;
+}
+.link-panel input,
+.link-panel select {
+  background: rgba(15, 23, 42, 0.8);
+  color: inherit;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.link-panel .link-msg {
+  color: #fbbf24;
+  margin: 0;
 }
 .rd-header {
   display: flex;
