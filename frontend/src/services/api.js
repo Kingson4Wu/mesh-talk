@@ -122,6 +122,7 @@ const redesignAPI = {
   startLinking: () => invoke("redesign_start_linking"),
   stopLinking: () => invoke("redesign_stop_linking"),
   linkDevice: (peer, code) => invoke("redesign_link_device", { peer, code }),
+  rekeyAccount: () => invoke("redesign_rekey_account"),
   adoptLinkedAccount: () => invoke("redesign_adopt_linked_account"),
   sendFileToAccount: (account, path) => invoke("redesign_send_file_to_account", { account, path }),
   reactAccount: (account, target, emoji, remove) =>

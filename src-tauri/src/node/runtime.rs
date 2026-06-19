@@ -237,6 +237,20 @@ impl RedesignRuntime {
         &self.password
     }
 
+    /// Re-key: replace this device's account with a fresh one on disk and return the
+    /// new account id. The caller adopts it by re-spawning the runtime. This abandons
+    /// the old `account_id` — the honest response to a lost/compromised device in the
+    /// shared-account v1 (a lost device keeps the OLD secret, so the only way to lock it
+    /// out is to move to a new identity and re-link the devices you still trust). It is
+    /// NOT a silent revocation: contacts re-discover you under the new account, and your
+    /// other good devices must be re-linked.
+    pub fn rekey_account(&self) -> Result<String, NodeError> {
+        let account = crate::identity::account::Account::generate();
+        crate::identity::account_keystore::save(&self.account_path, &self.password, &account)
+            .map_err(|e| NodeError::Channel(format!("persist new account: {e}")))?;
+        Ok(account.account_id())
+    }
+
     /// Enter "link a device" mode; returns the one-time code to display.
     pub fn start_linking(&self) -> String {
         self.node.start_linking()

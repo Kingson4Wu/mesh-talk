@@ -29,6 +29,10 @@
         <input v-model="joinCode" placeholder="pairing code" />
         <button type="button" :disabled="!joinPeer || !joinCode.trim()" @click="doLink">Link this device</button>
       </div>
+      <div class="link-row">
+        <span class="link-label">Lost or compromised device?</span>
+        <button type="button" class="rekey" @click="rekeyAccount">Re-key (new identity)</button>
+      </div>
       <p v-if="linkMsg" class="link-msg">{{ linkMsg }}</p>
     </div>
 
@@ -694,6 +698,19 @@ async function doLink() {
     linkMsg.value = `Linked! Your devices now share account ${adopted.slice(0, 8)}… (reconnecting…)`;
   } catch (e) {
     linkMsg.value = `Link failed: ${e}`;
+  }
+}
+
+async function rekeyAccount() {
+  if (!confirm("Re-key this account? You'll get a NEW identity; this device leaves the current account, and you must re-link any devices you still trust. Use this if a device was lost or compromised.")) return;
+  linkMsg.value = "";
+  try {
+    const fresh = await API.redesign.rekeyAccount();
+    await API.redesign.adoptLinkedAccount();
+    accountId.value = fresh;
+    linkMsg.value = `Re-keyed. New account ${fresh.slice(0, 8)}… (reconnecting…). Re-link your other devices to it.`;
+  } catch (e) {
+    linkMsg.value = `Re-key failed: ${e}`;
   }
 }
 

@@ -222,6 +222,15 @@ pub async fn redesign_link_device(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn redesign_rekey_account(
+    state: tauri::State<'_, RedesignState>,
+) -> Result<String, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    rt.rekey_account().map_err(|e| e.to_string())
+}
+
 /// An account (group of devices) as shown in the redesign UI.
 #[derive(Serialize)]
 pub struct AccountInfo {
