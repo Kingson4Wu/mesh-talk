@@ -6,9 +6,9 @@ mesh-talk/
 │   ├── src/
 │   │   ├── main.rs           # `mesh-talk` desktop binary → lib::run_tauri
 │   │   ├── lib.rs            # app entry: Tauri setup + IPC handler registration
-│   │   ├── commands.rs       # auth IPC (login/logout/register) + redesign-node bridge
-│   │   ├── redesign_commands.rs # all messaging IPC (redesign_*)
-│   │   ├── events.rs         # Tauri events emitted to the UI (redesign-*)
+│   │   ├── commands.rs       # auth IPC (login/logout/register) + node bridge
+│   │   ├── chat_commands.rs # all messaging IPC (messaging)
+│   │   ├── events.rs         # Tauri events emitted to the UI (messaging events)
 │   │   ├── state.rs          # AppState: auth service + in-memory session
 │   │   ├── tray.rs           # system tray (show/hide/quit)
 │   │   ├── services/         # auth_service + user + common (the only stateful service)
@@ -28,10 +28,10 @@ mesh-talk/
 │   └── Cargo.toml
 ├── frontend/                 # Vue 3 + Pinia + Vite
 │   └── src/
-│       ├── views/redesign/RedesignChatView.vue  # the app UI ("/")
+│       ├── views/chat/ChatView.vue  # the app UI ("/")
 │       ├── views/auth/LoginView.vue
 │       ├── stores/appStore.js                   # auth/session store
-│       └── services/api.js                      # authAPI + redesignAPI (Tauri invoke)
+│       └── services/api.js                      # authAPI + chatAPI (Tauri invoke)
 ├── docs/ARCHITECTURE.md      # ← authoritative architecture reference
 ├── docs/superpowers/         # design specs + implementation plans (history)
 ├── specifications/           # this dir: overview + process/convention docs

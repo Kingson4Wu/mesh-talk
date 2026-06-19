@@ -241,7 +241,7 @@ node --version  # Should be 16 or higher
 Mesh-Talk stores data as encrypted files under `~/.mesh-talk` (no database). If a store
 appears corrupt:
 1. Close the application
-2. Back up and remove the affected per-account directory under `~/.mesh-talk/redesign/`
+2. Back up and remove the affected per-account directory under `~/.mesh-talk/accounts/`
 3. Restart the application to re-create the stores (history not held by a peer/post office is lost)
 
 ### Platform-Specific Troubleshooting

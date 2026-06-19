@@ -11,7 +11,7 @@ server. The desktop app is a Tauri (Rust) backend + Vue 3 frontend; a headless C
 | Layer | Path (`src-tauri/src/`) | Responsibility |
 |-------|-------------------------|----------------|
 | **Frontend** | `frontend/src/` (Vue) | UI; talks to the backend only via Tauri commands + events. |
-| **IPC** | `commands.rs`, `redesign_commands.rs` | Auth (login/register/logout) + all messaging commands. |
+| **IPC** | `commands.rs`, `chat_commands.rs` | Auth (login/register/logout) + all messaging commands. |
 | **Node** | `node/` | Orchestrates identity + discovery + transport + event log + DM/channel/file crypto. |
 | **Crypto** | `identity/`, `transport/`, `ratchet/`, `dm.rs`, `channel/` | Keys, Noise channel, Double Ratchet, sender-key group ratchet. |
 | **Data/sync** | `eventlog/`, `discovery/`, `postoffice/`, `file/` | Event DAG + sync, signed discovery, store-and-forward relay, file chunks. |

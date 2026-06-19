@@ -1,7 +1,7 @@
 # Implementation Status
 
 The legacy server/relay stack has been **retired**; the serverless, end-to-end-encrypted
-redesign is the entire product and is feature-complete:
+stack is the entire product and is feature-complete:
 
 - **Phase 0** — identity/keystore, Noise transport, content-addressed event log + sync,
   X3DH DM crypto, persistent history, post office (store-and-forward). ✅

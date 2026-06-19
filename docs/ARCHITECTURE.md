@@ -8,18 +8,18 @@ an elected **post office** node stores-and-forwards the (still-encrypted) events
 
 > The earlier RSA-contact / plaintext-UDP / TCP-relay *legacy* stack has been retired;
 > this serverless stack is the entire product and lives at `/`. The only retained
-> non-redesign piece is the auth/session layer (`services/auth_service.rs` + `state.rs`),
-> which `login` uses before starting the redesign node.
+> piece outside the node is the auth/session layer (`services/auth_service.rs` + `state.rs`),
+> which `login` uses before starting the node.
 
 ---
 
 ## 1. Process & layers
 
 ```
-Vue 3 UI (RedesignChatView.vue) ──invoke()──▶ Tauri IPC (redesign_commands.rs)
+Vue 3 UI (ChatView.vue) ──invoke()──▶ Tauri IPC (chat_commands.rs)
         ▲   ──listen() events──                         │
         │                                               ▼
-        │                                   RedesignRuntime (node/runtime.rs)
+        │                                   NodeRuntime (node/runtime.rs)
         │                                   starts 7 bg tasks per login:
         │                                   UDP listen / UDP broadcast /
         └────────── on_dm/on_channel/on_file callbacks ── TCP accept / PO drain /
@@ -94,8 +94,8 @@ Vue 3 UI (RedesignChatView.vue) ──invoke()──▶ Tauri IPC (redesign_comm
 
 ## 5. Frontend (`frontend/`)
 
-Vue 3 + Pinia + Vue Router (hash). `src/services/api.js` exposes `authAPI` + `redesignAPI`
-(wrapping every `redesign_*` Tauri command). `views/redesign/RedesignChatView.vue` is the
+Vue 3 + Pinia + Vue Router (hash). `src/services/api.js` exposes `authAPI` + `chatAPI`
+(wrapping every messaging Tauri command). `views/chat/ChatView.vue` is the
 app (3-pane UI: peers/channels · messages · members) with @mentions, replies, reactions,
 files, search, and the link-a-device panel, served at `/`. `stores/appStore.js` is an
 auth/session-only store; `LoginView` is the only other view.
@@ -103,7 +103,7 @@ auth/session-only store; `LoginView` is the only other view.
 ## 6. Binaries
 
 - `mesh-talk` (`main.rs` → `lib.rs::run_tauri`) — the desktop app.
-- `mesh-talk-node` (`bin/mesh-talk-node.rs`) — headless redesign node CLI; `--post-office`
+- `mesh-talk-node` (`bin/mesh-talk-node.rs`) — headless node CLI; `--post-office`
   runs relay mode.
 
 ## 7. Build, test, CI

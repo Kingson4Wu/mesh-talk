@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - Backend Rust workspace `src-tauri/`; entry `src-tauri/src/main.rs`, core `lib.rs`, IPC
-  glue in `commands.rs` (auth) + `redesign_commands.rs` (messaging) + `events.rs`. Feature
+  glue in `commands.rs` (auth) + `chat_commands.rs` (messaging) + `events.rs`. Feature
   modules: `node/`, `identity/`, `transport/`, `discovery/`, `eventlog/`, `ratchet/`,
   `channel/`, `dm.rs`, `file/`, `postoffice/`, `storage/`, `services/` (auth only).
 - Integration/e2e suites live in `src-tauri/tests/`; keep unit tests inline via `mod tests`.

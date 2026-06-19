@@ -39,7 +39,7 @@ mesh-talk/
 │   ├── src/
 │   │   ├── main.rs         # `mesh-talk` desktop binary
 │   │   ├── lib.rs          # Tauri setup + IPC registration
-│   │   ├── commands.rs     # auth IPC (redesign_commands.rs = messaging IPC)
+│   │   ├── commands.rs     # auth IPC (chat_commands.rs = messaging IPC)
 │   │   ├── node/           # the serverless node: orchestration
 │   │   ├── identity/ transport/ discovery/ eventlog/ ratchet/ channel/ dm.rs file/ postoffice/
 │   │   ├── storage/        # at-rest encryption (PBKDF2 + AES-GCM)
