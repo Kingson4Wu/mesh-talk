@@ -26,7 +26,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 lazy_static = "1.4"
-rand = "0.8"
+rand = "0.9"
 argon2 = { version = "0.5", features = ["std"] }
 keyring = { version = "3.6.3", optional = true }
 socket2 = { version = "0.5", features = ["all"] }
