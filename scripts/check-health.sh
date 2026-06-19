@@ -91,9 +91,10 @@ if ! cd frontend && npx prettier --write src/; then
 fi
 cd ..
 
-# Run Clippy (Rust linter)
+# Run Clippy (Rust linter). MUST mirror CI: --all-targets covers tests/benches/bins'
+# test modules — without it, lints in test code only surface on CI (and break it).
 print_status "success" "Running Rust linter (Clippy)..."
-if ! cd src-tauri && cargo clippy -- -D warnings; then
+if ! cd src-tauri && cargo clippy --all-targets -- -D warnings; then
     print_status "error" "Rust linting issues found. Please fix Clippy warnings."
     exit 1
 fi
@@ -101,10 +102,67 @@ cd ..
 
 # Apply automatic Clippy fixes
 print_status "success" "Applying automatic Clippy fixes..."
-if ! cd src-tauri && cargo clippy --fix --allow-dirty --allow-staged; then
+if ! cd src-tauri && cargo clippy --all-targets --fix --allow-dirty --allow-staged; then
     print_status "warning" "Failed to apply some Clippy fixes automatically."
 fi
 cd ..
+
+# Spelling (typos) — mirrors CI's crate-ci/typos. Warn-skip if not installed.
+print_status "success" "Checking spelling (typos)..."
+if command_exists typos; then
+    if ! typos; then
+        print_status "error" "Spelling issues found (see _typos.toml to allowlist domain terms)."
+        exit 1
+    fi
+else
+    print_status "warning" "typos not installed (cargo install typos-cli) — skipping; CI will still check."
+fi
+
+# Supply-chain policy (cargo-deny) — mirrors CI. Warn-skip if not installed.
+print_status "success" "Checking supply-chain policy (cargo-deny)..."
+if command_exists cargo-deny; then
+    if ! cd src-tauri && cargo deny check; then
+        print_status "error" "cargo-deny policy violation (advisories/bans/licenses/sources)."
+        exit 1
+    fi
+    cd ..
+else
+    print_status "warning" "cargo-deny not installed — skipping; CI will still check."
+fi
+
+# Unused dependencies (cargo-machete) — mirrors CI. Warn-skip if not installed.
+print_status "success" "Checking for unused dependencies (cargo-machete)..."
+if command_exists cargo-machete; then
+    if ! cd src-tauri && cargo machete; then
+        print_status "error" "cargo-machete found unused dependencies."
+        exit 1
+    fi
+    cd ..
+else
+    print_status "warning" "cargo-machete not installed — skipping; CI will still check."
+fi
+
+# Secret scan (gitleaks) — mirrors CI. Warn-skip if not installed.
+print_status "success" "Scanning for secrets (gitleaks)..."
+if command_exists gitleaks; then
+    if ! gitleaks git . --config .gitleaks.toml --redact -v >/dev/null 2>&1; then
+        print_status "error" "gitleaks found a potential secret (see .gitleaks.toml to allowlist)."
+        exit 1
+    fi
+else
+    print_status "warning" "gitleaks not installed — skipping; CI will still check."
+fi
+
+# Shellcheck scripts — mirrors CI.
+print_status "success" "Linting shell scripts (shellcheck)..."
+if command_exists shellcheck; then
+    if ! shellcheck --severity=warning scripts/*.sh .claude/hooks/*.sh 2>/dev/null; then
+        print_status "error" "shellcheck found warnings."
+        exit 1
+    fi
+else
+    print_status "warning" "shellcheck not installed — skipping; CI will still check."
+fi
 
 # Run ESLint (Frontend linter). ESLint 9 uses flat config (eslint.config.js);
 # the `--ext` flag was removed, so run the package script which lints the project.
