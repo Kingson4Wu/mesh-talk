@@ -68,3 +68,79 @@ pub fn decrypt_data(
 
     Ok(plaintext)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(pw: &str, salt: &[u8; SALT_SIZE]) -> EncryptionKey {
+        EncryptionKey::from_password(pw, salt).unwrap()
+    }
+
+    #[test]
+    fn round_trips() {
+        let salt = generate_salt();
+        let k = key("correct horse", &salt);
+        let (ct, nonce) = encrypt_data(b"top secret", &k).unwrap();
+        assert_ne!(ct, b"top secret"); // actually encrypted
+        assert_eq!(decrypt_data(&ct, &nonce, &k).unwrap(), b"top secret");
+    }
+
+    #[test]
+    fn wrong_password_fails() {
+        let salt = generate_salt();
+        let (ct, nonce) = encrypt_data(b"data", &key("right", &salt)).unwrap();
+        assert!(decrypt_data(&ct, &nonce, &key("wrong", &salt)).is_err());
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails() {
+        let salt = generate_salt();
+        let k = key("pw", &salt);
+        let (mut ct, nonce) = encrypt_data(b"data", &k).unwrap();
+        ct[0] ^= 0x01; // flip a bit anywhere (body or tag) — AEAD must reject
+        assert!(decrypt_data(&ct, &nonce, &k).is_err());
+    }
+
+    #[test]
+    fn wrong_nonce_fails() {
+        let salt = generate_salt();
+        let k = key("pw", &salt);
+        let (ct, mut nonce) = encrypt_data(b"data", &k).unwrap();
+        nonce[0] ^= 0x01;
+        assert!(decrypt_data(&ct, &nonce, &k).is_err());
+    }
+
+    #[test]
+    fn empty_and_short_ciphertext_fail_cleanly() {
+        let salt = generate_salt();
+        let k = key("pw", &salt);
+        let nonce = generate_nonce().unwrap();
+        // No panic on attacker-supplied empty/too-short input — just an error.
+        assert!(decrypt_data(&[], &nonce, &k).is_err());
+        assert!(decrypt_data(&[0u8; 4], &nonce, &k).is_err());
+    }
+
+    #[test]
+    fn key_derivation_is_deterministic_and_salt_separated() {
+        let salt = generate_salt();
+        // Same password + salt => same key.
+        assert_eq!(key("pw", &salt).as_bytes(), key("pw", &salt).as_bytes());
+        // Different salt => different key (so two stores never share a key).
+        let salt2 = generate_salt();
+        assert_ne!(key("pw", &salt).as_bytes(), key("pw", &salt2).as_bytes());
+        // Different password => different key.
+        assert_ne!(key("pw", &salt).as_bytes(), key("pw2", &salt).as_bytes());
+    }
+
+    #[test]
+    fn fresh_nonces_differ() {
+        // Nonce reuse under a fixed AES-GCM key is catastrophic; each encrypt must draw
+        // a fresh one.
+        let salt = generate_salt();
+        let k = key("pw", &salt);
+        let (_, n1) = encrypt_data(b"x", &k).unwrap();
+        let (_, n2) = encrypt_data(b"x", &k).unwrap();
+        assert_ne!(n1, n2);
+    }
+}

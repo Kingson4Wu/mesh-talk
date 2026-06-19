@@ -137,4 +137,65 @@ mod tests {
             Err(FileError::ChecksumMismatch)
         ));
     }
+
+    /// Build a file whose chunks have DISTINCT content (so reordering changes the bytes):
+    /// chunk0 = all 0s, chunk1 = all 1s, chunk2 = a short all-2s tail.
+    fn distinct_three_chunk() -> Vec<u8> {
+        let mut data = vec![0u8; CHUNK_SIZE];
+        data.extend(std::iter::repeat(1u8).take(CHUNK_SIZE));
+        data.extend(std::iter::repeat(2u8).take(5));
+        data
+    }
+
+    #[test]
+    fn reordered_chunks_are_rejected() {
+        let (m, chunks) = seal_file(&distinct_three_chunk());
+        assert_eq!(m.chunk_count, 3);
+        let reordered = vec![chunks[1].clone(), chunks[0].clone(), chunks[2].clone()];
+        // Every chunk still opens, but concatenation order is wrong → checksum rejects.
+        assert!(matches!(
+            reassemble_and_verify(&m, &reordered),
+            Err(FileError::ChecksumMismatch)
+        ));
+    }
+
+    #[test]
+    fn duplicated_chunk_is_rejected() {
+        let (m, chunks) = seal_file(&distinct_three_chunk());
+        // Same count, but c0 twice instead of c0,c1 → wrong bytes → checksum rejects.
+        let dup = vec![chunks[0].clone(), chunks[0].clone(), chunks[2].clone()];
+        assert!(reassemble_and_verify(&m, &dup).is_err());
+    }
+
+    #[test]
+    fn a_missing_chunk_is_rejected_at_the_crypto_layer() {
+        let (m, chunks) = seal_file(&distinct_three_chunk()); // 3 chunks
+                                                              // The crypto layer doesn't check count (the node layer does) — undersupply must
+                                                              // still fail the whole-file checksum rather than silently return partial data.
+        let short = vec![chunks[0].clone(), chunks[1].clone()];
+        assert!(matches!(
+            reassemble_and_verify(&m, &short),
+            Err(FileError::ChecksumMismatch)
+        ));
+    }
+
+    #[test]
+    fn a_wrong_file_key_fails_to_open() {
+        let (mut m, chunks) = seal_file(b"important data");
+        m.file_key[0] ^= 0xFF; // wrong key → first chunk fails AEAD, not a checksum miss
+        assert!(matches!(
+            reassemble_and_verify(&m, &chunks),
+            Err(FileError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn each_sealed_chunk_uses_a_fresh_nonce() {
+        // Nonce reuse under a fixed key is catastrophic for AES-GCM; sealing identical
+        // plaintext twice must yield different ciphertext (a fresh random nonce).
+        let key = FileKey::generate();
+        let a = seal_chunk(&key, b"same bytes").unwrap();
+        let b = seal_chunk(&key, b"same bytes").unwrap();
+        assert_ne!(a, b);
+    }
 }

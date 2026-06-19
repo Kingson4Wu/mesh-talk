@@ -18,5 +18,11 @@ per-phase implementation plans: **`docs/superpowers/specs/`** and
 ## Known follow-ups (not blocking)
 - Device linking has no SAS/key-pinning (LAN MITM window); backfill history travels as
   plaintext over the Noise channel.
+- **Sync `have` id-set is not frame-bounded** (`eventlog/sync.rs`): the 3-message
+  reconciliation sends each side's full event-id set in one frame. A single conversation
+  past ~2040 events (32 B/id vs `MAX_PLAINTEXT` 65519) overflows the frame →
+  `PlaintextTooLarge` → that conversation can no longer sync. Only the *events* are
+  budgeted today, not the `have` set. Needs a protocol change (chunk/page the id-set, or
+  range/IBLT reconciliation) — a focused design, not a hasty patch.
 - A `glib 0.20` bump is gated on tauri's gtk stack (auto-watched by
   `.github/workflows/glib-0.20-watch.yml`).
