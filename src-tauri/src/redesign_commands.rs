@@ -31,6 +31,9 @@ pub struct PeerInfo {
     pub name: String,
     pub addr: String,
     pub post_office: bool,
+    /// The account this device belongs to (devices sharing it are one user's). The
+    /// UI keys conversations by this so a multi-device contact is one conversation.
+    pub account_id: Option<String>,
 }
 
 /// One merged history line (sent or received) for display.
@@ -82,6 +85,7 @@ pub async fn redesign_list_peers(
             name: p.name,
             addr: p.addr.to_string(),
             post_office: p.post_office,
+            account_id: p.account_id,
         })
         .collect())
 }

@@ -424,7 +424,11 @@ async function loadHistory() {
   if (!target) return;
   error.value = "";
   try {
-    const items = await API.redesign.history(target.user_id, 100);
+    // Account-addressed when the peer advertises an account (so a contact's several
+    // devices are one merged conversation); legacy device DM otherwise.
+    const items = target.account_id
+      ? await API.redesign.accountHistory(target.account_id, 100)
+      : await API.redesign.history(target.user_id, 100);
     // Bail if the user switched peers while this history was loading, so we
     // never render one peer's history under another's header.
     if (activePeer.value?.user_id !== target.user_id) return;
@@ -434,6 +438,12 @@ async function loadHistory() {
   } catch (e) {
     error.value = String(e);
   }
+}
+
+/// The account a known device belongs to (for routing inbound events), or null.
+function accountOf(deviceUid) {
+  const p = peers.value.find((x) => x.user_id === deviceUid);
+  return p?.account_id || null;
 }
 
 async function selectChannel(c) {
@@ -469,6 +479,9 @@ async function send() {
   try {
     if (activeChannel.value) {
       await API.redesign.sendChannelMessage(activeChannel.value.channel_id, text, replyTo);
+    } else if (activePeer.value.account_id) {
+      // Account-addressed: fans out to the contact's devices + self-syncs to ours.
+      await API.redesign.sendToAccount(activePeer.value.account_id, text, replyTo);
     } else {
       await API.redesign.sendDm(activePeer.value.user_id, text, replyTo);
     }
@@ -484,16 +497,30 @@ async function send() {
 
 function onInbound(payload) {
   const from = payload.from;
-  if (activePeer.value && from === activePeer.value.user_id) {
-    messages.value.push({
-      from_me: false,
-      who: payload.from_name,
-      text: payload.text,
-      reply_to: payload.reply_to ?? null,
-      wall_clock: Date.now(),
-    });
-    void scrollDown();
-    void loadReactions();
+  const active = activePeer.value;
+  const fromAccount = accountOf(from);
+  // The inbound belongs to the open conversation if it shares the active account
+  // (multi-device) or, lacking accounts, is the same device.
+  const matchesActive =
+    active &&
+    ((active.account_id && fromAccount && active.account_id === fromAccount) ||
+      from === active.user_id);
+  if (matchesActive) {
+    if (active.account_id) {
+      // Account conversation: reload from the authoritative merged account history
+      // (the message was recorded before this event fired).
+      void loadHistory();
+    } else {
+      messages.value.push({
+        from_me: false,
+        who: payload.from_name,
+        text: payload.text,
+        reply_to: payload.reply_to ?? null,
+        wall_clock: Date.now(),
+      });
+      void scrollDown();
+      void loadReactions();
+    }
   } else if (from) {
     unread[from] = (unread[from] || 0) + 1;
   }
