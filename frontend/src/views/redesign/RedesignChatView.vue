@@ -673,8 +673,12 @@ async function doLink() {
   linkMsg.value = "";
   try {
     const adopted = await API.redesign.linkDevice(joinPeer.value.trim(), joinCode.value.trim());
-    linkMsg.value = `Linked! Adopted account ${adopted.slice(0, 8)}… — restart the app to use it.`;
+    // Adopt the linked account live (restarts the node under the shared account) —
+    // no app restart needed.
+    await API.redesign.adoptLinkedAccount();
+    accountId.value = adopted;
     joinCode.value = "";
+    linkMsg.value = `Linked! Your devices now share account ${adopted.slice(0, 8)}… (reconnecting…)`;
   } catch (e) {
     linkMsg.value = `Link failed: ${e}`;
   }

@@ -231,6 +231,12 @@ impl RedesignRuntime {
         self.node.account_history(peer_account_id, limit)
     }
 
+    /// The session password held for re-encrypting the keystore — used only to
+    /// re-spawn the runtime when adopting a freshly-linked account (no re-login).
+    pub(crate) fn restart_password(&self) -> &str {
+        &self.password
+    }
+
     /// Enter "link a device" mode; returns the one-time code to display.
     pub fn start_linking(&self) -> String {
         self.node.start_linking()

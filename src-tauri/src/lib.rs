@@ -206,6 +206,7 @@ pub fn run_tauri() {
             commands::send_message,
             commands::get_node_info,
             commands::login,
+            commands::redesign_adopt_linked_account,
             commands::start_network,
             commands::stop_network,
             commands::connect_to_node,

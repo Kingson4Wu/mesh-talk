@@ -122,6 +122,7 @@ const redesignAPI = {
   startLinking: () => invoke("redesign_start_linking"),
   stopLinking: () => invoke("redesign_stop_linking"),
   linkDevice: (peer, code) => invoke("redesign_link_device", { peer, code }),
+  adoptLinkedAccount: () => invoke("redesign_adopt_linked_account"),
 };
 
 // Combined API service
