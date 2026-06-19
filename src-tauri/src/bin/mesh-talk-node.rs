@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sent_path = data_dir.join("sent.log");
     let node = Node::open_with_account(
         identity,
-        account.account_id(),
+        account,
         Arc::clone(&roster),
         incoming_tx,
         channel_tx,

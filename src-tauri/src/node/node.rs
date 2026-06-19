@@ -15,6 +15,7 @@ use crate::eventlog::LogError;
 use crate::file::{
     file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
 };
+use crate::identity::account::Account;
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::channel_senders::ChannelSenderStore;
@@ -23,12 +24,13 @@ use crate::node::dm_envelope::DmEnvelope;
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
+use crate::node::pairing::{PairingCode, PairingRequest, PairingResponse};
 use crate::node::postbox::elected_post_office;
 use crate::node::ratchet_sessions::RatchetSessions;
 use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
 use crate::node::received_log::ReceivedLog;
 use crate::node::sentlog::SentLog;
-use crate::node::session::{request_round, serve_one, Served, SessionError};
+use crate::node::session::{request_round, serve_one, serve_wire_bytes, Served, SessionError};
 use crate::node::transport::{accept, dial};
 use crate::transport::SecureChannel;
 use std::collections::HashSet;
@@ -51,6 +53,13 @@ pub struct ReceivedDm {
     pub from_name: String,
     pub text: Vec<u8>,
     pub reply_to: Option<EventId>,
+}
+
+/// Account material a device receives when it links to an existing device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedAccount {
+    pub secret: [u8; 32],
+    pub account_id: String,
 }
 
 /// A channel summary for listing in the UI.
@@ -124,10 +133,14 @@ impl std::error::Error for NodeError {}
 /// received DMs. Construct with [`Node::open`]; share as `Arc<Node>`.
 pub struct Node {
     identity: DeviceIdentity,
-    /// This node's cryptographic account id (cross-device handle). Defaults to the
-    /// device's own user-id when opened via [`Node::open`]; the real per-account id is
-    /// injected by [`Node::open_with_account`]. Account-addressed sends route by this.
-    account_id: String,
+    /// This node's cryptographic account (cross-device handle). A per-device account
+    /// derived from the device key when opened via [`Node::open`]; the real shared
+    /// account is injected by [`Node::open_with_account`]. Holds the secret so this
+    /// device can serve a pairing request (transfer the account to a new device).
+    account: Account,
+    /// One-time pairing code while in "link a device" mode (linker side). Set by
+    /// [`Node::start_linking`], cleared on success or [`Node::stop_linking`].
+    pending_link: Mutex<Option<PairingCode>>,
     log: Mutex<PersistentEventLog>,
     sentlog: Mutex<SentLog>,
     roster: Arc<Mutex<Roster>>,
@@ -168,10 +181,12 @@ impl Node {
         sent_path: &Path,
         password: &str,
     ) -> Result<Arc<Self>, LogError> {
-        let account_id = identity.public().user_id();
+        // Default: a deterministic per-device account derived from the device key, so
+        // each unlinked device is its own stable account until it links (Plan 4).
+        let account = Account::from_secret_bytes(identity.secret_bytes().0);
         Self::open_with_account(
             identity,
-            account_id,
+            account,
             roster,
             incoming,
             channel_incoming,
@@ -182,13 +197,13 @@ impl Node {
         )
     }
 
-    /// Open a node bound to an explicit cryptographic `account_id` (the cross-device
+    /// Open a node bound to an explicit cryptographic `account` (the cross-device
     /// handle). Used by the real app/CLI, which load the account from its keystore;
-    /// most tests use [`Node::open`], which defaults the account to the device user-id.
+    /// most tests use [`Node::open`], which defaults the account to the device key.
     #[allow(clippy::too_many_arguments)]
     pub fn open_with_account(
         identity: DeviceIdentity,
-        account_id: String,
+        account: Account,
         roster: Arc<Mutex<Roster>>,
         incoming: mpsc::UnboundedSender<ReceivedDm>,
         channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
@@ -260,7 +275,8 @@ impl Node {
         }
         Ok(Arc::new(Self {
             identity,
-            account_id,
+            account,
+            pending_link: Mutex::new(None),
             log: Mutex::new(log),
             sentlog: Mutex::new(sentlog),
             roster,
@@ -283,8 +299,8 @@ impl Node {
     }
 
     /// This node's cryptographic account id (cross-device handle).
-    pub fn account_id(&self) -> &str {
-        &self.account_id
+    pub fn account_id(&self) -> String {
+        self.account.account_id()
     }
 
     /// Summaries of all channels this node is a member of.
@@ -407,7 +423,7 @@ impl Node {
         text: &[u8],
         reply_to: Option<EventId>,
     ) -> Result<(), NodeError> {
-        let my_account = self.account_id.clone();
+        let my_account = self.account.account_id();
         let inner = MessageBody::new(text.to_vec(), reply_to).encode();
         let envelope = DmEnvelope::new(
             my_account.clone(),
@@ -478,6 +494,97 @@ impl Node {
         self.emit_new_messages(conv);
     }
 
+    /// Enter "link a device" mode: generate a one-time code to display. The next valid
+    /// pairing request from a device proving this code is served the account secret.
+    pub fn start_linking(&self) -> String {
+        let code = PairingCode::generate();
+        let hex = code.as_hex();
+        *self.pending_link.lock().expect("pending_link mutex") = Some(code);
+        hex
+    }
+
+    /// Leave linking mode (clear any pending code).
+    pub fn stop_linking(&self) {
+        *self.pending_link.lock().expect("pending_link mutex") = None;
+    }
+
+    /// Joiner side: dial `addr` (the linker, pinned to `peer_public`), prove `code_hex`,
+    /// and receive the account secret + a certificate for this device.
+    pub async fn link_to_device(
+        &self,
+        addr: std::net::SocketAddr,
+        peer_public: &PublicIdentity,
+        code_hex: &str,
+    ) -> Result<LinkedAccount, NodeError> {
+        let code = PairingCode::from_hex(code_hex)
+            .ok_or_else(|| NodeError::Channel("invalid pairing code".into()))?;
+        let mut channel = dial(addr, &self.identity, Some(peer_public))
+            .await
+            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+        let tag = code.authenticator(
+            &peer_public.ed25519_pub,
+            &self.identity.public().ed25519_pub,
+        );
+        let req = PairingRequest {
+            joiner: self.identity.public(),
+            tag,
+        };
+        channel
+            .send(&req.encode())
+            .await
+            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+        let resp_bytes = channel
+            .recv()
+            .await
+            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+        let resp = PairingResponse::decode(&resp_bytes)
+            .ok_or_else(|| NodeError::Channel("pairing rejected".into()))?;
+        // Verify the returned cert really binds THIS device to THAT account.
+        if !resp.cert.verify()
+            || resp.cert.device_ed25519_pub != self.identity.public().ed25519_pub
+            || resp.cert.account_ed25519_pub != resp.account_ed25519_pub
+        {
+            return Err(NodeError::Channel("pairing cert invalid".into()));
+        }
+        let account = Account::from_secret_bytes(resp.account_secret);
+        Ok(LinkedAccount {
+            secret: resp.account_secret,
+            account_id: account.account_id(),
+        })
+    }
+
+    /// Linker side: handle a pairing request on an inbound (authenticated) channel.
+    /// Releases the account secret only if a code is pending AND the request both
+    /// proves it and binds the authenticated channel peer. Clears the code on success.
+    async fn serve_pairing(&self, channel: &mut SecureChannel<TcpStream>, req: PairingRequest) {
+        // Bind the proof to the Noise-authenticated peer.
+        if req.joiner.ed25519_pub != channel.peer_identity().ed25519_pub {
+            return;
+        }
+        let code = {
+            self.pending_link
+                .lock()
+                .expect("pending_link mutex")
+                .clone()
+        };
+        let Some(code) = code else {
+            return;
+        };
+        let my_ed = self.identity.public().ed25519_pub;
+        if !code.verify(&my_ed, &req.joiner.ed25519_pub, &req.tag) {
+            return;
+        }
+        let cert = self.account.certify(&req.joiner.ed25519_pub);
+        let resp = PairingResponse {
+            account_secret: self.account.secret_bytes(),
+            account_ed25519_pub: self.account.public().ed25519_pub,
+            cert,
+        };
+        if channel.send(&resp.encode()).await.is_ok() {
+            self.stop_linking(); // single-use
+        }
+    }
+
     /// Dial `peer` directly and run one sync round for `conv`. Best-effort: the
     /// peer may be offline, in which case the dial fails.
     async fn deliver_direct(
@@ -531,8 +638,26 @@ impl Node {
     }
 
     /// Serve one authenticated inbound connection: handle sync rounds and surface
-    /// any newly-received DMs, until the peer disconnects.
+    /// any newly-received DMs, until the peer disconnects. The first frame is peeked:
+    /// a device-pairing request gets the linking handler; anything else is a sync wire
+    /// and is served normally (then the loop continues).
     pub async fn serve_connection(&self, mut channel: SecureChannel<TcpStream>) {
+        let first = match channel.recv().await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        if let Some(req) = PairingRequest::decode(&first) {
+            self.serve_pairing(&mut channel, req).await;
+            return;
+        }
+        match serve_wire_bytes(&mut channel, &self.log, &first).await {
+            Ok(Served::Handled(conv)) => {
+                self.emit_new_messages(conv);
+                self.process_channel(conv);
+                self.process_file_events(conv);
+            }
+            _ => return,
+        }
         while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
             self.emit_new_messages(conv);
             self.process_channel(conv);
@@ -1176,7 +1301,8 @@ impl Node {
     /// we received and filed under it. `from_me` is derived from the recorded sender
     /// account, so self-synced copies of our own sends show as ours.
     pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
-        let conv = account_conversation_id(&self.account_id, peer_account_id);
+        let my_account = self.account.account_id();
+        let conv = account_conversation_id(&my_account, peer_account_id);
         let mut entries: Vec<HistoryEntry> = Vec::new();
 
         for sent in self
@@ -1203,7 +1329,7 @@ impl Node {
             .entries(&conv)
         {
             let body = MessageBody::decode(&rcv.plaintext);
-            let from_me = rcv.from == self.account_id;
+            let from_me = rcv.from == my_account;
             entries.push(HistoryEntry {
                 id: rcv.event_id,
                 from_me,
@@ -1523,12 +1649,13 @@ impl Node {
             // id/name — it is just a "something changed" poke; display reads history.
             let (record_conv, record_from, inner_body) = match DmEnvelope::decode(&wrapped) {
                 Some(env) => {
-                    let counterparty = if env.route.sender_account == self.account_id {
+                    let my_account = self.account.account_id();
+                    let counterparty = if env.route.sender_account == my_account {
                         env.route.recipient_account.clone() // self-synced copy of our own send
                     } else {
                         env.route.sender_account.clone()
                     };
-                    let acct_conv = account_conversation_id(&self.account_id, &counterparty);
+                    let acct_conv = account_conversation_id(&my_account, &counterparty);
                     (acct_conv, env.route.sender_account.clone(), env.body)
                 }
                 None => (conv, author_uid.clone(), wrapped.clone()),
@@ -3382,7 +3509,7 @@ mod tests {
 
         let alice_node = Node::open_with_account(
             alice,
-            alice_acct.account_id(),
+            Account::from_secret_bytes(alice_acct.secret_bytes()),
             alice_roster,
             a_dm,
             a_ch,
@@ -3394,7 +3521,7 @@ mod tests {
         .unwrap();
         let bob_node = Node::open_with_account(
             bob,
-            bob_acct.account_id(),
+            Account::from_secret_bytes(bob_acct.secret_bytes()),
             bob_roster,
             b_dm,
             b_ch,
@@ -3488,7 +3615,7 @@ mod tests {
 
         let a1_node = Node::open_with_account(
             a1,
-            alice_acct.account_id(),
+            Account::from_secret_bytes(alice_acct.secret_bytes()),
             a1_roster,
             a1_dm,
             a1_ch,
@@ -3500,7 +3627,7 @@ mod tests {
         .unwrap();
         let a2_node = Node::open_with_account(
             a2,
-            alice_acct.account_id(),
+            Account::from_secret_bytes(alice_acct.secret_bytes()),
             a2_roster,
             a2_dm,
             a2_ch,
@@ -3512,7 +3639,7 @@ mod tests {
         .unwrap();
         let bob_node = Node::open_with_account(
             bob,
-            bob_acct.account_id(),
+            Account::from_secret_bytes(bob_acct.secret_bytes()),
             bob_roster,
             b_dm,
             b_ch,
@@ -3557,5 +3684,119 @@ mod tests {
         assert_eq!(b_hist.len(), 1);
         assert!(!b_hist[0].from_me);
         assert_eq!(b_hist[0].text, b"to bob");
+    }
+
+    #[tokio::test]
+    async fn linking_transfers_the_account_secret_with_a_valid_code() {
+        use crate::identity::account::Account;
+        let linker_id = DeviceIdentity::generate();
+        let linker_account = Account::generate();
+        let joiner_id = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let linker_addr = listener.local_addr().unwrap();
+
+        let (d, _dr) = mpsc::unbounded_channel();
+        let (c, _cr) = mpsc::unbounded_channel();
+        let (f, _fr) = mpsc::unbounded_channel();
+        let linker_public = linker_id.public();
+        let linker = Node::open_with_account(
+            linker_id,
+            Account::from_secret_bytes(linker_account.secret_bytes()),
+            Arc::new(Mutex::new(Roster::default())),
+            d,
+            c,
+            f,
+            &dir.path().join("l.log"),
+            &dir.path().join("l-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        let (d2, _d2r) = mpsc::unbounded_channel();
+        let (c2, _c2r) = mpsc::unbounded_channel();
+        let (f2, _f2r) = mpsc::unbounded_channel();
+        let joiner = Node::open_with_account(
+            joiner_id,
+            Account::generate(), // its own throwaway account before linking
+            Arc::new(Mutex::new(Roster::default())),
+            d2,
+            c2,
+            f2,
+            &dir.path().join("j.log"),
+            &dir.path().join("j-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        let code = linker.start_linking();
+        tokio::spawn(Arc::clone(&linker).run_accept_loop(listener));
+
+        let linked = joiner
+            .link_to_device(linker_addr, &linker_public, &code)
+            .await
+            .expect("linking succeeds");
+        assert_eq!(linked.secret, linker_account.secret_bytes());
+        assert_eq!(linked.account_id, linker_account.account_id());
+        // Code is single-use: a second attempt is refused.
+        let again = joiner
+            .link_to_device(linker_addr, &linker_public, &code)
+            .await;
+        assert!(again.is_err(), "code consumed after first successful link");
+    }
+
+    #[tokio::test]
+    async fn linking_with_a_wrong_code_is_refused() {
+        use crate::identity::account::Account;
+        use crate::node::pairing::PairingCode;
+        let linker_id = DeviceIdentity::generate();
+        let joiner_id = DeviceIdentity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let linker_addr = listener.local_addr().unwrap();
+        let linker_public = linker_id.public();
+
+        let (d, _dr) = mpsc::unbounded_channel();
+        let (c, _cr) = mpsc::unbounded_channel();
+        let (f, _fr) = mpsc::unbounded_channel();
+        let linker = Node::open_with_account(
+            linker_id,
+            Account::generate(),
+            Arc::new(Mutex::new(Roster::default())),
+            d,
+            c,
+            f,
+            &dir.path().join("l.log"),
+            &dir.path().join("l-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let (d2, _d2r) = mpsc::unbounded_channel();
+        let (c2, _c2r) = mpsc::unbounded_channel();
+        let (f2, _f2r) = mpsc::unbounded_channel();
+        let joiner = Node::open_with_account(
+            joiner_id,
+            Account::generate(),
+            Arc::new(Mutex::new(Roster::default())),
+            d2,
+            c2,
+            f2,
+            &dir.path().join("j.log"),
+            &dir.path().join("j-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        let _real = linker.start_linking();
+        tokio::spawn(Arc::clone(&linker).run_accept_loop(listener));
+        let wrong = PairingCode::generate().as_hex();
+        let res = joiner
+            .link_to_device(linker_addr, &linker_public, &wrong)
+            .await;
+        assert!(
+            res.is_err(),
+            "a wrong code must not yield the account secret"
+        );
     }
 }

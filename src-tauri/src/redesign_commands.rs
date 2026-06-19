@@ -188,6 +188,67 @@ pub async fn redesign_account_history(
         .collect())
 }
 
+#[tauri::command]
+pub async fn redesign_start_linking(
+    state: tauri::State<'_, RedesignState>,
+) -> Result<String, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt.start_linking())
+}
+
+#[tauri::command]
+pub async fn redesign_stop_linking(state: tauri::State<'_, RedesignState>) -> Result<(), String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    rt.stop_linking();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn redesign_link_device(
+    state: tauri::State<'_, RedesignState>,
+    peer: String,
+    code: String,
+) -> Result<String, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    rt.link_device(&peer, &code)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// An account (group of devices) as shown in the redesign UI.
+#[derive(Serialize)]
+pub struct AccountInfo {
+    pub account_id: String,
+    pub device_count: usize,
+    pub names: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn redesign_list_accounts(
+    state: tauri::State<'_, RedesignState>,
+) -> Result<Vec<AccountInfo>, String> {
+    use std::collections::BTreeMap;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let mut by_account: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in rt.peers() {
+        if let Some(acct) = p.account_id {
+            by_account.entry(acct).or_default().push(p.name);
+        }
+    }
+    Ok(by_account
+        .into_iter()
+        .map(|(account_id, names)| AccountInfo {
+            device_count: names.len(),
+            names,
+            account_id,
+        })
+        .collect())
+}
+
 /// A channel as shown in the redesign UI.
 #[derive(Serialize)]
 pub struct ChannelInfo {

@@ -60,6 +60,11 @@ pub struct RedesignRuntime {
     roster: Arc<Mutex<Roster>>,
     user_id: String,
     account_id: String,
+    /// Where the account keystore lives, so a successful device link can persist the
+    /// adopted account secret (effective on next login).
+    account_path: std::path::PathBuf,
+    /// The session password, to re-encrypt the keystore when adopting a linked account.
+    password: String,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -109,7 +114,7 @@ impl RedesignRuntime {
             mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
         let node = Node::open_with_account(
             identity,
-            account.account_id(),
+            account,
             Arc::clone(&roster),
             incoming_tx,
             channel_tx,
@@ -165,6 +170,8 @@ impl RedesignRuntime {
             roster,
             user_id: self_uid,
             account_id,
+            account_path: dir.join("account.keystore"),
+            password: password.to_string(),
             tasks,
         })
     }
@@ -222,6 +229,37 @@ impl RedesignRuntime {
     /// Account-level conversation history with `peer_account_id`.
     pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
         self.node.account_history(peer_account_id, limit)
+    }
+
+    /// Enter "link a device" mode; returns the one-time code to display.
+    pub fn start_linking(&self) -> String {
+        self.node.start_linking()
+    }
+
+    /// Leave "link a device" mode.
+    pub fn stop_linking(&self) {
+        self.node.stop_linking()
+    }
+
+    /// Link THIS device to an existing device `peer_user_id` using `code`. On success
+    /// persists the adopted account secret to disk (effective next login) and returns
+    /// the adopted account id.
+    pub async fn link_device(&self, peer_user_id: &str, code: &str) -> Result<String, NodeError> {
+        let peer = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .get(peer_user_id)
+                .cloned()
+                .ok_or_else(|| NodeError::UnknownPeer(peer_user_id.to_string()))?
+        };
+        let linked = self
+            .node
+            .link_to_device(peer.addr, &peer.public, code)
+            .await?;
+        let account = crate::identity::account::Account::from_secret_bytes(linked.secret);
+        crate::identity::account_keystore::save(&self.account_path, &self.password, &account)
+            .map_err(|e| NodeError::Channel(format!("persist linked account: {e}")))?;
+        Ok(linked.account_id)
     }
 
     /// Create a channel; returns its conversation id.
