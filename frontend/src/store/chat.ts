@@ -34,6 +34,13 @@ export interface ChatMessage {
   file?: { name: string; size: number; fileConv: string } | null;
 }
 
+export interface IncomingFile {
+  fromName: string;
+  name: string;
+  size: number;
+  fileConv: string;
+}
+
 export const convKey = (c: Conversation) => `${c.kind}:${c.id}`;
 
 function fromHistory(h: HistoryItem): ChatMessage {
@@ -87,9 +94,11 @@ interface ChatState {
   reactions: Record<string, ReactionInfo[]>;
   unread: Record<string, number>;
   members: ChannelMemberInfo[];
+  incomingFiles: IncomingFile[];
   loading: boolean;
 
   start: () => () => void;
+  dismissFile: (fileConv: string) => void;
   refreshRoster: () => Promise<void>;
   open: (c: Conversation) => Promise<void>;
   reload: () => Promise<void>;
@@ -113,7 +122,13 @@ export const useChat = create<ChatState>((set, get) => ({
   reactions: {},
   unread: {},
   members: [],
+  incomingFiles: [],
   loading: false,
+
+  dismissFile: (fileConv) =>
+    set((s) => ({
+      incomingFiles: s.incomingFiles.filter((f) => f.fileConv !== fileConv),
+    })),
 
   start: () => {
     // Poll my_id until the node finishes opening (post-login KDF unlock takes a moment).
@@ -307,8 +322,19 @@ function get_handleChannel(set: Set, get: Get, e: ChannelMessageEvent) {
   void get().refreshRoster();
 }
 
-function get_handleFile(_set: Set, get: Get, _e: FileReceivedEvent) {
-  // A file event maps to the active conversation's log; simplest correct action is
-  // to reload if it's open (the FileManifest event is already in history).
-  if (get().active) void get().reload();
+function get_handleFile(set: Set, get: Get, e: FileReceivedEvent) {
+  // History carries no file metadata, so surface received files in a dedicated tray
+  // (Save via a native dialog). De-dupe by file_conv.
+  const peer = get().peers.find((p) => p.user_id === e.from);
+  const fromName = peer?.name || e.from;
+  set((s) =>
+    s.incomingFiles.some((f) => f.fileConv === e.file_conv)
+      ? {}
+      : {
+          incomingFiles: [
+            { fromName, name: e.name, size: e.size, fileConv: e.file_conv },
+            ...s.incomingFiles,
+          ],
+        },
+  );
 }

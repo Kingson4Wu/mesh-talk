@@ -5,6 +5,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortId } from "@/lib/format";
 import { CreateChannelDialog } from "./CreateChannelDialog";
+import { SearchDialog } from "./SearchDialog";
+import { FilesTray } from "./FilesTray";
+import { LinkDeviceDialog } from "./LinkDeviceDialog";
 import { useAuth } from "@/store/auth";
 import {
   convKey,
@@ -80,19 +83,27 @@ export function Sidebar() {
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r bg-card/40">
       {/* identity header */}
-      <div className="flex items-center gap-3 border-b px-4 py-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-          <MessagesSquare className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{username}</div>
-          <div className="truncate font-mono text-xs text-muted-foreground">
-            {ready ? `you · ${shortId(myId)}` : "starting…"}
+      <div className="border-b px-4 py-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <MessagesSquare className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold">{username}</div>
+            <div className="truncate font-mono text-xs text-muted-foreground">
+              {ready ? `you · ${shortId(myId)}` : "starting…"}
+            </div>
           </div>
         </div>
-        <Button variant="ghost" size="icon" title="Sign out" onClick={() => logout()}>
-          <LogOut className="h-4 w-4" />
-        </Button>
+        <div className="mt-2 flex items-center gap-0.5">
+          <SearchDialog />
+          <FilesTray />
+          <LinkDeviceDialog />
+          <div className="flex-1" />
+          <Button variant="ghost" size="icon" title="Sign out" onClick={() => logout()}>
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 pb-4">

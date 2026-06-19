@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Hash, MessagesSquare } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
@@ -28,6 +29,7 @@ function EmptyState() {
 export function ConversationView() {
   const active = useChat((s) => s.active);
   const send = useChat((s) => s.send);
+  const sendFile = useChat((s) => s.sendFile);
   const toggleReaction = useChat((s) => s.toggleReaction);
   const myId = useChat((s) => s.myId);
   const members = useChat((s) => s.members);
@@ -137,6 +139,10 @@ export function ConversationView() {
         mentionNames={mentionNames}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
+        onAttach={async () => {
+          const path = await openFileDialog({ multiple: false });
+          if (typeof path === "string") await sendFile(path);
+        }}
         onSend={(t) => {
           send(t, replyTo?.id ?? null);
           setReplyTo(null);
