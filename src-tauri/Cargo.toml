@@ -66,9 +66,5 @@ name = "mesh-talk"
 path = "src/main.rs"
 
 [[bin]]
-name = "mesh-talk-cli"
-path = "src/bin/mesh-talk-cli.rs"
-
-[[bin]]
 name = "mesh-talk-node"
 path = "src/bin/mesh-talk-node.rs"

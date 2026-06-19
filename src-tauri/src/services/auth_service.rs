@@ -1,6 +1,6 @@
-use crate::domain::models::User;
 use crate::identity::manager::IdentityManager;
 use crate::services::common::{Service, ServiceDependencies, ServiceHealth};
+use crate::services::user::User;
 use crate::storage::file_manager::FileManager;
 
 use base64::engine::general_purpose;
