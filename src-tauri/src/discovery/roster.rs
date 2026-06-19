@@ -17,6 +17,10 @@ pub struct PeerRecord {
     pub addr: SocketAddr,
     pub name: String,
     pub post_office: bool,
+    /// The account this device belongs to, from its verified cert (`None` if the
+    /// device advertised no account). Devices sharing an `account_id` are the same
+    /// user's devices.
+    pub account_id: Option<String>,
     pub last_seen: Instant,
 }
 
@@ -45,6 +49,7 @@ impl Roster {
                 addr: SocketAddr::new(source_ip, announce.tcp_port),
                 name: announce.name.clone(),
                 post_office: announce.post_office,
+                account_id: announce.account_id(),
                 last_seen: Instant::now(),
             },
         );
@@ -65,6 +70,17 @@ impl Roster {
             .values()
             .filter(|r| r.post_office)
             .cloned()
+            .collect()
+    }
+
+    /// The public identities of all known devices belonging to `account_id`.
+    /// Empty if none are currently known. This is how an account resolves to the
+    /// set of endpoints a message must fan out to.
+    pub fn devices_of_account(&self, account_id: &str) -> Vec<PublicIdentity> {
+        self.peers
+            .values()
+            .filter(|r| r.account_id.as_deref() == Some(account_id))
+            .map(|r| r.public.clone())
             .collect()
     }
 
@@ -184,5 +200,62 @@ mod tests {
         assert!(pos[0].post_office);
         // The normal peer's record carries the flag too (false).
         assert!(!roster.get(&alice.public().user_id()).unwrap().post_office);
+    }
+
+    #[test]
+    fn groups_two_devices_under_one_account() {
+        use crate::identity::account::Account;
+        let account = Account::generate();
+        let dev_a = DeviceIdentity::generate();
+        let dev_b = DeviceIdentity::generate();
+        let mut roster = Roster::default();
+        roster.update(
+            &Announce::new_with_account(&dev_a, &account, "A", 4000),
+            ip(),
+            "self",
+        );
+        roster.update(
+            &Announce::new_with_account(&dev_b, &account, "B", 4001),
+            ip(),
+            "self",
+        );
+
+        let devices = roster.devices_of_account(&account.account_id());
+        assert_eq!(devices.len(), 2);
+        assert!(devices.contains(&dev_a.public()));
+        assert!(devices.contains(&dev_b.public()));
+    }
+
+    #[test]
+    fn does_not_group_devices_of_a_different_account() {
+        use crate::identity::account::Account;
+        let mine = Account::generate();
+        let theirs = Account::generate();
+        let my_dev = DeviceIdentity::generate();
+        let their_dev = DeviceIdentity::generate();
+        let mut roster = Roster::default();
+        roster.update(
+            &Announce::new_with_account(&my_dev, &mine, "Mine", 4000),
+            ip(),
+            "self",
+        );
+        roster.update(
+            &Announce::new_with_account(&their_dev, &theirs, "Theirs", 4001),
+            ip(),
+            "self",
+        );
+
+        assert_eq!(roster.devices_of_account(&mine.account_id()).len(), 1);
+        assert_eq!(roster.devices_of_account(&theirs.account_id()).len(), 1);
+        assert!(roster.devices_of_account("unknown-account").is_empty());
+    }
+
+    #[test]
+    fn peer_without_account_is_not_grouped() {
+        let dev = DeviceIdentity::generate();
+        let mut roster = Roster::default();
+        roster.update(&Announce::new(&dev, "Solo", 4000), ip(), "self");
+        let rec = roster.get(&dev.public().user_id()).expect("recorded");
+        assert_eq!(rec.account_id, None);
     }
 }
