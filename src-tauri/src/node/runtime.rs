@@ -107,8 +107,9 @@ impl RedesignRuntime {
             mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
         let (file_tx, mut file_rx) =
             mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
-        let node = Node::open(
+        let node = Node::open_with_account(
             identity,
+            account.account_id(),
             Arc::clone(&roster),
             incoming_tx,
             channel_tx,

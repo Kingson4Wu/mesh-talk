@@ -123,6 +123,10 @@ impl std::error::Error for NodeError {}
 /// received DMs. Construct with [`Node::open`]; share as `Arc<Node>`.
 pub struct Node {
     identity: DeviceIdentity,
+    /// This node's cryptographic account id (cross-device handle). Defaults to the
+    /// device's own user-id when opened via [`Node::open`]; the real per-account id is
+    /// injected by [`Node::open_with_account`]. Account-addressed sends route by this.
+    account_id: String,
     log: Mutex<PersistentEventLog>,
     sentlog: Mutex<SentLog>,
     roster: Arc<Mutex<Roster>>,
@@ -155,6 +159,35 @@ impl Node {
     /// received after open are surfaced live.
     pub fn open(
         identity: DeviceIdentity,
+        roster: Arc<Mutex<Roster>>,
+        incoming: mpsc::UnboundedSender<ReceivedDm>,
+        channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
+        file_incoming: mpsc::UnboundedSender<ReceivedFile>,
+        log_path: &Path,
+        sent_path: &Path,
+        password: &str,
+    ) -> Result<Arc<Self>, LogError> {
+        let account_id = identity.public().user_id();
+        Self::open_with_account(
+            identity,
+            account_id,
+            roster,
+            incoming,
+            channel_incoming,
+            file_incoming,
+            log_path,
+            sent_path,
+            password,
+        )
+    }
+
+    /// Open a node bound to an explicit cryptographic `account_id` (the cross-device
+    /// handle). Used by the real app/CLI, which load the account from its keystore;
+    /// most tests use [`Node::open`], which defaults the account to the device user-id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_account(
+        identity: DeviceIdentity,
+        account_id: String,
         roster: Arc<Mutex<Roster>>,
         incoming: mpsc::UnboundedSender<ReceivedDm>,
         channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
@@ -226,6 +259,7 @@ impl Node {
         }
         Ok(Arc::new(Self {
             identity,
+            account_id,
             log: Mutex::new(log),
             sentlog: Mutex::new(sentlog),
             roster,
@@ -245,6 +279,11 @@ impl Node {
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> UserId {
         self.identity.public().user_id()
+    }
+
+    /// This node's cryptographic account id (cross-device handle).
+    pub fn account_id(&self) -> &str {
+        &self.account_id
     }
 
     /// Summaries of all channels this node is a member of.

@@ -122,8 +122,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
     let log_path = data_dir.join("messages.log");
     let sent_path = data_dir.join("sent.log");
-    let node = Node::open(
+    let node = Node::open_with_account(
         identity,
+        account.account_id(),
         Arc::clone(&roster),
         incoming_tx,
         channel_tx,
