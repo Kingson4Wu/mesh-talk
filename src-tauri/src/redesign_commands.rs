@@ -437,6 +437,24 @@ pub async fn redesign_send_file_dm(
 }
 
 #[tauri::command]
+pub async fn redesign_send_file_to_account(
+    state: tauri::State<'_, RedesignState>,
+    account: String,
+    path: String,
+) -> Result<String, String> {
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let id = node
+        .send_file_to_account(&account, std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hex::encode(id.as_bytes()))
+}
+
+#[tauri::command]
 pub async fn redesign_send_file_channel(
     state: tauri::State<'_, RedesignState>,
     channel_id: String,

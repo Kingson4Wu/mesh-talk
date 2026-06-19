@@ -627,6 +627,8 @@ async function attachFile() {
     let fileConv;
     if (activeChannel.value) {
       fileConv = await API.redesign.sendFileChannel(activeChannel.value.channel_id, path);
+    } else if (activePeer.value.account_id) {
+      fileConv = await API.redesign.sendFileToAccount(activePeer.value.account_id, path);
     } else {
       fileConv = await API.redesign.sendFileDm(activePeer.value.user_id, path);
     }
@@ -637,9 +639,15 @@ async function attachFile() {
 
 function onFileReceived(payload) {
   const card = { from_me: false, who: payload.from, file: { name: payload.name, size: payload.size, file_conv: payload.file_conv }, wall_clock: Date.now() };
+  const active = activePeer.value;
+  const fromAccount = accountOf(payload.from);
+  const peerMatches =
+    active &&
+    ((active.account_id && fromAccount && active.account_id === fromAccount) ||
+      payload.from === active.user_id);
   if (activeChannel.value && payload.conv === activeChannel.value.channel_id) {
     messages.value.push(card); void scrollDown();
-  } else if (activePeer.value && payload.from === activePeer.value.user_id) {
+  } else if (peerMatches) {
     messages.value.push(card); void scrollDown();
   }
   // else: a file for an inactive conversation — ignored in this MVP

@@ -1059,6 +1059,60 @@ impl Node {
         Ok(file_conv)
     }
 
+    /// Send a file to an ACCOUNT: stage it once (shared symmetric chunks), then seal
+    /// the manifest to every known device of `target_account_id` AND our own other
+    /// devices (self-sync), delivering the file + manifest to each. Mirrors
+    /// [`Node::send_to_account`] for files. Errors only if no device of the target
+    /// account is known.
+    pub async fn send_file_to_account(
+        &self,
+        target_account_id: &str,
+        path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        let (targets, own): (Vec<PeerRecord>, Vec<PeerRecord>) = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            let targets = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(target_account_id))
+                .collect();
+            let own = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(my_account.as_str()))
+                .filter(|p| p.public.user_id() != me)
+                .collect();
+            (targets, own)
+        };
+        if targets.is_empty() {
+            return Err(NodeError::UnknownPeer(target_account_id.to_string()));
+        }
+
+        let (manifest, file_conv) = self.stage_file(path)?;
+        let manifest_bytes = manifest.encode();
+        for peer in targets.iter().chain(own.iter()) {
+            let sealed =
+                match crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest_bytes) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+            let dm_conv = dm_conversation_id(&self.identity.public(), &peer.public);
+            if self
+                .append_event(dm_conv, EventKind::FileManifest, sealed)
+                .is_err()
+            {
+                continue;
+            }
+            self.deliver_direct(peer, file_conv).await.ok();
+            self.replicate_to_post_office(file_conv).await.ok();
+            self.deliver_direct(peer, dm_conv).await.ok();
+            self.replicate_to_post_office(dm_conv).await.ok();
+        }
+        Ok(file_conv)
+    }
+
     /// Send the file at `path` to a channel we hold the key for.
     pub async fn send_file_channel(
         &self,
@@ -3798,5 +3852,79 @@ mod tests {
             res.is_err(),
             "a wrong code must not yield the account secret"
         );
+    }
+
+    #[tokio::test]
+    async fn send_file_to_account_delivers_to_a_peer_account() {
+        use crate::identity::account::Account;
+        let alice = DeviceIdentity::generate();
+        let alice_acct = Account::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_acct = Account::generate();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        let alice_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(
+            &alice_roster,
+            &bob,
+            &bob_acct,
+            "Bob",
+            bob_addr.port(),
+            &alice_uid,
+        );
+        let bob_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(&bob_roster, &alice, &alice_acct, "Alice", 4000, &bob_uid);
+
+        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+        let (a_f, _a_f_r) = mpsc::unbounded_channel();
+        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+        let alice_node = Node::open_with_account(
+            alice,
+            Account::from_secret_bytes(alice_acct.secret_bytes()),
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open_with_account(
+            bob,
+            Account::from_secret_bytes(bob_acct.secret_bytes()),
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        let file = dir.path().join("hello.txt");
+        std::fs::write(&file, b"account file payload").unwrap();
+        alice_node
+            .send_file_to_account(&bob_acct.account_id(), &file)
+            .await
+            .unwrap();
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), b_f_r.recv())
+            .await
+            .expect("bob received the file within 5s")
+            .expect("file stream open");
+        assert_eq!(got.name, "hello.txt");
     }
 }

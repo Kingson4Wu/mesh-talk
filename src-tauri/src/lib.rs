@@ -239,6 +239,7 @@ pub fn run_tauri() {
             crate::redesign_commands::redesign_stop_linking,
             crate::redesign_commands::redesign_link_device,
             crate::redesign_commands::redesign_list_accounts,
+            crate::redesign_commands::redesign_send_file_to_account,
             crate::redesign_commands::redesign_list_channels,
             crate::redesign_commands::redesign_create_channel,
             crate::redesign_commands::redesign_add_channel_member,
