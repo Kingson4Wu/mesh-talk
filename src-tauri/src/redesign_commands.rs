@@ -136,6 +136,58 @@ pub async fn redesign_history(
         .collect())
 }
 
+#[tauri::command]
+pub async fn redesign_account_id(state: tauri::State<'_, RedesignState>) -> Result<String, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt.account_id().to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_send_to_account(
+    state: tauri::State<'_, RedesignState>,
+    account: String,
+    text: String,
+    reply_to: Option<String>,
+) -> Result<(), String> {
+    // Snapshot the node handle, then release the state lock before the .await send.
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let reply = match reply_to {
+        Some(h) => Some(parse_event_id(&h)?),
+        None => None,
+    };
+    node.send_to_account(&account, text.as_bytes(), reply)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_account_history(
+    state: tauri::State<'_, RedesignState>,
+    account: String,
+    limit: usize,
+) -> Result<Vec<HistoryItem>, String> {
+    let limit = limit.min(500);
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .account_history(&account, limit)
+        .into_iter()
+        .map(|h| HistoryItem {
+            id: hex::encode(h.id.as_bytes()),
+            from_me: h.from_me,
+            who: h.who,
+            text: String::from_utf8_lossy(&h.text).into_owned(),
+            wall_clock: h.wall_clock,
+            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
+        })
+        .collect())
+}
+
 /// A channel as shown in the redesign UI.
 #[derive(Serialize)]
 pub struct ChannelInfo {

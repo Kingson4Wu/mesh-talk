@@ -207,6 +207,23 @@ impl RedesignRuntime {
         self.node.dm_history(peer, limit)
     }
 
+    /// Send a DM addressed to an account (fan-out to its devices + self-sync to ours).
+    pub async fn send_to_account(
+        &self,
+        target_account_id: &str,
+        text: &[u8],
+        reply_to: Option<crate::eventlog::event::EventId>,
+    ) -> Result<(), NodeError> {
+        self.node
+            .send_to_account(target_account_id, text, reply_to)
+            .await
+    }
+
+    /// Account-level conversation history with `peer_account_id`.
+    pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
+        self.node.account_history(peer_account_id, limit)
+    }
+
     /// Create a channel; returns its conversation id.
     pub async fn create_channel(
         &self,
