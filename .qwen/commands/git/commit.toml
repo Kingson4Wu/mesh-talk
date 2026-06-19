@@ -36,15 +36,15 @@ Scope should identify the component or module affected by the commit:
 
 ## Examples
 ```
-feat(network): implement libp2p peer discovery
+feat(discovery): sign UDP announce and group devices by account
 
-- Add Kademlia DHT for peer discovery
-- Implement mDNS for local network discovery
-- Add peer address book for storing discovered peers
+- Add Ed25519 signature over the announce payload
+- Carry the device certificate and verify it against the account key
+- Group discovered devices by account in the roster
 ```
 
 ```
-fix(crypto): resolve session establishment failure
+fix(ratchet): resolve session establishment failure
 
 - Fix race condition in double ratchet initialization
 - Add proper error handling for key exchange failures

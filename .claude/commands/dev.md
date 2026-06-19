@@ -24,9 +24,9 @@ iteration; backend commands are stubbed/unavailable.
 Headless node, no GUI — best for exercising discovery/chat between two terminals:
 
 ```bash
-cargo run -p mesh-talk --bin mesh-talk-cli -- --name alice --port 9000
+cargo run --bin mesh-talk-node -- --name alice
 # second terminal:
-cargo run -p mesh-talk --bin mesh-talk-cli -- --name bob --port 9001
+cargo run --bin mesh-talk-node -- --name bob
 ```
 
 > Prefix cargo with `nice -n 10` (the repo's `.claude` hook enforces this) and
