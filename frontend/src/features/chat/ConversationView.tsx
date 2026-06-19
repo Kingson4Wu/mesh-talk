@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Hash, MessagesSquare } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
 import { shortId } from "@/lib/format";
+import { useAuth } from "@/store/auth";
 import { convKey, useChat, type ChatMessage } from "@/store/chat";
+import type { ReactionInfo } from "@/lib/types";
 
 function EmptyState() {
   return (
@@ -26,23 +28,49 @@ function EmptyState() {
 export function ConversationView() {
   const active = useChat((s) => s.active);
   const send = useChat((s) => s.send);
-  const messages = useChat((s) =>
-    active ? (s.messages[convKey(active)] ?? []) : [],
-  );
-  const loading = useChat((s) => s.loading);
+  const toggleReaction = useChat((s) => s.toggleReaction);
+  const myId = useChat((s) => s.myId);
   const members = useChat((s) => s.members);
+  const key = active ? convKey(active) : "";
+  const messages = useChat((s) => (active ? (s.messages[key] ?? []) : []));
+  const reactions = useChat((s) => (active ? (s.reactions[key] ?? []) : []));
+  const loading = useChat((s) => s.loading);
+  const myName = useAuth((s) => s.user?.username ?? "");
+
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  useEffect(() => setReplyTo(null), [key]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, active]);
+  }, [messages.length, key]);
 
   const byId = useMemo(() => {
     const m = new Map<string, ChatMessage>();
     for (const msg of messages) if (msg.id) m.set(msg.id, msg);
     return m;
   }, [messages]);
+
+  const reactionsByTarget = useMemo(() => {
+    const m = new Map<string, ReactionInfo[]>();
+    for (const r of reactions) {
+      const arr = m.get(r.target) ?? [];
+      arr.push(r);
+      m.set(r.target, arr);
+    }
+    return m;
+  }, [reactions]);
+
+  const mentionNames = useMemo(
+    () =>
+      active?.kind === "channel"
+        ? members.map((m) => m.name).filter(Boolean)
+        : active
+          ? [active.name]
+          : [],
+    [active, members],
+  );
 
   if (!active) {
     return (
@@ -56,7 +84,6 @@ export function ConversationView() {
 
   return (
     <main className="flex flex-1 flex-col">
-      {/* conversation header */}
       <header className="flex items-center gap-3 border-b px-5 py-3">
         {isChannel ? (
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -76,8 +103,7 @@ export function ConversationView() {
         {isChannel && <MembersDialog />}
       </header>
 
-      {/* messages */}
-      <div ref={scrollRef} className="flex-1 space-y-1 overflow-y-auto py-4">
+      <div ref={scrollRef} className="flex-1 space-y-0.5 overflow-y-auto py-4">
         {loading && messages.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">Loading…</p>
         )}
@@ -96,6 +122,11 @@ export function ConversationView() {
               m={m}
               parent={parent}
               showAuthor={showAuthor}
+              reactions={m.id ? (reactionsByTarget.get(m.id) ?? []) : []}
+              myId={myId}
+              myName={myName}
+              onReply={setReplyTo}
+              onReact={toggleReaction}
             />
           );
         })}
@@ -103,7 +134,13 @@ export function ConversationView() {
 
       <Composer
         placeholder={isChannel ? `Message #${active.name}` : `Message ${active.name}`}
-        onSend={(t) => send(t, null)}
+        mentionNames={mentionNames}
+        replyTo={replyTo}
+        onCancelReply={() => setReplyTo(null)}
+        onSend={(t) => {
+          send(t, replyTo?.id ?? null);
+          setReplyTo(null);
+        }}
       />
     </main>
   );
