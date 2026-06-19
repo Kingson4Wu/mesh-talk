@@ -6,10 +6,10 @@ broadcasts, connect directly over a Noise-encrypted TCP channel, and store messa
 an append-only, hash-linked **event log** that syncs CRDT-style. When a peer is offline,
 an elected **post office** node stores-and-forwards the (still-encrypted) events.
 
-> Status note: the repo currently contains **two stacks** — a newer *serverless/redesign*
-> stack (everything below) and an older *legacy* stack (RSA-contact / plaintext-UDP /
-> TCP-relay) reachable at the `/` route. The redesign stack at `/redesign` is the real,
-> feature-complete product. Legacy retirement is tracked separately.
+> The earlier RSA-contact / plaintext-UDP / TCP-relay *legacy* stack has been retired;
+> this serverless stack is the entire product and lives at `/`. The only retained
+> non-redesign piece is the auth/session layer (`services/auth_service.rs` + `state.rs`),
+> which `login` uses before starting the redesign node.
 
 ---
 
@@ -94,18 +94,17 @@ Vue 3 UI (RedesignChatView.vue) ──invoke()──▶ Tauri IPC (redesign_comm
 
 ## 5. Frontend (`frontend/`)
 
-Vue 3 + Pinia + Vue Router (hash). `src/services/api.js` wraps every `redesign_*` Tauri
-command (`redesignAPI`). `views/redesign/RedesignChatView.vue` is the 3-pane UI
-(peers/channels · messages · members) with @mentions, replies, reactions, files, search,
-and the link-a-device panel. (Legacy `views/chat/ChatView.vue` + most of
-`stores/appStore.js` drive the old `/` route.)
+Vue 3 + Pinia + Vue Router (hash). `src/services/api.js` exposes `authAPI` + `redesignAPI`
+(wrapping every `redesign_*` Tauri command). `views/redesign/RedesignChatView.vue` is the
+app (3-pane UI: peers/channels · messages · members) with @mentions, replies, reactions,
+files, search, and the link-a-device panel, served at `/`. `stores/appStore.js` is an
+auth/session-only store; `LoginView` is the only other view.
 
 ## 6. Binaries
 
-- `mesh-talk` (`main.rs` → `lib.rs::run_tauri`) — the desktop app (both stacks registered).
+- `mesh-talk` (`main.rs` → `lib.rs::run_tauri`) — the desktop app.
 - `mesh-talk-node` (`bin/mesh-talk-node.rs`) — headless redesign node CLI; `--post-office`
   runs relay mode.
-- `mesh-talk-cli` (`bin/mesh-talk-cli.rs`) — legacy CLI (broadcast chat over NodeService).
 
 ## 7. Build, test, CI
 
@@ -126,5 +125,4 @@ Standard primitives + consistent domain separation; AEAD everywhere; PBKDF2-600k
 Noise XX with identity binding; Double-Ratchet + sender-key forward secrecy with
 zeroize-on-drop; signed content-addressed log with fork detection; deterministic relay
 election. Known limitations: device linking has no key-pinning/SAS (LAN MITM window);
-backfill history travels as plaintext over Noise; the legacy stack uses weaker crypto and
-should be retired.
+backfill history travels as plaintext over Noise.
