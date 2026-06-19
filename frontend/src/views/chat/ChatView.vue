@@ -1,7 +1,7 @@
 <template>
-  <div class="redesign">
+  <div class="messenger">
     <header class="rd-header">
-      <h2>Redesign chat <span class="beta">beta</span></h2>
+      <h2>Chat</h2>
       <div class="me">
         you: <code>{{ myId || "(starting…)" }}</code>
         <span v-if="accountId" class="acct" title="Your account (shared across your devices)">acct: <code>{{ accountId.slice(0, 8) }}…</code></span>
@@ -352,11 +352,11 @@ let unlistenFile = null;
 async function loadReactions() {
   try {
     reactions.value = activeChannel.value
-      ? await API.redesign.channelReactions(activeChannel.value.channel_id)
+      ? await API.chat.channelReactions(activeChannel.value.channel_id)
       : activePeer.value
       ? activePeer.value.account_id
-        ? await API.redesign.accountReactions(activePeer.value.account_id)
-        : await API.redesign.reactions(activePeer.value.user_id)
+        ? await API.chat.accountReactions(activePeer.value.account_id)
+        : await API.chat.reactions(activePeer.value.user_id)
       : [];
   } catch (_e) { /* node may not be ready; ignore */ }
 }
@@ -376,9 +376,9 @@ async function toggleReaction(message, emoji) {
   const existing = reactions.value.find(r => r.target === message.id && r.emoji === emoji);
   const remove = !!(existing && iReacted(existing));
   try {
-    if (activeChannel.value) await API.redesign.reactChannel(activeChannel.value.channel_id, message.id, emoji, remove);
-    else if (activePeer.value.account_id) await API.redesign.reactAccount(activePeer.value.account_id, message.id, emoji, remove);
-    else await API.redesign.reactDm(activePeer.value.user_id, message.id, emoji, remove);
+    if (activeChannel.value) await API.chat.reactChannel(activeChannel.value.channel_id, message.id, emoji, remove);
+    else if (activePeer.value.account_id) await API.chat.reactAccount(activePeer.value.account_id, message.id, emoji, remove);
+    else await API.chat.reactDm(activePeer.value.user_id, message.id, emoji, remove);
     await loadReactions();
   } catch (e) { error.value = String(e); }
 }
@@ -387,7 +387,7 @@ async function runSearch() {
   const q = searchQuery.value.trim();
   if (!q) { searchResults.value = []; return; }
   searching.value = true;
-  try { searchResults.value = await API.redesign.search(q); }
+  try { searchResults.value = await API.chat.search(q); }
   catch (e) { error.value = String(e); }
   finally { searching.value = false; }
 }
@@ -405,7 +405,7 @@ async function openHit(hit) {
 
 async function refreshPeers() {
   try {
-    peers.value = await API.redesign.listPeers();
+    peers.value = await API.chat.listPeers();
   } catch (_e) {
     // node may still be starting; leave the list as-is
   }
@@ -413,7 +413,7 @@ async function refreshPeers() {
 
 async function refreshChannels() {
   try {
-    channels.value = await API.redesign.listChannels();
+    channels.value = await API.chat.listChannels();
   } catch (_e) {
     // node may still be starting; leave the list as-is
   }
@@ -434,8 +434,8 @@ async function loadHistory() {
     // Account-addressed when the peer advertises an account (so a contact's several
     // devices are one merged conversation); legacy device DM otherwise.
     const items = target.account_id
-      ? await API.redesign.accountHistory(target.account_id, 100)
-      : await API.redesign.history(target.user_id, 100);
+      ? await API.chat.accountHistory(target.account_id, 100)
+      : await API.chat.history(target.user_id, 100);
     // Bail if the user switched peers while this history was loading, so we
     // never render one peer's history under another's header.
     if (activePeer.value?.user_id !== target.user_id) return;
@@ -467,7 +467,7 @@ async function loadChannelHistory() {
   if (!target) return;
   error.value = "";
   try {
-    const items = await API.redesign.channelHistory(target.channel_id, 100);
+    const items = await API.chat.channelHistory(target.channel_id, 100);
     if (activeChannel.value?.channel_id !== target.channel_id) return;
     messages.value = items;
     await scrollDown();
@@ -485,12 +485,12 @@ async function send() {
   const replyTo = replyingTo.value?.id || null;
   try {
     if (activeChannel.value) {
-      await API.redesign.sendChannelMessage(activeChannel.value.channel_id, text, replyTo);
+      await API.chat.sendChannelMessage(activeChannel.value.channel_id, text, replyTo);
     } else if (activePeer.value.account_id) {
       // Account-addressed: fans out to the contact's devices + self-syncs to ours.
-      await API.redesign.sendToAccount(activePeer.value.account_id, text, replyTo);
+      await API.chat.sendToAccount(activePeer.value.account_id, text, replyTo);
     } else {
-      await API.redesign.sendDm(activePeer.value.user_id, text, replyTo);
+      await API.chat.sendDm(activePeer.value.user_id, text, replyTo);
     }
     // We get no inbound echo for our own message, so append optimistically.
     messages.value.push({ from_me: true, who: "you", text, reply_to: replyTo, wall_clock: Date.now() });
@@ -556,7 +556,7 @@ async function createChannel() {
   const name = newChannelName.value.trim();
   if (!name) return;
   try {
-    const id = await API.redesign.createChannel(name, ids);
+    const id = await API.chat.createChannel(name, ids);
     newChannelName.value = "";
     Object.keys(selectedMembers).forEach((k) => delete selectedMembers[k]);
     showCreate.value = false;
@@ -574,7 +574,7 @@ async function loadMembers() {
     return;
   }
   try {
-    channelMembers.value = await API.redesign.channelMembers(activeChannel.value.channel_id);
+    channelMembers.value = await API.chat.channelMembers(activeChannel.value.channel_id);
   } catch (_e) {
     // best-effort; leave the list as-is
   }
@@ -595,7 +595,7 @@ async function addMember(peer) {
   if (!activeChannel.value) return;
   error.value = "";
   try {
-    await API.redesign.addChannelMember(activeChannel.value.channel_id, peer.user_id);
+    await API.chat.addChannelMember(activeChannel.value.channel_id, peer.user_id);
     flashMemberNotice(`Added ${peer.name || peer.user_id.slice(0, 8)}`);
     await loadMembers();
     await refreshChannels();
@@ -608,7 +608,7 @@ async function removeMember(member) {
   if (!activeChannel.value) return;
   error.value = "";
   try {
-    await API.redesign.removeChannelMember(activeChannel.value.channel_id, member.user_id);
+    await API.chat.removeChannelMember(activeChannel.value.channel_id, member.user_id);
     flashMemberNotice(`Removed ${member.name || member.user_id.slice(0, 8)}`);
     await loadMembers();
     await refreshChannels();
@@ -633,11 +633,11 @@ async function attachFile() {
   try {
     let fileConv;
     if (activeChannel.value) {
-      fileConv = await API.redesign.sendFileChannel(activeChannel.value.channel_id, path);
+      fileConv = await API.chat.sendFileChannel(activeChannel.value.channel_id, path);
     } else if (activePeer.value.account_id) {
-      fileConv = await API.redesign.sendFileToAccount(activePeer.value.account_id, path);
+      fileConv = await API.chat.sendFileToAccount(activePeer.value.account_id, path);
     } else {
-      fileConv = await API.redesign.sendFileDm(activePeer.value.user_id, path);
+      fileConv = await API.chat.sendFileDm(activePeer.value.user_id, path);
     }
     messages.value.push({ from_me: true, who: "you", file: { name, size: null, file_conv: fileConv }, wall_clock: Date.now() });
     await scrollDown();
@@ -664,7 +664,7 @@ async function saveReceivedFile(file) {
   const dest = await saveDialog({ defaultPath: file.name });
   if (typeof dest !== "string" || !dest) return;
   error.value = "";
-  try { await API.redesign.saveFile(file.file_conv, dest); }
+  try { await API.chat.saveFile(file.file_conv, dest); }
   catch (e) { error.value = String(e); }
 }
 
@@ -678,7 +678,7 @@ async function scrollDown() {
 async function showLinkCode() {
   linkMsg.value = "";
   try {
-    linkCode.value = await API.redesign.startLinking();
+    linkCode.value = await API.chat.startLinking();
   } catch (e) {
     linkMsg.value = String(e);
   }
@@ -687,10 +687,10 @@ async function showLinkCode() {
 async function doLink() {
   linkMsg.value = "";
   try {
-    const adopted = await API.redesign.linkDevice(joinPeer.value.trim(), joinCode.value.trim());
+    const adopted = await API.chat.linkDevice(joinPeer.value.trim(), joinCode.value.trim());
     // Adopt the linked account live (restarts the node under the shared account) —
     // no app restart needed.
-    await API.redesign.adoptLinkedAccount();
+    await API.chat.adoptLinkedAccount();
     accountId.value = adopted;
     joinCode.value = "";
     linkMsg.value = `Linked! Your devices now share account ${adopted.slice(0, 8)}… (reconnecting…)`;
@@ -703,8 +703,8 @@ async function rekeyAccount() {
   if (!confirm("Re-key this account? You'll get a NEW identity; this device leaves the current account, and you must re-link any devices you still trust. Use this if a device was lost or compromised.")) return;
   linkMsg.value = "";
   try {
-    const fresh = await API.redesign.rekeyAccount();
-    await API.redesign.adoptLinkedAccount();
+    const fresh = await API.chat.rekeyAccount();
+    await API.chat.adoptLinkedAccount();
     accountId.value = fresh;
     linkMsg.value = `Re-keyed. New account ${fresh.slice(0, 8)}… (reconnecting…). Re-link your other devices to it.`;
   } catch (e) {
@@ -718,17 +718,17 @@ onMounted(async () => {
     return;
   }
   try {
-    myId.value = await API.redesign.myId();
-    accountId.value = await API.redesign.accountId();
+    myId.value = await API.chat.myId();
+    accountId.value = await API.chat.accountId();
   } catch (_e) {
-    error.value = "Redesign node not started yet — give it a moment after login.";
+    error.value = "Node not started yet — give it a moment after login.";
   }
   await refreshPeers();
   await refreshChannels();
   refreshTimer = setInterval(() => { refreshPeers(); refreshChannels(); loadReactions(); }, 3000);
-  unlisten = await listen("redesign-dm-received", (ev) => onInbound(ev.payload ?? {}));
-  unlistenChannel = await listen("redesign-channel-message", (ev) => onChannelInbound(ev.payload ?? {}));
-  unlistenFile = await listen("redesign-file-received", (ev) => onFileReceived(ev.payload ?? {}));
+  unlisten = await listen("dm-received", (ev) => onInbound(ev.payload ?? {}));
+  unlistenChannel = await listen("channel-message", (ev) => onChannelInbound(ev.payload ?? {}));
+  unlistenFile = await listen("file-received", (ev) => onFileReceived(ev.payload ?? {}));
 });
 
 onBeforeUnmount(() => {
@@ -741,7 +741,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.redesign {
+.messenger {
   display: flex;
   flex-direction: column;
   height: 100vh;

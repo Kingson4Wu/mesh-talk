@@ -4,7 +4,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::UdpSocket;
 
-/// The default UDP port for the redesign's signed-announce discovery. Distinct
+/// The default UDP port for the node's signed-announce discovery. Distinct
 /// from the legacy plaintext discovery port so the two protocols never collide.
 pub const DEFAULT_DISCOVERY_PORT: u16 = 47474;
 

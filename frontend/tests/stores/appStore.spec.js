@@ -8,7 +8,7 @@ const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
 // After the legacy stack was retired the app store holds only auth/session state;
-// messaging/peers/channels live in the /redesign view (API.redesign), not here.
+// messaging/peers/channels live in the chat view (API.chat), not here.
 describe("appStore (auth)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

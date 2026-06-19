@@ -1,13 +1,13 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import LoginView from "../views/auth/LoginView.vue";
-import RedesignChatView from "../views/redesign/RedesignChatView.vue";
+import ChatView from "../views/chat/ChatView.vue";
 
-// The redesign chat is the whole app now; it lives at "/".
+// The chat is the whole app now; it lives at "/".
 const routes = [
   {
     path: "/",
-    name: "redesign",
-    component: RedesignChatView,
+    name: "chat",
+    component: ChatView,
     meta: { requiresAuth: true },
   },
   {

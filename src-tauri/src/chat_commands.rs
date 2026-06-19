@@ -1,30 +1,30 @@
-//! Tauri IPC commands backing the redesign `/redesign` route. They delegate to a
-//! per-session [`RedesignRuntime`] held in managed [`RedesignState`] (populated on
+//! Tauri IPC commands backing the `/` route. They delegate to a
+//! per-session [`NodeRuntime`] held in managed [`NodeState`] (populated on
 //! login, cleared on logout). All are thin pass-throughs over the node API.
 
 use crate::eventlog::event::{ConversationId, EventId};
-use crate::node::runtime::RedesignRuntime;
+use crate::node::runtime::NodeRuntime;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Managed state holding the current session's redesign runtime (`None` until login).
+/// Managed state holding the current session's node runtime (`None` until login).
 #[derive(Clone)]
-pub struct RedesignState(pub Arc<Mutex<Option<RedesignRuntime>>>);
+pub struct NodeState(pub Arc<Mutex<Option<NodeRuntime>>>);
 
-impl RedesignState {
+impl NodeState {
     pub fn empty() -> Self {
-        RedesignState(Arc::new(Mutex::new(None)))
+        NodeState(Arc::new(Mutex::new(None)))
     }
 }
 
-impl Default for RedesignState {
+impl Default for NodeState {
     fn default() -> Self {
         Self::empty()
     }
 }
 
-/// A peer as shown in the redesign roster.
+/// A peer as shown in the roster.
 #[derive(Serialize)]
 pub struct PeerInfo {
     pub user_id: String,
@@ -55,25 +55,25 @@ pub struct ReactionInfo {
     pub who: Vec<String>,
 }
 
-/// A channel member as shown in the redesign UI.
+/// A channel member as shown in the chat UI.
 #[derive(Serialize)]
 pub struct ChannelMemberInfo {
     pub user_id: String,
     pub name: String,
 }
 
-const NOT_STARTED: &str = "redesign node not started";
+const NOT_STARTED: &str = "node not started";
 
 #[tauri::command]
-pub async fn redesign_my_id(state: tauri::State<'_, RedesignState>) -> Result<String, String> {
+pub async fn my_id(state: tauri::State<'_, NodeState>) -> Result<String, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     Ok(rt.user_id().to_string())
 }
 
 #[tauri::command]
-pub async fn redesign_list_peers(
-    state: tauri::State<'_, RedesignState>,
+pub async fn list_peers(
+    state: tauri::State<'_, NodeState>,
 ) -> Result<Vec<PeerInfo>, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
@@ -91,8 +91,8 @@ pub async fn redesign_list_peers(
 }
 
 #[tauri::command]
-pub async fn redesign_send_dm(
-    state: tauri::State<'_, RedesignState>,
+pub async fn send_dm(
+    state: tauri::State<'_, NodeState>,
     recipient: String,
     text: String,
     reply_to: Option<String>,
@@ -113,8 +113,8 @@ pub async fn redesign_send_dm(
 }
 
 #[tauri::command]
-pub async fn redesign_history(
-    state: tauri::State<'_, RedesignState>,
+pub async fn history(
+    state: tauri::State<'_, NodeState>,
     peer: String,
     limit: usize,
 ) -> Result<Vec<HistoryItem>, String> {
@@ -141,15 +141,15 @@ pub async fn redesign_history(
 }
 
 #[tauri::command]
-pub async fn redesign_account_id(state: tauri::State<'_, RedesignState>) -> Result<String, String> {
+pub async fn account_id(state: tauri::State<'_, NodeState>) -> Result<String, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     Ok(rt.account_id().to_string())
 }
 
 #[tauri::command]
-pub async fn redesign_send_to_account(
-    state: tauri::State<'_, RedesignState>,
+pub async fn send_to_account(
+    state: tauri::State<'_, NodeState>,
     account: String,
     text: String,
     reply_to: Option<String>,
@@ -170,8 +170,8 @@ pub async fn redesign_send_to_account(
 }
 
 #[tauri::command]
-pub async fn redesign_account_history(
-    state: tauri::State<'_, RedesignState>,
+pub async fn account_history(
+    state: tauri::State<'_, NodeState>,
     account: String,
     limit: usize,
 ) -> Result<Vec<HistoryItem>, String> {
@@ -193,8 +193,8 @@ pub async fn redesign_account_history(
 }
 
 #[tauri::command]
-pub async fn redesign_start_linking(
-    state: tauri::State<'_, RedesignState>,
+pub async fn start_linking(
+    state: tauri::State<'_, NodeState>,
 ) -> Result<String, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
@@ -202,7 +202,7 @@ pub async fn redesign_start_linking(
 }
 
 #[tauri::command]
-pub async fn redesign_stop_linking(state: tauri::State<'_, RedesignState>) -> Result<(), String> {
+pub async fn stop_linking(state: tauri::State<'_, NodeState>) -> Result<(), String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     rt.stop_linking();
@@ -210,8 +210,8 @@ pub async fn redesign_stop_linking(state: tauri::State<'_, RedesignState>) -> Re
 }
 
 #[tauri::command]
-pub async fn redesign_link_device(
-    state: tauri::State<'_, RedesignState>,
+pub async fn link_device(
+    state: tauri::State<'_, NodeState>,
     peer: String,
     code: String,
 ) -> Result<String, String> {
@@ -223,15 +223,15 @@ pub async fn redesign_link_device(
 }
 
 #[tauri::command]
-pub async fn redesign_rekey_account(
-    state: tauri::State<'_, RedesignState>,
+pub async fn rekey_account(
+    state: tauri::State<'_, NodeState>,
 ) -> Result<String, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     rt.rekey_account().map_err(|e| e.to_string())
 }
 
-/// An account (group of devices) as shown in the redesign UI.
+/// An account (group of devices) as shown in the chat UI.
 #[derive(Serialize)]
 pub struct AccountInfo {
     pub account_id: String,
@@ -240,8 +240,8 @@ pub struct AccountInfo {
 }
 
 #[tauri::command]
-pub async fn redesign_list_accounts(
-    state: tauri::State<'_, RedesignState>,
+pub async fn list_accounts(
+    state: tauri::State<'_, NodeState>,
 ) -> Result<Vec<AccountInfo>, String> {
     use std::collections::BTreeMap;
     let guard = state.0.lock().await;
@@ -262,7 +262,7 @@ pub async fn redesign_list_accounts(
         .collect())
 }
 
-/// A channel as shown in the redesign UI.
+/// A channel as shown in the chat UI.
 #[derive(Serialize)]
 pub struct ChannelInfo {
     pub channel_id: String, // hex
@@ -298,8 +298,8 @@ fn to_reaction_infos(views: Vec<crate::node::reaction::ReactionView>) -> Vec<Rea
 }
 
 #[tauri::command]
-pub async fn redesign_list_channels(
-    state: tauri::State<'_, RedesignState>,
+pub async fn list_channels(
+    state: tauri::State<'_, NodeState>,
 ) -> Result<Vec<ChannelInfo>, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
@@ -315,8 +315,8 @@ pub async fn redesign_list_channels(
 }
 
 #[tauri::command]
-pub async fn redesign_channel_members(
-    state: tauri::State<'_, RedesignState>,
+pub async fn channel_members(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
 ) -> Result<Vec<ChannelMemberInfo>, String> {
     let channel = parse_channel_id(&channel_id)?;
@@ -344,8 +344,8 @@ pub async fn redesign_channel_members(
 }
 
 #[tauri::command]
-pub async fn redesign_create_channel(
-    state: tauri::State<'_, RedesignState>,
+pub async fn create_channel(
+    state: tauri::State<'_, NodeState>,
     name: String,
     member_ids: Vec<String>,
 ) -> Result<String, String> {
@@ -369,8 +369,8 @@ pub async fn redesign_create_channel(
 }
 
 #[tauri::command]
-pub async fn redesign_add_channel_member(
-    state: tauri::State<'_, RedesignState>,
+pub async fn add_channel_member(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
     member_id: String,
 ) -> Result<(), String> {
@@ -389,8 +389,8 @@ pub async fn redesign_add_channel_member(
 }
 
 #[tauri::command]
-pub async fn redesign_remove_channel_member(
-    state: tauri::State<'_, RedesignState>,
+pub async fn remove_channel_member(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
     member_id: String,
 ) -> Result<(), String> {
@@ -406,8 +406,8 @@ pub async fn redesign_remove_channel_member(
 }
 
 #[tauri::command]
-pub async fn redesign_send_channel_message(
-    state: tauri::State<'_, RedesignState>,
+pub async fn send_channel_message(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
     text: String,
     reply_to: Option<String>,
@@ -428,8 +428,8 @@ pub async fn redesign_send_channel_message(
 }
 
 #[tauri::command]
-pub async fn redesign_send_file_dm(
-    state: tauri::State<'_, RedesignState>,
+pub async fn send_file_dm(
+    state: tauri::State<'_, NodeState>,
     recipient: String,
     path: String,
 ) -> Result<String, String> {
@@ -446,8 +446,8 @@ pub async fn redesign_send_file_dm(
 }
 
 #[tauri::command]
-pub async fn redesign_send_file_to_account(
-    state: tauri::State<'_, RedesignState>,
+pub async fn send_file_to_account(
+    state: tauri::State<'_, NodeState>,
     account: String,
     path: String,
 ) -> Result<String, String> {
@@ -464,8 +464,8 @@ pub async fn redesign_send_file_to_account(
 }
 
 #[tauri::command]
-pub async fn redesign_send_file_channel(
-    state: tauri::State<'_, RedesignState>,
+pub async fn send_file_channel(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
     path: String,
 ) -> Result<String, String> {
@@ -483,8 +483,8 @@ pub async fn redesign_send_file_channel(
 }
 
 #[tauri::command]
-pub async fn redesign_save_file(
-    state: tauri::State<'_, RedesignState>,
+pub async fn save_file(
+    state: tauri::State<'_, NodeState>,
     file_conv: String,
     dest: String,
 ) -> Result<(), String> {
@@ -503,8 +503,8 @@ pub async fn redesign_save_file(
 }
 
 #[tauri::command]
-pub async fn redesign_channel_history(
-    state: tauri::State<'_, RedesignState>,
+pub async fn channel_history(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
     limit: usize,
 ) -> Result<Vec<HistoryItem>, String> {
@@ -527,8 +527,8 @@ pub async fn redesign_channel_history(
 }
 
 #[tauri::command]
-pub async fn redesign_react_dm(
-    state: tauri::State<'_, RedesignState>,
+pub async fn react_dm(
+    state: tauri::State<'_, NodeState>,
     recipient: String,
     target: String,
     emoji: String,
@@ -546,8 +546,8 @@ pub async fn redesign_react_dm(
 }
 
 #[tauri::command]
-pub async fn redesign_react_channel(
-    state: tauri::State<'_, RedesignState>,
+pub async fn react_channel(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
     target: String,
     emoji: String,
@@ -566,8 +566,8 @@ pub async fn redesign_react_channel(
 }
 
 #[tauri::command]
-pub async fn redesign_reactions(
-    state: tauri::State<'_, RedesignState>,
+pub async fn reactions(
+    state: tauri::State<'_, NodeState>,
     peer: String,
 ) -> Result<Vec<ReactionInfo>, String> {
     let guard = state.0.lock().await;
@@ -579,8 +579,8 @@ pub async fn redesign_reactions(
 }
 
 #[tauri::command]
-pub async fn redesign_channel_reactions(
-    state: tauri::State<'_, RedesignState>,
+pub async fn channel_reactions(
+    state: tauri::State<'_, NodeState>,
     channel_id: String,
 ) -> Result<Vec<ReactionInfo>, String> {
     let channel = parse_channel_id(&channel_id)?;
@@ -590,8 +590,8 @@ pub async fn redesign_channel_reactions(
 }
 
 #[tauri::command]
-pub async fn redesign_react_account(
-    state: tauri::State<'_, RedesignState>,
+pub async fn react_account(
+    state: tauri::State<'_, NodeState>,
     account: String,
     target: String,
     emoji: String,
@@ -609,8 +609,8 @@ pub async fn redesign_react_account(
 }
 
 #[tauri::command]
-pub async fn redesign_account_reactions(
-    state: tauri::State<'_, RedesignState>,
+pub async fn account_reactions(
+    state: tauri::State<'_, NodeState>,
     account: String,
 ) -> Result<Vec<ReactionInfo>, String> {
     let guard = state.0.lock().await;
@@ -631,8 +631,8 @@ pub struct SearchHitInfo {
 }
 
 #[tauri::command]
-pub async fn redesign_search(
-    state: tauri::State<'_, RedesignState>,
+pub async fn search(
+    state: tauri::State<'_, NodeState>,
     query: String,
 ) -> Result<Vec<SearchHitInfo>, String> {
     let guard = state.0.lock().await;

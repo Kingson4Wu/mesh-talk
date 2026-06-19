@@ -5,8 +5,8 @@ import { useFeedbackStore } from "./feedbackStore";
 import Logger from "../utils/logger";
 
 // App-level store. After the legacy chat stack was retired this holds only auth/session
-// state; the /redesign view owns its own messaging/peer/channel state (it talks to the
-// redesign node directly via API.redesign and listens for `redesign-*` Tauri events).
+// state; the chat view owns its own messaging/peer/channel state (it talks to the
+// node directly via API.chat and listens for messaging Tauri events).
 export const useAppStore = defineStore("app", () => {
   const feedback = useFeedbackStore();
 

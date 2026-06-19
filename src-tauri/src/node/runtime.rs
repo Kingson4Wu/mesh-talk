@@ -1,4 +1,4 @@
-//! The desktop App context for the redesign node: opens a per-user `Node`, starts
+//! The desktop App context for the node: opens a per-user `Node`, starts
 //! its network loops (discovery, accept, drain) and an inbound-DM forwarder, and
 //! holds the handles. Tauri-agnostic — inbound DMs are delivered via an injected
 //! `on_dm` callback, so this is unit-testable without a GUI.
@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 /// How often the desktop node drains held DMs from the elected post office.
 const DRAIN_INTERVAL_SECS: u64 = 3;
 
-/// Errors starting the redesign runtime.
+/// Errors starting the node runtime.
 #[derive(Debug)]
 pub enum RuntimeError {
     /// Opening the keystore or the durable logs failed.
@@ -34,8 +34,8 @@ pub enum RuntimeError {
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RuntimeError::Open(e) => write!(f, "redesign open error: {e}"),
-            RuntimeError::Io(e) => write!(f, "redesign io error: {e}"),
+            RuntimeError::Open(e) => write!(f, "node open error: {e}"),
+            RuntimeError::Io(e) => write!(f, "node io error: {e}"),
         }
     }
 }
@@ -53,9 +53,9 @@ impl From<std::io::Error> for RuntimeError {
     }
 }
 
-/// A running redesign node plus the background tasks that drive it. Dropping it
+/// A running node plus the background tasks that drive it. Dropping it
 /// aborts every task (clean logout/shutdown).
-pub struct RedesignRuntime {
+pub struct NodeRuntime {
     node: Arc<Node>,
     roster: Arc<Mutex<Roster>>,
     user_id: String,
@@ -68,8 +68,8 @@ pub struct RedesignRuntime {
     tasks: Vec<JoinHandle<()>>,
 }
 
-impl RedesignRuntime {
-    /// Open the per-account node under `base_dir/redesign/<account_id>/` (keystore +
+impl NodeRuntime {
+    /// Open the per-account node under `base_dir/accounts/<account_id>/` (keystore +
     /// durable logs encrypted with `password`), advertise `display_name`, and start
     /// discovery + the accept loop + a periodic post-office drain + an inbound
     /// forwarder that calls `on_dm` for each received DM.
@@ -87,8 +87,8 @@ impl RedesignRuntime {
         on_dm: impl Fn(ReceivedDm) + Send + 'static,
         on_channel: impl Fn(crate::node::channel::ReceivedChannelMessage) + Send + 'static,
         on_file: impl Fn(crate::node::filebook::ReceivedFile) + Send + 'static,
-    ) -> Result<RedesignRuntime, RuntimeError> {
-        let dir = base_dir.join("redesign").join(account_id);
+    ) -> Result<NodeRuntime, RuntimeError> {
+        let dir = base_dir.join("accounts").join(account_id);
         std::fs::create_dir_all(&dir)?;
 
         let identity = keystore::load_or_create(&dir.join("identity.keystore"), password)
@@ -165,7 +165,7 @@ impl RedesignRuntime {
             }
         }));
 
-        Ok(RedesignRuntime {
+        Ok(NodeRuntime {
             node,
             roster,
             user_id: self_uid,
@@ -340,13 +340,13 @@ impl RedesignRuntime {
     }
 
     /// A cloned handle to the underlying node, so an IPC command can snapshot it
-    /// and release the `RedesignState` lock before an async send.
+    /// and release the `NodeState` lock before an async send.
     pub fn handle(&self) -> Arc<Node> {
         Arc::clone(&self.node)
     }
 }
 
-impl Drop for RedesignRuntime {
+impl Drop for NodeRuntime {
     fn drop(&mut self) {
         for task in &self.tasks {
             task.abort();
@@ -363,7 +363,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // An uncommon discovery port so the test doesn't touch the real one.
         let dp = 47990;
-        let runtime = RedesignRuntime::start(
+        let runtime = NodeRuntime::start(
             dir.path(),
             "alice-user-id",
             "Alice",
@@ -381,14 +381,14 @@ mod tests {
         assert!(runtime.peers().is_empty());
         assert!(runtime.peer_public("nobody").is_none());
 
-        // Per-user files were created on disk under redesign/<user_id>/.
-        let node_dir = dir.path().join("redesign").join("alice-user-id");
+        // Per-user files were created on disk under accounts/<user_id>/.
+        let node_dir = dir.path().join("accounts").join("alice-user-id");
         assert!(node_dir.join("identity.keystore").exists());
         assert!(node_dir.join("messages.log").exists());
         assert!(node_dir.join("sent.log").exists());
 
         // Reopening the same dir reloads the SAME identity (persistent).
-        let runtime2 = RedesignRuntime::start(
+        let runtime2 = NodeRuntime::start(
             dir.path(),
             "alice-user-id",
             "Alice",

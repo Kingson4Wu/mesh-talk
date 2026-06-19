@@ -1,4 +1,4 @@
-//! `mesh-talk-node`: a thin CLI over the redesign `node` API — loads a
+//! `mesh-talk-node`: a thin CLI over the `node` API — loads a
 //! persistent identity, runs signed-announce LAN discovery and a TCP listener,
 //! and drives 1:1 DMs from a line-based REPL (`/peers`, `/msg <prefix> <text>`,
 //! `/quit`), printing inbound DMs as they arrive.
@@ -24,7 +24,7 @@ const DRAIN_INTERVAL_SECS: u64 = 3;
 #[derive(Parser, Debug)]
 #[command(
     name = "mesh-talk-node",
-    about = "Mesh-Talk redesign node (serverless E2E LAN DM)"
+    about = "Mesh-Talk node (serverless E2E LAN DM)"
 )]
 struct Args {
     /// Path to the encrypted identity keystore (created if absent).
