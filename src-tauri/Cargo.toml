@@ -32,7 +32,7 @@ keyring = { version = "3.6.3", optional = true }
 socket2 = { version = "0.6", features = ["all"] }
 # Storage dependencies
 aes-gcm = "0.10"
-pbkdf2 = "0.12"
+pbkdf2 = "0.13"
 sha2 = "0.11"
 hkdf = "0.12"
 bincode = "1.3"
