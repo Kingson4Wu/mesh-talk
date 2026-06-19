@@ -1,8 +1,11 @@
 name: Dependabot auto-merge
 
-# Auto-merge Dependabot minor/patch PRs once required checks pass. Majors are
-# left for manual review. Requires "Allow auto-merge" enabled in repo settings
-# and branch protection with the "verify" check required.
+# Auto-merge Dependabot PATCH PRs once required checks pass. Minor + major updates
+# are left for manual review: for the many 0.x crates here (rand, sha2, glib, ...) a
+# "semver-minor" bump (e.g. 0.8 -> 0.9) is actually BREAKING and has landed
+# non-compiling changes when auto-merged, so only patch (x.y.Z) is auto-merged.
+# Requires "Allow auto-merge" enabled in repo settings and branch protection with the
+# "verify" check required.
 on: pull_request_target
 
 permissions:
@@ -18,8 +21,8 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@v2
 
-      - name: Enable auto-merge for minor/patch updates
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+      - name: Enable auto-merge for patch updates only
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
