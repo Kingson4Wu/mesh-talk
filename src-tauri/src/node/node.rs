@@ -20,7 +20,7 @@ use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
 use crate::node::channel_senders::ChannelSenderStore;
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
-use crate::node::dm_envelope::DmEnvelope;
+use crate::node::dm_envelope::{DmEnvelope, ReactionEnvelope};
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
@@ -425,9 +425,13 @@ impl Node {
     ) -> Result<(), NodeError> {
         let my_account = self.account.account_id();
         let inner = MessageBody::new(text.to_vec(), reply_to).encode();
+        // A stable logical id shared by every per-device copy, so reactions/replies
+        // can target this message account-wide.
+        let msg_id = random_msg_id();
         let envelope = DmEnvelope::new(
             my_account.clone(),
             target_account_id.to_string(),
+            msg_id,
             inner.clone(),
         )
         .encode();
@@ -458,9 +462,11 @@ impl Node {
         let conv_account = account_conversation_id(&my_account, target_account_id);
         let wall_clock = now_millis();
         {
+            // Store the full envelope (carries msg_id) so account history surfaces a
+            // stable id for reactions/replies.
             let mut sentlog = self.sentlog.lock().expect("sentlog mutex not poisoned");
             let seq = sentlog.entries(&conv_account).len() as u64 + 1;
-            let _ = sentlog.record(conv_account, seq, wall_clock, &inner);
+            let _ = sentlog.record(conv_account, seq, wall_clock, &envelope);
         }
 
         // Fan out: seal+append+deliver one copy per destination device.
@@ -1359,15 +1365,17 @@ impl Node {
         let conv = account_conversation_id(&my_account, peer_account_id);
         let mut entries: Vec<HistoryEntry> = Vec::new();
 
+        // Account messages are stored as full `DmEnvelope`s; the logical `msg_id` is
+        // the stable, cross-device id reactions/replies target.
         for sent in self
             .sentlog
             .lock()
             .expect("sentlog mutex not poisoned")
             .entries(&conv)
         {
-            let body = MessageBody::decode(&sent.plaintext);
+            let (id, body) = decode_account_entry(&sent.plaintext);
             entries.push(HistoryEntry {
-                id: EventId::new([0u8; 32]),
+                id,
                 from_me: true,
                 who: "you".to_string(),
                 text: body.text,
@@ -1382,10 +1390,10 @@ impl Node {
             .expect("received mutex not poisoned")
             .entries(&conv)
         {
-            let body = MessageBody::decode(&rcv.plaintext);
+            let (id, body) = decode_account_entry(&rcv.plaintext);
             let from_me = rcv.from == my_account;
             entries.push(HistoryEntry {
-                id: rcv.event_id,
+                id,
                 from_me,
                 who: if from_me { "you".to_string() } else { rcv.from },
                 text: body.text,
@@ -1560,6 +1568,135 @@ impl Node {
         Ok(())
     }
 
+    /// React to an account message (toggle off with `remove = true`). `target` is the
+    /// logical message id (from account history). Fans the reaction out to every device
+    /// of `target_account_id` + our own devices, so it aggregates account-wide.
+    pub async fn react_to_account(
+        &self,
+        target_account_id: &str,
+        target: EventId,
+        emoji: &str,
+        remove: bool,
+    ) -> Result<(), NodeError> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        let dests: Vec<PeerRecord> = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .peers()
+                .into_iter()
+                .filter(|p| {
+                    let a = p.account_id.as_deref();
+                    a == Some(target_account_id)
+                        || (a == Some(my_account.as_str()) && p.public.user_id() != me)
+                })
+                .collect()
+        };
+        let envelope = ReactionEnvelope::new(
+            my_account.clone(),
+            target_account_id.to_string(),
+            *target.as_bytes(),
+            emoji.to_string(),
+            remove,
+        )
+        .encode();
+        for peer in &dests {
+            let sealed = match crate::dm::seal(&self.identity, &peer.public.x25519_pub, &envelope) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+            if self.append_event(conv, EventKind::React, sealed).is_err() {
+                continue;
+            }
+            self.deliver_direct(peer, conv).await.ok();
+            self.replicate_to_post_office(conv).await.ok();
+        }
+        // Record our own reaction (sealed to peers, so un-openable from our own log)
+        // under the account conversation, for `account_reactions` to merge.
+        let acct_conv = account_conversation_id(&my_account, target_account_id);
+        self.my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned")
+            .push((
+                acct_conv,
+                ReactionPayload {
+                    target,
+                    emoji: emoji.to_string(),
+                    remove,
+                },
+            ));
+        Ok(())
+    }
+
+    /// Aggregated reactions for the account conversation with `peer_account_id`. Scans
+    /// `React` events across every device-pair conversation between us and that
+    /// account's devices (and our own devices), opens each account reaction envelope,
+    /// keys it by its logical target + reacting account, and merges our own.
+    pub fn account_reactions(&self, peer_account_id: &str) -> Vec<ReactionView> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        // The device-pair conversations whose React events can carry this account's
+        // reactions: ours-with-each-target-device and ours-with-each-own-other-device.
+        let convs: Vec<(ConversationId, [u8; 32])> = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .peers()
+                .into_iter()
+                .filter(|p| {
+                    let a = p.account_id.as_deref();
+                    a == Some(peer_account_id)
+                        || (a == Some(my_account.as_str()) && p.public.user_id() != me)
+                })
+                .map(|p| {
+                    (
+                        dm_conversation_id(&self.identity.public(), &p.public),
+                        p.public.x25519_pub,
+                    )
+                })
+                .collect()
+        };
+        let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
+        for (conv, author_x) in convs {
+            let react_events: Vec<Event> = {
+                let log = self.log.lock().expect("log mutex not poisoned");
+                log.events(&conv)
+                    .into_iter()
+                    .filter(|e| e.kind == EventKind::React)
+                    .cloned()
+                    .collect()
+            };
+            for event in &react_events {
+                let Ok(pt) = crate::dm::open(&self.identity, &author_x, &event.ciphertext) else {
+                    continue;
+                };
+                if let Some(env) = ReactionEnvelope::decode(&pt) {
+                    decoded.push((
+                        env.route.sender_account,
+                        ReactionPayload {
+                            target: EventId::new(env.target),
+                            emoji: env.emoji,
+                            remove: env.remove,
+                        },
+                    ));
+                }
+            }
+        }
+        // Merge our own account reactions (sealed to peers; not openable from our log).
+        let acct_conv = account_conversation_id(&my_account, peer_account_id);
+        for (c, p) in self
+            .my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned")
+            .iter()
+        {
+            if *c == acct_conv {
+                decoded.push((my_account.clone(), p.clone()));
+            }
+        }
+        aggregate(&decoded)
+    }
+
     /// React to a message in a channel we hold the key for.
     pub async fn react_channel(
         &self,
@@ -1701,20 +1838,31 @@ impl Node {
             // derives `from_me` from it). A legacy plaintext keeps today's device-pair
             // behavior. The live `ReceivedDm` still carries the author device's
             // id/name — it is just a "something changed" poke; display reads history.
-            let (record_conv, record_from, inner_body) = match DmEnvelope::decode(&wrapped) {
-                Some(env) => {
-                    let my_account = self.account.account_id();
-                    let counterparty = if env.route.sender_account == my_account {
-                        env.route.recipient_account.clone() // self-synced copy of our own send
-                    } else {
-                        env.route.sender_account.clone()
-                    };
-                    let acct_conv = account_conversation_id(&my_account, &counterparty);
-                    (acct_conv, env.route.sender_account.clone(), env.body)
-                }
-                None => (conv, author_uid.clone(), wrapped.clone()),
-            };
-            let body = MessageBody::decode(&inner_body);
+            let (record_conv, record_from, record_plaintext, body) =
+                match DmEnvelope::decode(&wrapped) {
+                    Some(env) => {
+                        let my_account = self.account.account_id();
+                        let counterparty = if env.route.sender_account == my_account {
+                            env.route.recipient_account.clone() // self-synced copy of our own send
+                        } else {
+                            env.route.sender_account.clone()
+                        };
+                        let acct_conv = account_conversation_id(&my_account, &counterparty);
+                        let body = MessageBody::decode(&env.body);
+                        // Record the FULL envelope so account history recovers the
+                        // logical msg_id (for reactions/replies).
+                        (
+                            acct_conv,
+                            env.route.sender_account.clone(),
+                            wrapped.clone(),
+                            body,
+                        )
+                    }
+                    None => {
+                        let body = MessageBody::decode(&wrapped);
+                        (conv, author_uid.clone(), wrapped.clone(), body)
+                    }
+                };
             // Persist the received plaintext (the wire key is single-use/gone), then
             // mark emitted — only AFTER a successful decrypt + record.
             let _ = self
@@ -1725,7 +1873,7 @@ impl Node {
                     record_conv,
                     record_from,
                     event.wall_clock,
-                    &inner_body,
+                    &record_plaintext,
                     event.id,
                 );
             self.emitted
@@ -1748,6 +1896,25 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A fresh random 32-byte logical message id (shared across an account send's
+/// per-device copies, so reactions/replies can target it account-wide).
+fn random_msg_id() -> [u8; 32] {
+    use rand::RngCore;
+    let mut id = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut id);
+    id
+}
+
+/// Decode an account-history store entry (a full `DmEnvelope`) into its logical id
+/// and inner body. A malformed or legacy entry falls back to a bare `MessageBody`
+/// with a zero id, so it still renders rather than breaking history.
+fn decode_account_entry(plaintext: &[u8]) -> (EventId, MessageBody) {
+    match DmEnvelope::decode(plaintext) {
+        Some(env) => (EventId::new(env.msg_id), MessageBody::decode(&env.body)),
+        None => (EventId::new([0u8; 32]), MessageBody::decode(plaintext)),
+    }
 }
 
 #[cfg(test)]
@@ -3926,5 +4093,114 @@ mod tests {
             .expect("bob received the file within 5s")
             .expect("file stream open");
         assert_eq!(got.name, "hello.txt");
+    }
+
+    #[tokio::test]
+    async fn account_reaction_aggregates_on_the_peer_account() {
+        use crate::identity::account::Account;
+        let alice = DeviceIdentity::generate();
+        let alice_acct = Account::generate();
+        let bob = DeviceIdentity::generate();
+        let bob_acct = Account::generate();
+        let alice_uid = alice.public().user_id();
+        let bob_uid = bob.public().user_id();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Both listen so the reaction (alice→bob) and the message (bob→alice) flow.
+        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alice_addr = alice_listener.local_addr().unwrap();
+        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bob_addr = bob_listener.local_addr().unwrap();
+
+        let alice_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(
+            &alice_roster,
+            &bob,
+            &bob_acct,
+            "Bob",
+            bob_addr.port(),
+            &alice_uid,
+        );
+        let bob_roster = Arc::new(Mutex::new(Roster::default()));
+        add_account_peer(
+            &bob_roster,
+            &alice,
+            &alice_acct,
+            "Alice",
+            alice_addr.port(),
+            &bob_uid,
+        );
+
+        let (a_dm, _a) = mpsc::unbounded_channel();
+        let (a_ch, _b) = mpsc::unbounded_channel();
+        let (a_f, _c) = mpsc::unbounded_channel();
+        let (b_dm, _d) = mpsc::unbounded_channel();
+        let (b_ch, _e) = mpsc::unbounded_channel();
+        let (b_f, _f) = mpsc::unbounded_channel();
+        let alice_node = Node::open_with_account(
+            alice,
+            Account::from_secret_bytes(alice_acct.secret_bytes()),
+            alice_roster,
+            a_dm,
+            a_ch,
+            a_f,
+            &dir.path().join("a.log"),
+            &dir.path().join("a-sent.log"),
+            "pw",
+        )
+        .unwrap();
+        let bob_node = Node::open_with_account(
+            bob,
+            Account::from_secret_bytes(bob_acct.secret_bytes()),
+            bob_roster,
+            b_dm,
+            b_ch,
+            b_f,
+            &dir.path().join("b.log"),
+            &dir.path().join("b-sent.log"),
+            "pw",
+        )
+        .unwrap();
+
+        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+        // Bob sends Alice an account message; Alice picks up its logical id from history.
+        bob_node
+            .send_to_account(&alice_acct.account_id(), b"hi alice", None)
+            .await
+            .unwrap();
+        let mut target = None;
+        for _ in 0..50 {
+            let h = alice_node.account_history(&bob_acct.account_id(), 10);
+            if let Some(m) = h.first() {
+                target = Some(m.id);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let target = target.expect("alice has the message id");
+
+        // Alice reacts to it by its logical id; the reaction reaches Bob's account.
+        alice_node
+            .react_to_account(&bob_acct.account_id(), target, "👍", false)
+            .await
+            .unwrap();
+        let mut views = Vec::new();
+        for _ in 0..50 {
+            views = bob_node.account_reactions(&alice_acct.account_id());
+            if !views.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(views.len(), 1, "bob sees the reaction");
+        assert_eq!(views[0].emoji, "👍");
+        assert!(views[0].who.contains(&alice_acct.account_id()));
+
+        // Alice's own view includes her reaction too (sealed-to-peer, merged locally).
+        let a_views = alice_node.account_reactions(&bob_acct.account_id());
+        assert_eq!(a_views.len(), 1);
+        assert!(a_views[0].who.contains(&alice_acct.account_id()));
     }
 }

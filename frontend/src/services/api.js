@@ -124,6 +124,9 @@ const redesignAPI = {
   linkDevice: (peer, code) => invoke("redesign_link_device", { peer, code }),
   adoptLinkedAccount: () => invoke("redesign_adopt_linked_account"),
   sendFileToAccount: (account, path) => invoke("redesign_send_file_to_account", { account, path }),
+  reactAccount: (account, target, emoji, remove) =>
+    invoke("redesign_react_account", { account, target, emoji, remove }),
+  accountReactions: (account) => invoke("redesign_account_reactions", { account }),
 };
 
 // Combined API service

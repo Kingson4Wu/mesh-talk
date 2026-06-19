@@ -317,6 +317,14 @@ impl RedesignRuntime {
         self.node.reactions(channel)
     }
 
+    /// Aggregated reactions in the account conversation with `peer_account_id`.
+    pub fn account_reactions(
+        &self,
+        peer_account_id: &str,
+    ) -> Vec<crate::node::reaction::ReactionView> {
+        self.node.account_reactions(peer_account_id)
+    }
+
     /// A cloned handle to the underlying node, so an IPC command can snapshot it
     /// and release the `RedesignState` lock before an async send.
     pub fn handle(&self) -> Arc<Node> {

@@ -352,7 +352,9 @@ async function loadReactions() {
     reactions.value = activeChannel.value
       ? await API.redesign.channelReactions(activeChannel.value.channel_id)
       : activePeer.value
-      ? await API.redesign.reactions(activePeer.value.user_id)
+      ? activePeer.value.account_id
+        ? await API.redesign.accountReactions(activePeer.value.account_id)
+        : await API.redesign.reactions(activePeer.value.user_id)
       : [];
   } catch (_e) { /* node may not be ready; ignore */ }
 }
@@ -362,15 +364,18 @@ function reactionsFor(messageId) {
 }
 
 function iReacted(r) {
-  return r.who.includes(myId.value);
+  // Device DMs/channels record the reactor's device id; account reactions record the
+  // account id — a reaction is "mine" if either matches.
+  return r.who.includes(myId.value) || (!!accountId.value && r.who.includes(accountId.value));
 }
 
 async function toggleReaction(message, emoji) {
   if (!message.id) return;
   const existing = reactions.value.find(r => r.target === message.id && r.emoji === emoji);
-  const remove = !!(existing && existing.who.includes(myId.value));
+  const remove = !!(existing && iReacted(existing));
   try {
     if (activeChannel.value) await API.redesign.reactChannel(activeChannel.value.channel_id, message.id, emoji, remove);
+    else if (activePeer.value.account_id) await API.redesign.reactAccount(activePeer.value.account_id, message.id, emoji, remove);
     else await API.redesign.reactDm(activePeer.value.user_id, message.id, emoji, remove);
     await loadReactions();
   } catch (e) { error.value = String(e); }

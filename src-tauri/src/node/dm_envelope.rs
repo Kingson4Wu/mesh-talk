@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// Frames the envelope so it is distinguishable from a legacy raw `MessageBody`.
 const DM_ENV_MAGIC: &[u8] = b"MTDE1";
+/// Frames an account-addressed reaction (sealed plaintext of a `React` event).
+const REACT_ENV_MAGIC: &[u8] = b"MTRE1";
 
 /// Logical routing for an account-addressed DM: which account sent it and which
 /// account it is addressed to. Both are 32-hex `account_id`s.
@@ -22,20 +24,29 @@ pub struct DmRoute {
     pub recipient_account: String,
 }
 
-/// The sealed-plaintext envelope: a route plus the inner `MessageBody` bytes.
+/// The sealed-plaintext envelope: a route, a stable logical message id (shared by
+/// every per-device copy of one logical send, so reactions/replies can target it
+/// account-wide), and the inner `MessageBody` bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DmEnvelope {
     pub route: DmRoute,
+    pub msg_id: [u8; 32],
     pub body: Vec<u8>,
 }
 
 impl DmEnvelope {
-    pub fn new(sender_account: String, recipient_account: String, body: Vec<u8>) -> Self {
+    pub fn new(
+        sender_account: String,
+        recipient_account: String,
+        msg_id: [u8; 32],
+        body: Vec<u8>,
+    ) -> Self {
         DmEnvelope {
             route: DmRoute {
                 sender_account,
                 recipient_account,
             },
+            msg_id,
             body,
         }
     }
@@ -65,13 +76,69 @@ impl DmEnvelope {
     }
 }
 
+/// An account-addressed reaction: routed like a DM, targeting a logical message id
+/// ([`DmEnvelope::msg_id`]) so it aggregates across every device of an account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReactionEnvelope {
+    pub route: DmRoute,
+    pub target: [u8; 32],
+    pub emoji: String,
+    pub remove: bool,
+}
+
+impl ReactionEnvelope {
+    pub fn new(
+        sender_account: String,
+        recipient_account: String,
+        target: [u8; 32],
+        emoji: String,
+        remove: bool,
+    ) -> Self {
+        ReactionEnvelope {
+            route: DmRoute {
+                sender_account,
+                recipient_account,
+            },
+            target,
+            emoji,
+            remove,
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(REACT_ENV_MAGIC.len() + 64);
+        out.extend_from_slice(REACT_ENV_MAGIC);
+        out.extend_from_slice(
+            &bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .serialize(self)
+                .expect("reaction envelope serializes"),
+        );
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<ReactionEnvelope> {
+        let rest = bytes.strip_prefix(REACT_ENV_MAGIC)?;
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .reject_trailing_bytes()
+            .deserialize::<ReactionEnvelope>(rest)
+            .ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn round_trips() {
-        let env = DmEnvelope::new("alice".into(), "bob".into(), b"inner-body".to_vec());
+        let env = DmEnvelope::new(
+            "alice".into(),
+            "bob".into(),
+            [7u8; 32],
+            b"inner-body".to_vec(),
+        );
         assert_eq!(DmEnvelope::decode(&env.encode()), Some(env));
     }
 
@@ -86,7 +153,7 @@ mod tests {
 
     #[test]
     fn rejects_trailing_bytes() {
-        let env = DmEnvelope::new("a".into(), "b".into(), b"x".to_vec());
+        let env = DmEnvelope::new("a".into(), "b".into(), [0u8; 32], b"x".to_vec());
         let mut bytes = env.encode();
         bytes.push(0xAB);
         assert_eq!(DmEnvelope::decode(&bytes), None);

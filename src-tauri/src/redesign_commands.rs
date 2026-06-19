@@ -580,6 +580,35 @@ pub async fn redesign_channel_reactions(
     Ok(to_reaction_infos(rt.channel_reactions(channel)))
 }
 
+#[tauri::command]
+pub async fn redesign_react_account(
+    state: tauri::State<'_, RedesignState>,
+    account: String,
+    target: String,
+    emoji: String,
+    remove: bool,
+) -> Result<(), String> {
+    let id = parse_event_id(&target)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    node.react_to_account(&account, id, &emoji, remove)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn redesign_account_reactions(
+    state: tauri::State<'_, RedesignState>,
+    account: String,
+) -> Result<Vec<ReactionInfo>, String> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(to_reaction_infos(rt.account_reactions(&account)))
+}
+
 /// A search result hit for display in the UI.
 #[derive(Serialize)]
 pub struct SearchHitInfo {
