@@ -1,7 +1,7 @@
 //! Channel lifecycle: create, membership, sender-key distribution, and sends. Split out of node.rs (one `impl Node` block per domain).
 
-use super::*;
 use super::node::now_millis;
+use super::*;
 use crate::channel::ChannelMeta;
 use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{ConversationId, EventId, EventKind};
@@ -105,12 +105,14 @@ impl Node {
                 state.epoch() + 1,
             )
         };
-        if !new_members
+        // Already a member → no-op. Don't bump the epoch / force a re-key for nothing.
+        if new_members
             .iter()
             .any(|m| m.user_id() == new_member.user_id())
         {
-            new_members.push(new_member);
+            return Ok(());
         }
+        new_members.push(new_member);
         let meta = ChannelMeta {
             name,
             members: new_members.clone(),
@@ -143,6 +145,16 @@ impl Node {
                 state.epoch() + 1,
             )
         };
+        // Not a member → no-op (don't bump the epoch / re-key for nothing).
+        if !new_members.iter().any(|m| m.user_id() == member_user_id) {
+            return Ok(());
+        }
+        // Refuse to remove the last member — it would leave an unreadable, keyless channel.
+        if new_members.len() <= 1 {
+            return Err(NodeError::Channel(
+                "cannot remove the last member of a channel".into(),
+            ));
+        }
         new_members.retain(|m| m.user_id() != member_user_id);
         let meta = ChannelMeta {
             name,
@@ -216,7 +228,11 @@ impl Node {
 
     /// Push the channel conversation to each known online member (dial + sync) and
     /// replicate it to the elected post office. Best-effort and fail-soft.
-    pub(in crate::node) async fn distribute_channel(&self, channel: ConversationId, members: &[PublicIdentity]) {
+    pub(in crate::node) async fn distribute_channel(
+        &self,
+        channel: ConversationId,
+        members: &[PublicIdentity],
+    ) {
         let me = self.identity.public().user_id();
         let targets: Vec<PeerRecord> = {
             let roster = self.roster.lock().expect("roster mutex not poisoned");
@@ -233,5 +249,4 @@ impl Node {
         }
         let _ = self.replicate_to_post_office(channel).await;
     }
-
 }

@@ -17,7 +17,7 @@ use crate::node::channel::{ChannelBook, ReceivedChannelMessage};
 use crate::node::channel_senders::ChannelSenderStore;
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
-use crate::node::pairing::PairingCode;
+use crate::node::pairing::PendingLink;
 use crate::node::ratchet_sessions::RatchetSessions;
 use crate::node::reaction::ReactionPayload;
 use crate::node::received_log::ReceivedLog;
@@ -132,7 +132,7 @@ pub struct Node {
     pub(in crate::node) account: Account,
     /// One-time pairing code while in "link a device" mode (linker side). Set by
     /// [`Node::start_linking`], cleared on success or [`Node::stop_linking`].
-    pub(in crate::node) pending_link: Mutex<Option<PairingCode>>,
+    pub(in crate::node) pending_link: Mutex<Option<PendingLink>>,
     pub(in crate::node) log: Mutex<PersistentEventLog>,
     pub(in crate::node) sentlog: Mutex<SentLog>,
     pub(in crate::node) roster: Arc<Mutex<Roster>>,
@@ -347,7 +347,6 @@ impl Node {
         log.append(event).map_err(NodeError::Log)?;
         Ok(seq)
     }
-
 }
 
 /// Milliseconds since the Unix epoch, for an event's wall-clock field.

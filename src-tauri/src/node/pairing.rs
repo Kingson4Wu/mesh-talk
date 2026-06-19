@@ -59,6 +59,16 @@ impl PairingCode {
     }
 }
 
+/// Linker-side state while "link a device" mode is active: the one-time code plus when it
+/// was issued and how many failed proofs we've seen. Backs a code TTL + attempt ceiling
+/// (defense-in-depth — the code is already a full 128-bit secret, but a standing code with
+/// unlimited guesses is a needless window).
+pub struct PendingLink {
+    pub code: PairingCode,
+    pub created_at_ms: u64,
+    pub attempts: u32,
+}
+
 /// Constant-time 32-byte equality (no early return on first mismatch).
 fn ct_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     let mut diff = 0u8;

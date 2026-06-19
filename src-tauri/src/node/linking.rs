@@ -1,13 +1,20 @@
 //! Multi-device pairing: linking codes, the pairing exchange, and account backfill. Split out of node.rs (one `impl Node` block per domain).
 
+use super::node::now_millis;
 use super::*;
 use crate::eventlog::event::{ConversationId, EventId};
 use crate::identity::account::Account;
 use crate::identity::device::PublicIdentity;
+use crate::node::pairing::PendingLink;
 use crate::node::session::SessionError;
 use crate::node::transport::dial;
 use crate::transport::SecureChannel;
 use tokio::net::TcpStream;
+
+/// A pairing code is valid for this long after it's shown (defense-in-depth TTL).
+const PAIRING_TTL_MS: u64 = 120_000;
+/// Wrong proofs before a pending code is invalidated (anti-brute-force, belt-and-braces).
+const MAX_PAIRING_ATTEMPTS: u32 = 5;
 
 impl Node {
     /// Enter "link a device" mode: generate a one-time code to display. The next valid
@@ -15,7 +22,11 @@ impl Node {
     pub fn start_linking(&self) -> String {
         let code = PairingCode::generate();
         let hex = code.as_hex();
-        *self.pending_link.lock().expect("pending_link mutex") = Some(code);
+        *self.pending_link.lock().expect("pending_link mutex") = Some(PendingLink {
+            code,
+            created_at_ms: now_millis(),
+            attempts: 0,
+        });
         hex
     }
 
@@ -90,23 +101,34 @@ impl Node {
     /// Linker side: handle a pairing request on an inbound (authenticated) channel.
     /// Releases the account secret only if a code is pending AND the request both
     /// proves it and binds the authenticated channel peer. Clears the code on success.
-    pub(in crate::node) async fn serve_pairing(&self, channel: &mut SecureChannel<TcpStream>, req: PairingRequest) {
+    pub(in crate::node) async fn serve_pairing(
+        &self,
+        channel: &mut SecureChannel<TcpStream>,
+        req: PairingRequest,
+    ) {
         // Bind the proof to the Noise-authenticated peer.
         if req.joiner.ed25519_pub != channel.peer_identity().ed25519_pub {
             return;
         }
-        let code = {
-            self.pending_link
-                .lock()
-                .expect("pending_link mutex")
-                .clone()
-        };
-        let Some(code) = code else {
-            return;
-        };
         let my_ed = self.identity.public().ed25519_pub;
-        if !code.verify(&my_ed, &req.joiner.ed25519_pub, &req.tag) {
-            return;
+        // Decide under the lock: reject if there's no pending code, it has expired, or the
+        // proof is wrong (counting the attempt and burning the code after too many).
+        {
+            let mut guard = self.pending_link.lock().expect("pending_link mutex");
+            let Some(pl) = guard.as_mut() else {
+                return;
+            };
+            if now_millis().saturating_sub(pl.created_at_ms) > PAIRING_TTL_MS {
+                *guard = None; // expired — invalidate
+                return;
+            }
+            if !pl.code.verify(&my_ed, &req.joiner.ed25519_pub, &req.tag) {
+                pl.attempts += 1;
+                if pl.attempts >= MAX_PAIRING_ATTEMPTS {
+                    *guard = None; // too many wrong guesses — burn the code
+                }
+                return;
+            }
         }
         let cert = self.account.certify(&req.joiner.ed25519_pub);
         let resp = PairingResponse {
@@ -186,5 +208,4 @@ impl Node {
             );
         }
     }
-
 }

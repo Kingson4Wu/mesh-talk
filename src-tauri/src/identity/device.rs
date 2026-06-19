@@ -1,7 +1,7 @@
 //! Device identity: Ed25519 (signing) + X25519 (key exchange) keys, with a
 //! self-certifying `user_id` derived from the signing public key.
 
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
@@ -83,7 +83,10 @@ impl DeviceIdentity {
         let Ok(vk) = VerifyingKey::from_bytes(ed25519_pub) else {
             return false;
         };
-        vk.verify(message, &ed25519_dalek::Signature::from_bytes(signature))
+        // verify_strict rejects non-canonical / small-order signatures (malleability), so
+        // a signature can't be massaged into a different valid form for the same message.
+        // All signatures we produce via `sign` are canonical, so this never rejects ours.
+        vk.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature))
             .is_ok()
     }
 }
