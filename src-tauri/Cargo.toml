@@ -29,7 +29,7 @@ lazy_static = "1.4"
 rand = "0.9"
 argon2 = { version = "0.5", features = ["std"] }
 keyring = { version = "3.6.3", optional = true }
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 # Storage dependencies
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
