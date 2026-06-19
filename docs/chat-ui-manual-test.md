@@ -1,7 +1,7 @@
 # Chat UI — manual two-instance test
 
 The `/` route exercises the node end-to-end. There is no
-automated Tauri+Vue e2e; this is the manual acceptance check.
+automated Tauri+React e2e; this is the manual acceptance check.
 
 ## Setup (two instances on one machine)
 Run two app instances with separate HOME dirs so their per-account data

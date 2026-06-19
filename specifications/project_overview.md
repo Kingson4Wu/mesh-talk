@@ -1,7 +1,7 @@
 # Mesh-Talk Project Overview
 
 Mesh-Talk is a **decentralized, end-to-end-encrypted LAN messenger** — a Tauri desktop
-app (Rust backend + Vue 3 frontend) with no server. Peers discover each other over
+app (Rust backend + React frontend) with no server. Peers discover each other over
 Ed25519-signed UDP broadcasts, connect directly over a Noise-encrypted channel, and
 store messages as an append-only, hash-linked event log that syncs CRDT-style; an
 elected "post office" peer stores-and-forwards (still-encrypted) events when a recipient

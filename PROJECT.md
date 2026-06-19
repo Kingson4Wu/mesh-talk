@@ -8,13 +8,13 @@ and the process/convention docs linked below.
 ## Project Overview
 
 Mesh-Talk is a **serverless, end-to-end-encrypted desktop chat app** (Rust + Tauri 2 +
-Vue 3). Peers on the same LAN discover each other over Ed25519-signed UDP broadcasts,
+React). Peers on the same LAN discover each other over Ed25519-signed UDP broadcasts,
 connect directly over a Noise-encrypted channel, and store messages as an append-only,
 hash-linked event log that syncs CRDT-style. An elected "post office" peer stores-and-
 forwards (still-encrypted) events for offline recipients.
 
 ### Technology Stack
-- **Language**: Rust 2021 · **Desktop**: Tauri 2.x · **Frontend**: Vue 3 + Pinia + Vite
+- **Language**: Rust 2021 · **Desktop**: Tauri 2.x · **Frontend**: React + TypeScript + Tailwind + shadcn/ui (Vite)
 - **Async**: Tokio · **Serialization**: bincode (wire/at-rest), serde_json (IPC)
 - **Crypto**: Ed25519 + X25519 (dalek; keeps `rand` 0.8), Noise_XX (snow), Double Ratchet
   + sender-key group ratchet, AES-256-GCM + ChaChaPoly, SHA-256/HKDF, PBKDF2-600k at rest

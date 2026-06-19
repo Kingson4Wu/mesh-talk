@@ -26,12 +26,14 @@ mesh-talk/
 │   │   ├── logger/ perf/ error.rs   # cross-cutting
 │   │   └── bin/mesh-talk-node.rs    # headless node CLI (+ --post-office relay mode)
 │   └── Cargo.toml
-├── frontend/                 # Vue 3 + Pinia + Vite
+├── frontend/                 # React 18 + TypeScript + Tailwind + shadcn/ui (Vite)
 │   └── src/
-│       ├── views/chat/ChatView.vue  # the app UI ("/")
-│       ├── views/auth/LoginView.vue
-│       ├── stores/appStore.js                   # auth/session store
-│       └── services/api.js                      # authAPI + chatAPI (Tauri invoke)
+│       ├── features/auth/LoginScreen.tsx        # sign-in / register
+│       ├── features/chat/                        # ChatApp, Sidebar, ConversationView,
+│       │                                         #   Composer, MessageBubble, dialogs
+│       ├── components/ui/                         # shadcn primitives (button, dialog, …)
+│       ├── store/                                 # zustand: auth.ts, chat.ts
+│       └── lib/                                   # api.ts (typed invoke), events.ts, types.ts
 ├── docs/ARCHITECTURE.md      # ← authoritative architecture reference
 ├── docs/superpowers/         # design specs + implementation plans (history)
 ├── specifications/           # this dir: overview + process/convention docs

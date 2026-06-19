@@ -6,7 +6,7 @@
   modules: `node/`, `identity/`, `transport/`, `discovery/`, `eventlog/`, `ratchet/`,
   `channel/`, `dm.rs`, `file/`, `postoffice/`, `storage/`, `services/` (auth only).
 - Integration/e2e suites live in `src-tauri/tests/`; keep unit tests inline via `mod tests`.
-- Vue client sits in `frontend/src`; Vite tooling in `frontend/package.json`.
+- React client sits in `frontend/src`; Vite tooling in `frontend/package.json`.
 - Operational scripts in `scripts/` (`setup-hooks.sh`, `check-health.sh`); architecture in
   `docs/ARCHITECTURE.md`; conventions in `specifications/`.
 
@@ -26,7 +26,7 @@
 - Reference `specifications/development_conventions.md` for naming nuances.
 
 ## Architecture & Components
-- Stack: Rust 2021 on Tokio; Tauri 2 + Vue 3 shell. No server.
+- Stack: Rust 2021 on Tokio; Tauri 2 + React shell. No server.
 - The `Node` (`node/node.rs`) wires identity + signed UDP discovery + Noise transport +
   the content-addressed event log + DM/channel/file crypto. Messages are events synced
   CRDT-style; offline delivery via an elected post office.

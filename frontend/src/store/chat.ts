@@ -131,6 +131,21 @@ export const useChat = create<ChatState>((set, get) => ({
     })),
 
   start: () => {
+    // Fresh slate per login (the store survives logout/login of a different account).
+    set({
+      ready: false,
+      myId: "",
+      myAccountId: "",
+      peers: [],
+      accounts: [],
+      channels: [],
+      active: null,
+      messages: {},
+      reactions: {},
+      unread: {},
+      members: [],
+      incomingFiles: [],
+    });
     // Poll my_id until the node finishes opening (post-login KDF unlock takes a moment).
     let cancelled = false;
     const boot = async () => {

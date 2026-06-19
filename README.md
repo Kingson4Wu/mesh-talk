@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#prerequisites)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/Kingson4Wu/mesh-talk)
 
@@ -47,7 +47,7 @@ mesh-talk/
 │   │   └── bin/mesh-talk-node.rs  # headless node CLI (--post-office relay mode)
 │   ├── Cargo.toml
 │   └── tauri.conf.json
-├── frontend/               # Vue 3 frontend
+├── frontend/               # React + TS + Tailwind frontend
 ├── docs/ARCHITECTURE.md    # architecture reference
 ├── specifications/         # overview + process/convention docs
 ├── Makefile

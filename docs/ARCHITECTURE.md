@@ -1,7 +1,7 @@
 # Mesh-Talk Architecture
 
 A decentralized, end-to-end-encrypted LAN messenger. **Tauri** desktop shell, **Rust**
-backend, **Vue 3** frontend. No server: peers discover each other over signed UDP
+backend, **React + TypeScript** frontend. No server: peers discover each other over signed UDP
 broadcasts, connect directly over a Noise-encrypted TCP channel, and store messages as
 an append-only, hash-linked **event log** that syncs CRDT-style. When a peer is offline,
 an elected **post office** node stores-and-forwards the (still-encrypted) events.
@@ -16,7 +16,7 @@ an elected **post office** node stores-and-forwards the (still-encrypted) events
 ## 1. Process & layers
 
 ```
-Vue 3 UI (ChatView.vue) ──invoke()──▶ Tauri IPC (chat_commands.rs)
+React UI (features/chat/*.tsx) ──invoke()──▶ Tauri IPC (chat_commands.rs)
         ▲   ──listen() events──                         │
         │                                               ▼
         │                                   NodeRuntime (node/runtime.rs)
@@ -94,11 +94,14 @@ Vue 3 UI (ChatView.vue) ──invoke()──▶ Tauri IPC (chat_commands.rs)
 
 ## 5. Frontend (`frontend/`)
 
-Vue 3 + Pinia + Vue Router (hash). `src/services/api.js` exposes `authAPI` + `chatAPI`
-(wrapping every messaging Tauri command). `views/chat/ChatView.vue` is the
-app (3-pane UI: peers/channels · messages · members) with @mentions, replies, reactions,
-files, search, and the link-a-device panel, served at `/`. `stores/appStore.js` is an
-auth/session-only store; `LoginView` is the only other view.
+**React 18 + TypeScript + Tailwind + shadcn/ui**, state in **zustand**, built with Vite.
+`lib/api.ts` exposes typed `auth` + `chat` wrappers over `invoke()` (every command);
+`lib/events.ts` subscribes to `dm-received`/`channel-message`/`file-received`.
+`store/auth.ts` holds the session; `store/chat.ts` holds per-conversation message/
+reaction/unread state and routes incoming DMs to the sender's *account* (one conversation
+per multi-device contact). `features/chat/` is the 3-pane app (sidebar · messages ·
+members) with replies, reactions, @mentions, file send + a received-files tray, search,
+and device linking; `features/auth/LoginScreen.tsx` is the only other screen.
 
 ## 6. Binaries
 

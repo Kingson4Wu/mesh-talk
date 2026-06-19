@@ -40,7 +40,7 @@ cd src-tauri && cargo test
 
 ## Frontend Testing
 
-Vue frontend tests should use Vitest/Jest and can be organized in two ways:
+React frontend tests should use Vitest + Testing Library and can be organized in two ways:
 
 1. Place tests alongside the components/modules they test:
    ```

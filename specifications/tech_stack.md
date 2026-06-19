@@ -11,7 +11,7 @@
 - **CLI**: `clap` (the `mesh-talk-node` headless/post-office binary).
 
 ## Frontend
-- **Vue 3** + **Pinia** + **Vue Router** (hash history), built with **Vite**.
+- **React 18** + **TypeScript** + **Tailwind CSS** + **shadcn/ui** + **zustand**, built with **Vite**.
 
 ## Tooling / CI
 - Cargo, `rustfmt`, **Clippy (`--all-targets -D warnings`)**, `cargo test`,

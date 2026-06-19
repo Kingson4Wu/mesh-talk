@@ -1,7 +1,7 @@
 # Contributing
 
 Mesh-Talk is a serverless, end-to-end-encrypted LAN chat app: a Rust
-([Tauri](https://tauri.app/)) backend in `src-tauri/` and a Vue + Vite frontend in
+([Tauri](https://tauri.app/)) backend in `src-tauri/` and a React + Vite frontend in
 `frontend/`. A headless CLI (`mesh-talk-node`) drives the same core for testing without
 the GUI. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
 
