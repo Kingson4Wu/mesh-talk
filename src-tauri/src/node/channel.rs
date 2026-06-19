@@ -255,7 +255,7 @@ impl ChannelBook {
                     let Some(state) = self.states.get_mut(&channel_id) else {
                         continue;
                     };
-                    if let Some(plaintext) = state.open_sender_message(&event.ciphertext) {
+                    if let Some(plaintext) = state.open_sender_message(&event.author.user_id(), &event.ciphertext) {
                         let body = MessageBody::decode(&plaintext);
                         let msg = ReceivedChannelMessage {
                             channel_id,

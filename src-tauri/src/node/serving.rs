@@ -30,7 +30,10 @@ impl Node {
     /// Replicate `conv` to the elected post office, if one is known. Returns
     /// `Ok(true)` if a post office accepted a round, `Ok(false)` if no post office
     /// is known.
-    pub(in crate::node) async fn replicate_to_post_office(&self, conv: ConversationId) -> Result<bool, SessionError> {
+    pub(in crate::node) async fn replicate_to_post_office(
+        &self,
+        conv: ConversationId,
+    ) -> Result<bool, SessionError> {
         let po = {
             let roster = self.roster.lock().expect("roster mutex not poisoned");
             elected_post_office(&roster)
@@ -131,7 +134,7 @@ impl Node {
                 let mut book = self.channels.lock().expect("channels mutex not poisoned");
                 match book
                     .state_mut(&conv)
-                    .and_then(|s| s.open_sender_message(&event.ciphertext))
+                    .and_then(|s| s.open_sender_message(&event.author.user_id(), &event.ciphertext))
                 {
                     Some(p) => p,
                     None => continue,
@@ -276,10 +279,10 @@ impl Node {
         for event in candidates {
             // Resolve the author's public identity + display name from the roster.
             let author_uid = event.author.user_id();
-            let (peer_public, peer_name) = {
+            let (peer_public, peer_name, peer_account) = {
                 let roster = self.roster.lock().expect("roster mutex not poisoned");
                 match roster.get(&author_uid) {
-                    Some(p) => (p.public.clone(), p.name.clone()),
+                    Some(p) => (p.public.clone(), p.name.clone(), p.account_id.clone()),
                     None => continue, // unknown author yet; retry later (NOT marked emitted)
                 }
             };
@@ -303,6 +306,18 @@ impl Node {
             let (record_conv, record_from, record_plaintext, body) =
                 match DmEnvelope::decode(&wrapped) {
                     Some(env) => {
+                        // Bind the envelope's claimed sender account to the AUTHENTICATED
+                        // author device's certified account — a device cannot forge a
+                        // message "from" another account. (A self-synced copy is authored
+                        // by our own device, which carries our own account, so it matches
+                        // when sender_account == my_account.)
+                        if peer_account.as_deref() != Some(env.route.sender_account.as_str()) {
+                            self.emitted
+                                .lock()
+                                .expect("emitted mutex not poisoned")
+                                .insert(event.id);
+                            continue;
+                        }
                         let my_account = self.account.account_id();
                         let counterparty = if env.route.sender_account == my_account {
                             env.route.recipient_account.clone() // self-synced copy of our own send

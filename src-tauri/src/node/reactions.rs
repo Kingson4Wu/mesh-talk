@@ -118,7 +118,7 @@ impl Node {
         let me = self.identity.public().user_id();
         // The device-pair conversations whose React events can carry this account's
         // reactions: ours-with-each-target-device and ours-with-each-own-other-device.
-        let convs: Vec<(ConversationId, [u8; 32])> = {
+        let convs: Vec<(ConversationId, [u8; 32], Option<String>)> = {
             let roster = self.roster.lock().expect("roster mutex not poisoned");
             roster
                 .peers()
@@ -132,12 +132,13 @@ impl Node {
                     (
                         dm_conversation_id(&self.identity.public(), &p.public),
                         p.public.x25519_pub,
+                        p.account_id.clone(),
                     )
                 })
                 .collect()
         };
         let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
-        for (conv, author_x) in convs {
+        for (conv, author_x, peer_account) in convs {
             let react_events: Vec<Event> = {
                 let log = self.log.lock().expect("log mutex not poisoned");
                 log.events(&conv)
@@ -151,6 +152,11 @@ impl Node {
                     continue;
                 };
                 if let Some(env) = ReactionEnvelope::decode(&pt) {
+                    // Bind the claimed sender account to the peer whose sealed-box key
+                    // just authenticated this reaction — no spoofing another account.
+                    if peer_account.as_deref() != Some(env.route.sender_account.as_str()) {
+                        continue;
+                    }
                     decoded.push((
                         env.route.sender_account,
                         ReactionPayload {
@@ -270,5 +276,4 @@ impl Node {
         }
         aggregate(&decoded)
     }
-
 }

@@ -210,8 +210,13 @@ impl ChannelState {
     }
 
     /// Open a sender-keyed message (`&mut` — the receiving chain ratchets + deletes the
-    /// key). `None` if we lack that sender's chain for the epoch or the key is consumed.
-    pub fn open_sender_message(&mut self, wire: &[u8]) -> Option<Vec<u8>> {
+    /// key). `expected_sender` is the **authenticated** event author's user-id: the
+    /// header's claimed `sender` must equal it, so a member holding another member's
+    /// sender chain cannot seal under it (impersonation) nor burn its single-use
+    /// positions (censorship/DoS). The bind is checked BEFORE the chain is consumed.
+    /// `None` if the sender is forged, we lack that sender's chain for the epoch, or the
+    /// key is consumed.
+    pub fn open_sender_message(&mut self, expected_sender: &str, wire: &[u8]) -> Option<Vec<u8>> {
         if wire.len() < 2 {
             return None;
         }
@@ -222,6 +227,11 @@ impl ChannelState {
         let hdr_bytes = &wire[2..2 + hlen];
         let ct = &wire[2 + hlen..];
         let hdr = MsgHeader::decode(hdr_bytes)?;
+        // Bind the decryption chain to the authenticated author — the wire-claimed
+        // `sender` is not trusted on its own.
+        if hdr.sender != expected_sender {
+            return None;
+        }
         let chain = self
             .sender_chains
             .get_mut(&(hdr.sender.clone(), hdr.epoch))?;
@@ -300,7 +310,10 @@ mod tests {
     fn sender_key_seal_then_open() {
         let (mut alice, mut bob) = sender_pair(0);
         let wire = alice.seal_sender_message(b"hi").unwrap();
-        assert_eq!(bob.open_sender_message(&wire).as_deref(), Some(&b"hi"[..]));
+        assert_eq!(
+            bob.open_sender_message("alice", &wire).as_deref(),
+            Some(&b"hi"[..])
+        );
     }
 
     #[test]
@@ -310,9 +323,18 @@ mod tests {
         let w1 = alice.seal_sender_message(b"m1").unwrap();
         let w2 = alice.seal_sender_message(b"m2").unwrap();
         // Bob opens 2, 0, 1 — the chain ratchets forward and buffers skipped keys.
-        assert_eq!(bob.open_sender_message(&w2).as_deref(), Some(&b"m2"[..]));
-        assert_eq!(bob.open_sender_message(&w0).as_deref(), Some(&b"m0"[..]));
-        assert_eq!(bob.open_sender_message(&w1).as_deref(), Some(&b"m1"[..]));
+        assert_eq!(
+            bob.open_sender_message("alice", &w2).as_deref(),
+            Some(&b"m2"[..])
+        );
+        assert_eq!(
+            bob.open_sender_message("alice", &w0).as_deref(),
+            Some(&b"m0"[..])
+        );
+        assert_eq!(
+            bob.open_sender_message("alice", &w1).as_deref(),
+            Some(&b"m1"[..])
+        );
     }
 
     #[test]
@@ -320,11 +342,28 @@ mod tests {
         let (mut alice, mut bob) = sender_pair(0);
         let wire = alice.seal_sender_message(b"once").unwrap();
         assert_eq!(
-            bob.open_sender_message(&wire).as_deref(),
+            bob.open_sender_message("alice", &wire).as_deref(),
             Some(&b"once"[..])
         );
         // The key was consumed (forward secrecy) — re-opening the same wire fails.
-        assert!(bob.open_sender_message(&wire).is_none());
+        assert!(bob.open_sender_message("alice", &wire).is_none());
+    }
+
+    #[test]
+    fn open_rejects_sender_mismatch_without_consuming_chain() {
+        // A member who holds Alice's chain could otherwise seal a message "as Alice"
+        // (or replay one) under an event they author, burning Alice's single-use
+        // position so her genuine message is dropped (censorship/DoS). The author bind
+        // must reject it BEFORE the chain is consumed.
+        let (mut alice, mut bob) = sender_pair(0);
+        let wire = alice.seal_sender_message(b"hi").unwrap();
+        // Same wire, but the authenticated author is someone else: rejected.
+        assert!(bob.open_sender_message("mallory", &wire).is_none());
+        // Crucially, Alice's position was NOT consumed — her genuine message still opens.
+        assert_eq!(
+            bob.open_sender_message("alice", &wire).as_deref(),
+            Some(&b"hi"[..]),
+        );
     }
 
     #[test]
@@ -337,7 +376,7 @@ mod tests {
         // A member who never recorded Alice's chain cannot open her message.
         let mut outsider = ChannelState::from_meta(id, meta("general", &[&a], 0));
         outsider.set_identity("carol".into());
-        assert!(outsider.open_sender_message(&wire).is_none());
+        assert!(outsider.open_sender_message("alice", &wire).is_none());
     }
 
     #[test]
