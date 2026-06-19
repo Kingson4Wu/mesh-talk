@@ -6,6 +6,7 @@
 use crate::discovery::service::{run_broadcast, run_listen};
 use crate::discovery::{Announce, PeerRecord, Roster};
 use crate::eventlog::LogError;
+use crate::identity::account_keystore;
 use crate::identity::device::PublicIdentity;
 use crate::identity::keystore;
 use crate::node::net::discovery_socket;
@@ -58,6 +59,7 @@ pub struct RedesignRuntime {
     node: Arc<Node>,
     roster: Arc<Mutex<Roster>>,
     user_id: String,
+    account_id: String,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -88,11 +90,16 @@ impl RedesignRuntime {
             .map_err(|e| RuntimeError::Open(e.into()))?;
         let self_uid = identity.public().user_id();
 
+        let account = account_keystore::load_or_create(&dir.join("account.keystore"), password)
+            .map_err(|e| RuntimeError::Open(e.into()))?;
+        let account_id = account.account_id();
+
         let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await?;
         let tcp_port = listener.local_addr()?.port();
 
         // Build the announce BEFORE the identity is moved into the node.
-        let announce = Announce::new(&identity, display_name.to_string(), tcp_port);
+        let announce =
+            Announce::new_with_account(&identity, &account, display_name.to_string(), tcp_port);
 
         let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
         let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
@@ -156,6 +163,7 @@ impl RedesignRuntime {
             node,
             roster,
             user_id: self_uid,
+            account_id,
             tasks,
         })
     }
@@ -163,6 +171,12 @@ impl RedesignRuntime {
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> &str {
         &self.user_id
+    }
+
+    /// This node's cryptographic account id (stable across devices once linking
+    /// is wired; today each device generates its own account on first run).
+    pub fn account_id(&self) -> &str {
+        &self.account_id
     }
 
     /// A snapshot of currently-known peers.
@@ -303,5 +317,10 @@ mod tests {
         .await
         .expect("runtime reopens");
         assert_eq!(runtime.user_id(), runtime2.user_id());
+
+        // The cryptographic account is created on disk and stable across reopen.
+        assert_eq!(runtime.account_id().len(), 32); // account_id is 32 hex chars
+        assert!(node_dir.join("account.keystore").exists());
+        assert_eq!(runtime.account_id(), runtime2.account_id());
     }
 }

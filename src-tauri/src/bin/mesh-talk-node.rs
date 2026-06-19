@@ -96,12 +96,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let user_id = identity.public().user_id();
 
+    // Persistent cross-device account key (sibling of the device keystore).
+    let account_path = std::path::Path::new(&args.keystore)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("account.keystore");
+    let account =
+        mesh_talk::identity::account_keystore::load_or_create(&account_path, &args.password)?;
+
     // TCP listener for peer connections; resolve the actual (possibly OS-assigned) port.
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
     let tcp_port = listener.local_addr()?.port();
 
     // Build the signed announce (borrows identity) BEFORE moving identity into the node.
-    let announce = Announce::new(&identity, args.name.clone(), tcp_port);
+    let announce = Announce::new_with_account(&identity, &account, args.name.clone(), tcp_port);
 
     // Shared roster (discovery writes it; the node + REPL read it) and the node.
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
@@ -217,11 +225,20 @@ async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let user_id = identity.public().user_id();
 
+    // Persistent cross-device account key (sibling of the device keystore).
+    let account_path = std::path::Path::new(&args.keystore)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("account.keystore");
+    let account =
+        mesh_talk::identity::account_keystore::load_or_create(&account_path, &args.password)?;
+
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
     let tcp_port = listener.local_addr()?.port();
 
     // The relay advertises the post-office role.
-    let announce = Announce::new_post_office(&identity, args.name.clone(), tcp_port);
+    let announce =
+        Announce::new_post_office_with_account(&identity, &account, args.name.clone(), tcp_port);
 
     // Two identity copies: one is moved into the durable PostOffice, one is used
     // for the Noise handshake in the accept loop (same keypair, different owner).
