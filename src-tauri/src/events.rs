@@ -1,5 +1,6 @@
 use crate::commands::ChatMessageInfo;
 use crate::domain::node_registry::NodeStatus;
+use crate::eventlog::event::EventId;
 use crate::perf_monitor;
 use crate::services::file_transfer::{TransferDirection, TransferStatus};
 use crate::services::node_service::{MessageEvent, NodeService};
@@ -36,6 +37,9 @@ pub const EVENT_FILE_TRANSFER_PROGRESS: &str = "file-transfer-progress";
 pub const EVENT_FILE_TRANSFER_COMPLETE: &str = "file-transfer-complete";
 pub const EVENT_FILE_TRANSFER_OFFER: &str = "file-transfer-offer";
 pub const EVENT_FIREWALL_PERMISSION_REQUIRED: &str = "firewall-permission-required";
+pub const EVENT_REDESIGN_DM_RECEIVED: &str = "redesign-dm-received";
+pub const EVENT_REDESIGN_CHANNEL_MESSAGE: &str = "redesign-channel-message";
+pub const EVENT_REDESIGN_FILE_RECEIVED: &str = "redesign-file-received";
 
 static NODE_EVENT_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -343,6 +347,91 @@ pub fn emit_contact_added<R: Runtime>(
 
     if let Err(e) = app_handle.emit(EVENT_CONTACT_ADDED, event) {
         error!("Failed to emit contact added event: {}", e);
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct RedesignDmReceivedEvent {
+    pub from: String,
+    pub from_name: String,
+    pub text: String,
+    pub reply_to: Option<String>, // hex EventId of the parent message, if any
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct RedesignChannelMessageEvent {
+    pub channel_id: String, // hex
+    pub channel_name: String,
+    pub from: String,
+    pub text: String,
+    pub reply_to: Option<String>, // hex EventId of the parent message, if any
+}
+
+/// Emit a received redesign DM to the frontend (text decoded lossily for display).
+pub fn emit_redesign_dm_received<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    from: String,
+    from_name: String,
+    text: Vec<u8>,
+    reply_to: Option<EventId>,
+) {
+    let event = RedesignDmReceivedEvent {
+        from,
+        from_name,
+        text: String::from_utf8_lossy(&text).into_owned(),
+        reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
+    };
+    if let Err(e) = app_handle.emit(EVENT_REDESIGN_DM_RECEIVED, event) {
+        log::error!("Failed to emit redesign dm event: {e}");
+    }
+}
+
+pub fn emit_redesign_channel_message<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    channel_id: String,
+    channel_name: String,
+    from: String,
+    text: Vec<u8>,
+    reply_to: Option<EventId>,
+) {
+    let event = RedesignChannelMessageEvent {
+        channel_id,
+        channel_name,
+        from,
+        text: String::from_utf8_lossy(&text).into_owned(),
+        reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
+    };
+    if let Err(e) = app_handle.emit(EVENT_REDESIGN_CHANNEL_MESSAGE, event) {
+        log::error!("Failed to emit redesign channel event: {e}");
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct RedesignFileReceivedEvent {
+    pub conv: String, // hex (channel id for a channel file; the DM conv otherwise)
+    pub from: String, // sender user-id
+    pub name: String,
+    pub size: u64,
+    pub file_conv: String, // hex — pass to save
+}
+
+pub fn emit_redesign_file_received<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    conv: String,
+    from: String,
+    name: String,
+    size: u64,
+    file_conv: String,
+) {
+    let event = RedesignFileReceivedEvent {
+        conv,
+        from,
+        name,
+        size,
+        file_conv,
+    };
+    if let Err(e) = app_handle.emit(EVENT_REDESIGN_FILE_RECEIVED, event) {
+        log::error!("Failed to emit redesign file event: {e}");
     }
 }
 

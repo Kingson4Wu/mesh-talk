@@ -262,14 +262,16 @@ pub async fn login(
     username: String,
     password: String,
     app_state: tauri::State<'_, AppState>,
+    redesign_state: tauri::State<'_, crate::redesign_commands::RedesignState>,
 ) -> Result<LoginResult, String> {
-    let result = login_impl(username, password, app_state.inner()).map_err(|e| e.to_string())?;
+    let result =
+        login_impl(username, password.clone(), app_state.inner()).map_err(|e| e.to_string())?;
 
     if result.success {
+        // Legacy network start (unchanged).
         let app_handle_clone = app_handle.clone();
         let node_service_clone = node_service.inner().clone();
         let app_state_clone = app_state.inner().clone();
-
         tauri::async_runtime::spawn(async move {
             {
                 let mut service = node_service_clone.lock().await;
@@ -278,16 +280,133 @@ pub async fn login(
                     service.update_name(generated_name);
                 }
             }
-
             if let Err(err) =
                 start_network_impl(app_handle_clone, node_service_clone, app_state_clone).await
             {
                 eprintln!("Failed to start network runtime: {}", err);
             }
         });
+
+        // Redesign node start (additive): per-account keystore under ~/.mesh-talk/redesign/<user_id>/.
+        if let Some(session) = app_state.session().get() {
+            spawn_redesign_runtime(
+                app_handle.clone(),
+                session.user.user_id.clone(),
+                session.user.name.clone(),
+                password.clone(),
+                redesign_state.inner().clone(),
+            );
+        }
     }
 
     Ok(result)
+}
+
+/// Spawn the redesign runtime in the background, wiring its inbound callbacks to the
+/// app's Tauri events, and store it in `redesign_handle`. Shared by login and by
+/// account adoption after device linking (which drops the old runtime and re-spawns;
+/// `RedesignRuntime::start` reloads the account keystore, so a re-spawn adopts a
+/// freshly-linked account secret). `account_id` is the host-app namespace for the data
+/// directory — distinct from the node's cryptographic account.
+pub(crate) fn spawn_redesign_runtime(
+    app_handle: tauri::AppHandle,
+    account_id: String,
+    display_name: String,
+    password: String,
+    redesign_handle: crate::redesign_commands::RedesignState,
+) {
+    let app_handle_for_dm = app_handle.clone();
+    let app_handle_for_channel = app_handle.clone();
+    let app_handle_for_file = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let base_dir = redesign_data_dir();
+        match crate::node::runtime::RedesignRuntime::start(
+            &base_dir,
+            &account_id,
+            &display_name,
+            &password,
+            crate::node::net::DEFAULT_DISCOVERY_PORT,
+            move |dm| {
+                crate::events::emit_redesign_dm_received(
+                    &app_handle_for_dm,
+                    dm.from,
+                    dm.from_name,
+                    dm.text,
+                    dm.reply_to,
+                );
+            },
+            move |msg: crate::node::channel::ReceivedChannelMessage| {
+                crate::events::emit_redesign_channel_message(
+                    &app_handle_for_channel,
+                    hex::encode(msg.channel_id.as_bytes()),
+                    msg.channel_name,
+                    msg.from,
+                    msg.text,
+                    msg.reply_to,
+                );
+            },
+            move |f: crate::node::filebook::ReceivedFile| {
+                crate::events::emit_redesign_file_received(
+                    &app_handle_for_file,
+                    hex::encode(f.conv.as_bytes()),
+                    f.from,
+                    f.name,
+                    f.size,
+                    hex::encode(f.file_conv.as_bytes()),
+                );
+            },
+        )
+        .await
+        {
+            Ok(runtime) => {
+                *redesign_handle.0.lock().await = Some(runtime);
+                log::info!("Redesign node started for account {account_id}");
+            }
+            Err(e) => log::warn!("Redesign node failed to start: {e}"),
+        }
+    });
+}
+
+/// Adopt an account secret that was just persisted by a successful device link:
+/// drop the running redesign runtime and re-spawn it, so it reloads the account
+/// keystore (now holding the linked account) and re-advertises under it. Reuses the
+/// session credentials held by the runtime + app state — no re-login required.
+#[tauri::command]
+pub async fn redesign_adopt_linked_account(
+    app_handle: tauri::AppHandle,
+    app_state: tauri::State<'_, AppState>,
+    redesign_state: tauri::State<'_, crate::redesign_commands::RedesignState>,
+) -> Result<(), String> {
+    // Read the session password from the running runtime before we drop it.
+    let pw = {
+        let guard = redesign_state.0.lock().await;
+        guard
+            .as_ref()
+            .map(|rt| rt.restart_password().to_string())
+            .ok_or_else(|| "redesign node not started".to_string())?
+    };
+    let session = app_state
+        .session()
+        .get()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let account_id = session.user.user_id.clone();
+    let display_name = session.user.name.clone();
+    // Drop the current runtime (its Drop aborts the background tasks), then re-spawn.
+    redesign_state.0.lock().await.take();
+    spawn_redesign_runtime(
+        app_handle,
+        account_id,
+        display_name,
+        pw,
+        redesign_state.inner().clone(),
+    );
+    Ok(())
+}
+
+/// The base directory for redesign per-account data (mirrors the app's `~/.mesh-talk`).
+fn redesign_data_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".mesh-talk")
 }
 
 /// Starts the network runtime
@@ -557,7 +676,12 @@ fn login_impl(
 }
 
 #[tauri::command]
-pub async fn logout(app_state: tauri::State<'_, AppState>) -> Result<LogoutResult, String> {
+pub async fn logout(
+    app_state: tauri::State<'_, AppState>,
+    redesign_state: tauri::State<'_, crate::redesign_commands::RedesignState>,
+) -> Result<LogoutResult, String> {
+    // Stop and drop the redesign runtime (Drop aborts its background tasks).
+    redesign_state.0.lock().await.take();
     logout_impl(app_state.inner()).map_err(|e| e.to_string())
 }
 

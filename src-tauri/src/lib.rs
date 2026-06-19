@@ -13,21 +13,31 @@
 )]
 
 pub mod api;
+pub mod channel;
 pub mod commands;
 pub mod contacts;
 pub mod crypto;
+pub mod discovery;
+pub mod dm;
 pub mod domain;
 pub mod error;
+pub mod eventlog;
 pub mod events;
+pub mod file;
 pub mod identity;
 pub mod logger;
 pub mod network;
+pub mod node;
 pub mod notifications;
 pub mod perf;
 pub mod platform;
+pub mod postoffice;
+pub mod ratchet;
+pub mod redesign_commands;
 pub mod services;
 pub mod state;
 pub mod storage;
+pub mod transport;
 pub mod tray;
 pub mod user_friendly_errors;
 pub mod utils;
@@ -191,10 +201,12 @@ pub fn run_tauri() {
         })
         .manage(node_service)
         .manage(app_state)
+        .manage(crate::redesign_commands::RedesignState::empty())
         .invoke_handler(tauri::generate_handler![
             commands::send_message,
             commands::get_node_info,
             commands::login,
+            commands::redesign_adopt_linked_account,
             commands::start_network,
             commands::stop_network,
             commands::connect_to_node,
@@ -215,7 +227,36 @@ pub fn run_tauri() {
             commands::list_file_transfers,
             commands::accept_incoming_file_transfer,
             commands::reject_incoming_file_transfer,
-            commands::allow_firewall_port
+            commands::allow_firewall_port,
+            crate::redesign_commands::redesign_my_id,
+            crate::redesign_commands::redesign_list_peers,
+            crate::redesign_commands::redesign_send_dm,
+            crate::redesign_commands::redesign_history,
+            crate::redesign_commands::redesign_account_id,
+            crate::redesign_commands::redesign_send_to_account,
+            crate::redesign_commands::redesign_account_history,
+            crate::redesign_commands::redesign_start_linking,
+            crate::redesign_commands::redesign_stop_linking,
+            crate::redesign_commands::redesign_link_device,
+            crate::redesign_commands::redesign_list_accounts,
+            crate::redesign_commands::redesign_send_file_to_account,
+            crate::redesign_commands::redesign_react_account,
+            crate::redesign_commands::redesign_account_reactions,
+            crate::redesign_commands::redesign_list_channels,
+            crate::redesign_commands::redesign_create_channel,
+            crate::redesign_commands::redesign_add_channel_member,
+            crate::redesign_commands::redesign_remove_channel_member,
+            crate::redesign_commands::redesign_channel_members,
+            crate::redesign_commands::redesign_send_channel_message,
+            crate::redesign_commands::redesign_channel_history,
+            crate::redesign_commands::redesign_send_file_dm,
+            crate::redesign_commands::redesign_send_file_channel,
+            crate::redesign_commands::redesign_save_file,
+            crate::redesign_commands::redesign_react_dm,
+            crate::redesign_commands::redesign_react_channel,
+            crate::redesign_commands::redesign_reactions,
+            crate::redesign_commands::redesign_channel_reactions,
+            crate::redesign_commands::redesign_search
         ])
         .run(tauri::generate_context!())
         .map_err(|e| log::error!("Error while running tauri application: {}", e))
