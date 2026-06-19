@@ -452,7 +452,7 @@ mod tests {
         let ordered = log.events(&conv());
         assert_eq!(ordered[0].id, root.id);
         // The two concurrent events appear in id order, regardless of append order.
-        let mut expected = vec![a.id, b.id];
+        let mut expected = [a.id, b.id];
         expected.sort();
         assert_eq!(ordered[1].id, expected[0]);
         assert_eq!(ordered[2].id, expected[1]);

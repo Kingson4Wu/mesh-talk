@@ -144,11 +144,11 @@ mod tests {
         let path = dir.path().join("keystore.enc");
 
         // Fewer than 28 bytes — must return Err, not panic.
-        std::fs::write(&path, &[0u8; 10]).expect("write short");
+        std::fs::write(&path, [0u8; 10]).expect("write short");
         assert!(load(&path, "pw").is_err());
 
         // Exactly 28 bytes — empty ciphertext — must also return Err.
-        std::fs::write(&path, &[0u8; 28]).expect("write 28-byte");
+        std::fs::write(&path, [0u8; 28]).expect("write 28-byte");
         assert!(load(&path, "pw").is_err());
     }
 

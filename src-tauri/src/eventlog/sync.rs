@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(cap_events(all.clone(), 1).len(), 1);
         // A budget for ~2 events yields 2 or 3 (size-dependent), never all 5.
         let capped = cap_events(all.clone(), one * 2 + 8);
-        assert!(capped.len() >= 1 && capped.len() < 5);
+        assert!(!capped.is_empty() && capped.len() < 5);
         // A huge budget yields all.
         assert_eq!(cap_events(all, usize::MAX).len(), 5);
     }

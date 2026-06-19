@@ -365,6 +365,7 @@ mod tests {
             addr: "127.0.0.1:4000".parse::<SocketAddr>().unwrap(),
             name: name.to_string(),
             post_office: false,
+            account_id: None,
             last_seen: Instant::now(),
         }
     }
