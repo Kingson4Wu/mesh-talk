@@ -2,10 +2,37 @@
   <div class="redesign">
     <header class="rd-header">
       <h2>Redesign chat <span class="beta">beta</span></h2>
-      <div class="me">you: <code>{{ myId || "(starting…)" }}</code></div>
-      <button class="search-toggle" :class="{ active: showSearch }" title="Search messages" @click="showSearch = !showSearch">🔍</button>
-      <router-link class="back" :to="{ name: 'chat' }">← Back</router-link>
-    </header>
+      <div class="me">
+        you: <code>{{ myId || "(starting…)" }}</code>
+        <span v-if="accountId" class="acct" title="Your account (shared across your devices)">acct: <code>{{ accountId.slice(0, 8) }}…</code></span>
+      </div>
+      <button class="search-toggle" :class="{ active: linkOpen }" title="Link a device" @click="linkOpen = !linkOpen">🔗</button>
+      <button class="search-toggle" :class="{ active: showSearch }" title="Search messages" @click="showSearch = !showSearch">🔍</button>    </header>
+
+    <div v-if="linkOpen" class="link-panel">
+      <p class="link-acct">This device's account: <code>{{ accountId ? accountId.slice(0, 12) + "…" : "—" }}</code></p>
+      <div class="link-row">
+        <span class="link-label">Add another of your devices:</span>
+        <button type="button" @click="showLinkCode">Show pairing code</button>
+        <code v-if="linkCode" class="pair-code">{{ linkCode }}</code>
+      </div>
+      <div class="link-row">
+        <span class="link-label">Have a code from your other device?</span>
+        <select v-model="joinPeer">
+          <option value="">Pick the device…</option>
+          <option v-for="p in peers" :key="p.user_id" :value="p.user_id">
+            {{ p.name || "(unnamed)" }} ({{ p.user_id.slice(0, 8) }})
+          </option>
+        </select>
+        <input v-model="joinCode" placeholder="pairing code" />
+        <button type="button" :disabled="!joinPeer || !joinCode.trim()" @click="doLink">Link this device</button>
+      </div>
+      <div class="link-row">
+        <span class="link-label">Lost or compromised device?</span>
+        <button type="button" class="rekey" @click="rekeyAccount">Re-key (new identity)</button>
+      </div>
+      <p v-if="linkMsg" class="link-msg">{{ linkMsg }}</p>
+    </div>
 
     <div v-if="showSearch" class="search-panel">
       <form class="search-bar" @submit.prevent="runSearch">
@@ -137,6 +164,30 @@
           </div>
           <div v-if="!messages.length" class="empty">No messages yet.</div>
         </div>
+        <div v-if="activeChannel" class="members-bar">
+          <button class="members-toggle" :class="{ active: showMembers }" @click="toggleMembers">
+            👥 Members
+          </button>
+          <span v-if="memberNotice" class="members-notice">{{ memberNotice }}</span>
+        </div>
+        <div v-if="activeChannel && showMembers" class="members-panel">
+          <div class="members-hint">Members of <strong>#{{ activeChannel.name }}</strong>:</div>
+          <div class="members-list">
+            <div v-for="m in channelMembers" :key="m.user_id" class="members-row">
+              <span class="members-name">{{ m.name || m.user_id.slice(0, 8) }}</span>
+              <button class="members-remove" @click="removeMember(m)">Remove</button>
+            </div>
+            <span v-if="!channelMembers.length" class="empty">No members loaded.</span>
+          </div>
+          <div class="members-hint">Add a peer:</div>
+          <div class="members-list">
+            <div v-for="p in addablePeers" :key="p.user_id" class="members-row">
+              <span class="members-name">{{ p.name || p.user_id.slice(0, 8) }}</span>
+              <button class="members-add" @click="addMember(p)">Add</button>
+            </div>
+            <span v-if="!addablePeers.length" class="empty">No peers to add.</span>
+          </div>
+        </div>
         <div v-if="replyingTo" class="reply-banner">
           Replying to {{ replyingTo.from_me ? "you" : replyingTo.who }}: "{{ (replyingTo.text || "").slice(0, 50) }}"
           <button type="button" class="cancel" @click="cancelReply">✕</button>
@@ -190,6 +241,13 @@ const myId = ref("");
 const peers = ref([]);
 const activePeer = ref(null);
 const messages = ref([]);
+// Multi-device: account id + "link a device" panel state.
+const accountId = ref("");
+const linkOpen = ref(false);
+const linkCode = ref("");
+const joinPeer = ref("");
+const joinCode = ref("");
+const linkMsg = ref("");
 const draft = ref("");
 const error = ref("");
 const unread = reactive({});
@@ -201,6 +259,10 @@ const channelUnread = reactive({});
 const showCreate = ref(false);
 const newChannelName = ref("");
 const selectedMembers = reactive({});
+const showMembers = ref(false);
+const memberNotice = ref("");
+let memberNoticeTimer = null;
+const channelMembers = ref([]);
 
 const reactions = ref([]);
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "👀"];
@@ -292,7 +354,9 @@ async function loadReactions() {
     reactions.value = activeChannel.value
       ? await API.redesign.channelReactions(activeChannel.value.channel_id)
       : activePeer.value
-      ? await API.redesign.reactions(activePeer.value.user_id)
+      ? activePeer.value.account_id
+        ? await API.redesign.accountReactions(activePeer.value.account_id)
+        : await API.redesign.reactions(activePeer.value.user_id)
       : [];
   } catch (_e) { /* node may not be ready; ignore */ }
 }
@@ -302,15 +366,18 @@ function reactionsFor(messageId) {
 }
 
 function iReacted(r) {
-  return r.who.includes(myId.value);
+  // Device DMs/channels record the reactor's device id; account reactions record the
+  // account id — a reaction is "mine" if either matches.
+  return r.who.includes(myId.value) || (!!accountId.value && r.who.includes(accountId.value));
 }
 
 async function toggleReaction(message, emoji) {
   if (!message.id) return;
   const existing = reactions.value.find(r => r.target === message.id && r.emoji === emoji);
-  const remove = !!(existing && existing.who.includes(myId.value));
+  const remove = !!(existing && iReacted(existing));
   try {
     if (activeChannel.value) await API.redesign.reactChannel(activeChannel.value.channel_id, message.id, emoji, remove);
+    else if (activePeer.value.account_id) await API.redesign.reactAccount(activePeer.value.account_id, message.id, emoji, remove);
     else await API.redesign.reactDm(activePeer.value.user_id, message.id, emoji, remove);
     await loadReactions();
   } catch (e) { error.value = String(e); }
@@ -364,7 +431,11 @@ async function loadHistory() {
   if (!target) return;
   error.value = "";
   try {
-    const items = await API.redesign.history(target.user_id, 100);
+    // Account-addressed when the peer advertises an account (so a contact's several
+    // devices are one merged conversation); legacy device DM otherwise.
+    const items = target.account_id
+      ? await API.redesign.accountHistory(target.account_id, 100)
+      : await API.redesign.history(target.user_id, 100);
     // Bail if the user switched peers while this history was loading, so we
     // never render one peer's history under another's header.
     if (activePeer.value?.user_id !== target.user_id) return;
@@ -376,9 +447,17 @@ async function loadHistory() {
   }
 }
 
+/// The account a known device belongs to (for routing inbound events), or null.
+function accountOf(deviceUid) {
+  const p = peers.value.find((x) => x.user_id === deviceUid);
+  return p?.account_id || null;
+}
+
 async function selectChannel(c) {
   activePeer.value = null;
   activeChannel.value = c;
+  showMembers.value = false;
+  memberNotice.value = "";
   delete channelUnread[c.channel_id];
   await loadChannelHistory();
 }
@@ -407,6 +486,9 @@ async function send() {
   try {
     if (activeChannel.value) {
       await API.redesign.sendChannelMessage(activeChannel.value.channel_id, text, replyTo);
+    } else if (activePeer.value.account_id) {
+      // Account-addressed: fans out to the contact's devices + self-syncs to ours.
+      await API.redesign.sendToAccount(activePeer.value.account_id, text, replyTo);
     } else {
       await API.redesign.sendDm(activePeer.value.user_id, text, replyTo);
     }
@@ -422,16 +504,30 @@ async function send() {
 
 function onInbound(payload) {
   const from = payload.from;
-  if (activePeer.value && from === activePeer.value.user_id) {
-    messages.value.push({
-      from_me: false,
-      who: payload.from_name,
-      text: payload.text,
-      reply_to: payload.reply_to ?? null,
-      wall_clock: Date.now(),
-    });
-    void scrollDown();
-    void loadReactions();
+  const active = activePeer.value;
+  const fromAccount = accountOf(from);
+  // The inbound belongs to the open conversation if it shares the active account
+  // (multi-device) or, lacking accounts, is the same device.
+  const matchesActive =
+    active &&
+    ((active.account_id && fromAccount && active.account_id === fromAccount) ||
+      from === active.user_id);
+  if (matchesActive) {
+    if (active.account_id) {
+      // Account conversation: reload from the authoritative merged account history
+      // (the message was recorded before this event fired).
+      void loadHistory();
+    } else {
+      messages.value.push({
+        from_me: false,
+        who: payload.from_name,
+        text: payload.text,
+        reply_to: payload.reply_to ?? null,
+        wall_clock: Date.now(),
+      });
+      void scrollDown();
+      void loadReactions();
+    }
   } else if (from) {
     unread[from] = (unread[from] || 0) + 1;
   }
@@ -472,6 +568,61 @@ async function createChannel() {
   }
 }
 
+async function loadMembers() {
+  if (!activeChannel.value) {
+    channelMembers.value = [];
+    return;
+  }
+  try {
+    channelMembers.value = await API.redesign.channelMembers(activeChannel.value.channel_id);
+  } catch (_e) {
+    // best-effort; leave the list as-is
+  }
+}
+
+// Peers not already in the channel (the addable set).
+const addablePeers = computed(() => {
+  const ids = new Set(channelMembers.value.map((m) => m.user_id));
+  return peers.value.filter((p) => !ids.has(p.user_id));
+});
+
+async function toggleMembers() {
+  showMembers.value = !showMembers.value;
+  if (showMembers.value) await loadMembers();
+}
+
+async function addMember(peer) {
+  if (!activeChannel.value) return;
+  error.value = "";
+  try {
+    await API.redesign.addChannelMember(activeChannel.value.channel_id, peer.user_id);
+    flashMemberNotice(`Added ${peer.name || peer.user_id.slice(0, 8)}`);
+    await loadMembers();
+    await refreshChannels();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function removeMember(member) {
+  if (!activeChannel.value) return;
+  error.value = "";
+  try {
+    await API.redesign.removeChannelMember(activeChannel.value.channel_id, member.user_id);
+    flashMemberNotice(`Removed ${member.name || member.user_id.slice(0, 8)}`);
+    await loadMembers();
+    await refreshChannels();
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+function flashMemberNotice(text) {
+  memberNotice.value = text;
+  if (memberNoticeTimer) clearTimeout(memberNoticeTimer);
+  memberNoticeTimer = setTimeout(() => { memberNotice.value = ""; }, 2500);
+}
+
 async function attachFile() {
   if (!activePeer.value && !activeChannel.value) return;
   const sel = await openDialog({ multiple: false });
@@ -483,6 +634,8 @@ async function attachFile() {
     let fileConv;
     if (activeChannel.value) {
       fileConv = await API.redesign.sendFileChannel(activeChannel.value.channel_id, path);
+    } else if (activePeer.value.account_id) {
+      fileConv = await API.redesign.sendFileToAccount(activePeer.value.account_id, path);
     } else {
       fileConv = await API.redesign.sendFileDm(activePeer.value.user_id, path);
     }
@@ -493,9 +646,15 @@ async function attachFile() {
 
 function onFileReceived(payload) {
   const card = { from_me: false, who: payload.from, file: { name: payload.name, size: payload.size, file_conv: payload.file_conv }, wall_clock: Date.now() };
+  const active = activePeer.value;
+  const fromAccount = accountOf(payload.from);
+  const peerMatches =
+    active &&
+    ((active.account_id && fromAccount && active.account_id === fromAccount) ||
+      payload.from === active.user_id);
   if (activeChannel.value && payload.conv === activeChannel.value.channel_id) {
     messages.value.push(card); void scrollDown();
-  } else if (activePeer.value && payload.from === activePeer.value.user_id) {
+  } else if (peerMatches) {
     messages.value.push(card); void scrollDown();
   }
   // else: a file for an inactive conversation — ignored in this MVP
@@ -516,6 +675,43 @@ async function scrollDown() {
   }
 }
 
+async function showLinkCode() {
+  linkMsg.value = "";
+  try {
+    linkCode.value = await API.redesign.startLinking();
+  } catch (e) {
+    linkMsg.value = String(e);
+  }
+}
+
+async function doLink() {
+  linkMsg.value = "";
+  try {
+    const adopted = await API.redesign.linkDevice(joinPeer.value.trim(), joinCode.value.trim());
+    // Adopt the linked account live (restarts the node under the shared account) —
+    // no app restart needed.
+    await API.redesign.adoptLinkedAccount();
+    accountId.value = adopted;
+    joinCode.value = "";
+    linkMsg.value = `Linked! Your devices now share account ${adopted.slice(0, 8)}… (reconnecting…)`;
+  } catch (e) {
+    linkMsg.value = `Link failed: ${e}`;
+  }
+}
+
+async function rekeyAccount() {
+  if (!confirm("Re-key this account? You'll get a NEW identity; this device leaves the current account, and you must re-link any devices you still trust. Use this if a device was lost or compromised.")) return;
+  linkMsg.value = "";
+  try {
+    const fresh = await API.redesign.rekeyAccount();
+    await API.redesign.adoptLinkedAccount();
+    accountId.value = fresh;
+    linkMsg.value = `Re-keyed. New account ${fresh.slice(0, 8)}… (reconnecting…). Re-link your other devices to it.`;
+  } catch (e) {
+    linkMsg.value = `Re-key failed: ${e}`;
+  }
+}
+
 onMounted(async () => {
   if (!store.isAuthenticated) {
     router.replace({ name: "login" });
@@ -523,6 +719,7 @@ onMounted(async () => {
   }
   try {
     myId.value = await API.redesign.myId();
+    accountId.value = await API.redesign.accountId();
   } catch (_e) {
     error.value = "Redesign node not started yet — give it a moment after login.";
   }
@@ -536,6 +733,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer);
+  if (memberNoticeTimer) clearTimeout(memberNoticeTimer);
   if (typeof unlisten === "function") unlisten();
   if (typeof unlistenChannel === "function") unlistenChannel();
   if (typeof unlistenFile === "function") unlistenFile();
@@ -549,6 +747,49 @@ onBeforeUnmount(() => {
   height: 100vh;
   color: rgba(226, 232, 240, 1);
   background: rgba(15, 23, 42, 1);
+}
+.me .acct {
+  margin-left: 10px;
+  opacity: 0.75;
+}
+.link-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.6);
+}
+.link-panel .link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.link-panel .link-label {
+  min-width: 220px;
+  opacity: 0.85;
+}
+.link-panel .pair-code {
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: #4ade80;
+  background: rgba(15, 23, 42, 0.8);
+  padding: 2px 8px;
+  border-radius: 6px;
+  user-select: all;
+}
+.link-panel input,
+.link-panel select {
+  background: rgba(15, 23, 42, 0.8);
+  color: inherit;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.link-panel .link-msg {
+  color: #fbbf24;
+  margin: 0;
 }
 .rd-header {
   display: flex;
@@ -1004,5 +1245,75 @@ onBeforeUnmount(() => {
 }
 .reply-btn:hover {
   opacity: 1;
+}
+.members-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+.members-toggle {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: rgba(226, 232, 240, 1);
+  cursor: pointer;
+  font-size: 12px;
+}
+.members-toggle.active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+}
+.members-notice {
+  font-size: 12px;
+  color: #4ade80;
+}
+.members-panel {
+  padding: 8px 16px 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+.members-hint {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 1);
+  margin-bottom: 6px;
+}
+.members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.members-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.members-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.members-add {
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: none;
+  background: #4ade80;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 12px;
+}
+.members-remove {
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: 1px solid #f87171;
+  background: transparent;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 12px;
 }
 </style>

@@ -160,6 +160,21 @@ impl ChannelState {
         self.my_sender.contains_key(&epoch)
     }
 
+    /// Snapshot this node's per-epoch sending keys for persistence: each entry is
+    /// `(epoch, serialized SenderKey)`. The bytes are SECRET — store encrypted at rest.
+    pub fn export_my_senders(&self) -> Vec<(u64, Vec<u8>)> {
+        self.my_sender
+            .iter()
+            .map(|(epoch, sk)| (*epoch, sk.serialize()))
+            .collect()
+    }
+
+    /// Restore a persisted sending key for `epoch` (overwrites any in-memory key for
+    /// that epoch). Used at open to resume our sending chains after a restart.
+    pub fn import_my_sender(&mut self, epoch: u64, sk: SenderKey) {
+        self.my_sender.insert(epoch, sk);
+    }
+
     /// Record a peer's sender chain for `(author, epoch)` from their distribution.
     pub fn record_sender_chain(&mut self, author: String, epoch: u64, skd: &SenderKeyDistribution) {
         self.sender_chains

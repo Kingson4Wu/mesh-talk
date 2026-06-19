@@ -270,7 +270,7 @@ function prepareRedirect() {
   if (typeof redirect === "string" && redirect.length > 0) {
     return redirect;
   }
-  return { name: "chat" };
+  return { name: "redesign" };
 }
 
 // Form handling functions
@@ -400,7 +400,7 @@ watch(
 
 watch(isAuthenticated, (signedIn) => {
   if (signedIn) {
-    router.replace({ name: "chat" });
+    router.replace({ name: "redesign" });
   }
 });
 

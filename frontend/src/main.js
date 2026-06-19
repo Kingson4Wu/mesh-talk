@@ -61,7 +61,7 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth && !isAuthenticated.value) {
     next({ name: "login", query: { redirect: to.fullPath } });
   } else if (to.name === "login" && isAuthenticated.value) {
-    next({ name: "chat" });
+    next({ name: "redesign" });
   } else {
     next();
   }

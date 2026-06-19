@@ -150,7 +150,22 @@ where
         Ok(b) => b,
         Err(_) => return Ok(Served::Closed),
     };
-    match decode(&bytes)? {
+    serve_wire_bytes(channel, store, &bytes).await
+}
+
+/// Serve one ALREADY-READ sync wire frame (the body of [`serve_one`] after the recv).
+/// Exposed so a caller that peeked the first frame of a connection — e.g. to detect a
+/// non-sync protocol like device pairing — can still serve a sync frame it consumed.
+pub async fn serve_wire_bytes<S, IO>(
+    channel: &mut SecureChannel<IO>,
+    store: &Mutex<S>,
+    bytes: &[u8],
+) -> Result<Served, SessionError>
+where
+    S: SyncStore,
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    match decode(bytes)? {
         SyncWire::Request(request) => {
             let conversation = request.conversation;
             let response = {

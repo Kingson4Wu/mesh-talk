@@ -6,6 +6,7 @@
 use crate::discovery::service::{run_broadcast, run_listen};
 use crate::discovery::{Announce, PeerRecord, Roster};
 use crate::eventlog::LogError;
+use crate::identity::account_keystore;
 use crate::identity::device::PublicIdentity;
 use crate::identity::keystore;
 use crate::node::net::discovery_socket;
@@ -58,6 +59,12 @@ pub struct RedesignRuntime {
     node: Arc<Node>,
     roster: Arc<Mutex<Roster>>,
     user_id: String,
+    account_id: String,
+    /// Where the account keystore lives, so a successful device link can persist the
+    /// adopted account secret (effective on next login).
+    account_path: std::path::PathBuf,
+    /// The session password, to re-encrypt the keystore when adopting a linked account.
+    password: String,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -88,11 +95,16 @@ impl RedesignRuntime {
             .map_err(|e| RuntimeError::Open(e.into()))?;
         let self_uid = identity.public().user_id();
 
+        let account = account_keystore::load_or_create(&dir.join("account.keystore"), password)
+            .map_err(|e| RuntimeError::Open(e.into()))?;
+        let account_id = account.account_id();
+
         let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await?;
         let tcp_port = listener.local_addr()?.port();
 
         // Build the announce BEFORE the identity is moved into the node.
-        let announce = Announce::new(&identity, display_name.to_string(), tcp_port);
+        let announce =
+            Announce::new_with_account(&identity, &account, display_name.to_string(), tcp_port);
 
         let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
         let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
@@ -100,8 +112,9 @@ impl RedesignRuntime {
             mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
         let (file_tx, mut file_rx) =
             mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
-        let node = Node::open(
+        let node = Node::open_with_account(
             identity,
+            account,
             Arc::clone(&roster),
             incoming_tx,
             channel_tx,
@@ -156,6 +169,9 @@ impl RedesignRuntime {
             node,
             roster,
             user_id: self_uid,
+            account_id,
+            account_path: dir.join("account.keystore"),
+            password: password.to_string(),
             tasks,
         })
     }
@@ -163,6 +179,12 @@ impl RedesignRuntime {
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> &str {
         &self.user_id
+    }
+
+    /// This node's cryptographic account id (stable across devices once linking
+    /// is wired; today each device generates its own account on first run).
+    pub fn account_id(&self) -> &str {
+        &self.account_id
     }
 
     /// A snapshot of currently-known peers.
@@ -192,6 +214,74 @@ impl RedesignRuntime {
         self.node.dm_history(peer, limit)
     }
 
+    /// Send a DM addressed to an account (fan-out to its devices + self-sync to ours).
+    pub async fn send_to_account(
+        &self,
+        target_account_id: &str,
+        text: &[u8],
+        reply_to: Option<crate::eventlog::event::EventId>,
+    ) -> Result<(), NodeError> {
+        self.node
+            .send_to_account(target_account_id, text, reply_to)
+            .await
+    }
+
+    /// Account-level conversation history with `peer_account_id`.
+    pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
+        self.node.account_history(peer_account_id, limit)
+    }
+
+    /// The session password held for re-encrypting the keystore — used only to
+    /// re-spawn the runtime when adopting a freshly-linked account (no re-login).
+    pub(crate) fn restart_password(&self) -> &str {
+        &self.password
+    }
+
+    /// Re-key: replace this device's account with a fresh one on disk and return the
+    /// new account id. The caller adopts it by re-spawning the runtime. This abandons
+    /// the old `account_id` — the honest response to a lost/compromised device in the
+    /// shared-account v1 (a lost device keeps the OLD secret, so the only way to lock it
+    /// out is to move to a new identity and re-link the devices you still trust). It is
+    /// NOT a silent revocation: contacts re-discover you under the new account, and your
+    /// other good devices must be re-linked.
+    pub fn rekey_account(&self) -> Result<String, NodeError> {
+        let account = crate::identity::account::Account::generate();
+        crate::identity::account_keystore::save(&self.account_path, &self.password, &account)
+            .map_err(|e| NodeError::Channel(format!("persist new account: {e}")))?;
+        Ok(account.account_id())
+    }
+
+    /// Enter "link a device" mode; returns the one-time code to display.
+    pub fn start_linking(&self) -> String {
+        self.node.start_linking()
+    }
+
+    /// Leave "link a device" mode.
+    pub fn stop_linking(&self) {
+        self.node.stop_linking()
+    }
+
+    /// Link THIS device to an existing device `peer_user_id` using `code`. On success
+    /// persists the adopted account secret to disk (effective next login) and returns
+    /// the adopted account id.
+    pub async fn link_device(&self, peer_user_id: &str, code: &str) -> Result<String, NodeError> {
+        let peer = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .get(peer_user_id)
+                .cloned()
+                .ok_or_else(|| NodeError::UnknownPeer(peer_user_id.to_string()))?
+        };
+        let linked = self
+            .node
+            .link_to_device(peer.addr, &peer.public, code)
+            .await?;
+        let account = crate::identity::account::Account::from_secret_bytes(linked.secret);
+        crate::identity::account_keystore::save(&self.account_path, &self.password, &account)
+            .map_err(|e| NodeError::Channel(format!("persist linked account: {e}")))?;
+        Ok(linked.account_id)
+    }
+
     /// Create a channel; returns its conversation id.
     pub async fn create_channel(
         &self,
@@ -204,6 +294,14 @@ impl RedesignRuntime {
     /// Channels this node is a member of.
     pub fn list_channels(&self) -> Vec<crate::node::ChannelSummary> {
         self.node.list_channels()
+    }
+
+    /// The current members of a channel (empty if unknown).
+    pub fn channel_members(
+        &self,
+        channel: crate::eventlog::event::ConversationId,
+    ) -> Vec<PublicIdentity> {
+        self.node.channel_members(channel)
     }
 
     /// History of a channel (all senders).
@@ -231,6 +329,14 @@ impl RedesignRuntime {
         channel: crate::eventlog::event::ConversationId,
     ) -> Vec<crate::node::reaction::ReactionView> {
         self.node.reactions(channel)
+    }
+
+    /// Aggregated reactions in the account conversation with `peer_account_id`.
+    pub fn account_reactions(
+        &self,
+        peer_account_id: &str,
+    ) -> Vec<crate::node::reaction::ReactionView> {
+        self.node.account_reactions(peer_account_id)
     }
 
     /// A cloned handle to the underlying node, so an IPC command can snapshot it
@@ -295,5 +401,10 @@ mod tests {
         .await
         .expect("runtime reopens");
         assert_eq!(runtime.user_id(), runtime2.user_id());
+
+        // The cryptographic account is created on disk and stable across reopen.
+        assert_eq!(runtime.account_id().len(), 32); // account_id is 32 hex chars
+        assert!(node_dir.join("account.keystore").exists());
+        assert_eq!(runtime.account_id(), runtime2.account_id());
     }
 }

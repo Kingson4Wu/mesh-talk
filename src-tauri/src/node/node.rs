@@ -6,6 +6,7 @@
 //! module provides the pieces and proves them with an in-process two-node
 //! exchange over loopback TCP.
 
+use crate::channel::sender_key::SenderKey;
 use crate::channel::ChannelMeta;
 use crate::discovery::roster::{PeerRecord, Roster, UserId};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
@@ -14,18 +15,22 @@ use crate::eventlog::LogError;
 use crate::file::{
     file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
 };
+use crate::identity::account::Account;
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::channel::{seal_keys_for, ChannelBook, ReceivedChannelMessage};
-use crate::node::conversation::dm_conversation_id;
+use crate::node::channel_senders::ChannelSenderStore;
+use crate::node::conversation::{account_conversation_id, dm_conversation_id};
+use crate::node::dm_envelope::{DmEnvelope, ReactionEnvelope};
 use crate::node::dm_ratchet::DmRatchet;
 use crate::node::filebook::{FileBook, ReceivedFile};
 use crate::node::message::MessageBody;
+use crate::node::pairing::{BackfillRecord, PairingCode, PairingRequest, PairingResponse};
 use crate::node::postbox::elected_post_office;
 use crate::node::ratchet_sessions::RatchetSessions;
 use crate::node::reaction::{aggregate, ReactionPayload, ReactionView};
 use crate::node::received_log::ReceivedLog;
 use crate::node::sentlog::SentLog;
-use crate::node::session::{request_round, serve_one, Served, SessionError};
+use crate::node::session::{request_round, serve_one, serve_wire_bytes, Served, SessionError};
 use crate::node::transport::{accept, dial};
 use crate::transport::SecureChannel;
 use std::collections::HashSet;
@@ -48,6 +53,13 @@ pub struct ReceivedDm {
     pub from_name: String,
     pub text: Vec<u8>,
     pub reply_to: Option<EventId>,
+}
+
+/// Account material a device receives when it links to an existing device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedAccount {
+    pub secret: [u8; 32],
+    pub account_id: String,
 }
 
 /// A channel summary for listing in the UI.
@@ -121,20 +133,31 @@ impl std::error::Error for NodeError {}
 /// received DMs. Construct with [`Node::open`]; share as `Arc<Node>`.
 pub struct Node {
     identity: DeviceIdentity,
+    /// This node's cryptographic account (cross-device handle). A per-device account
+    /// derived from the device key when opened via [`Node::open`]; the real shared
+    /// account is injected by [`Node::open_with_account`]. Holds the secret so this
+    /// device can serve a pairing request (transfer the account to a new device).
+    account: Account,
+    /// One-time pairing code while in "link a device" mode (linker side). Set by
+    /// [`Node::start_linking`], cleared on success or [`Node::stop_linking`].
+    pending_link: Mutex<Option<PairingCode>>,
     log: Mutex<PersistentEventLog>,
     sentlog: Mutex<SentLog>,
     roster: Arc<Mutex<Roster>>,
     incoming: mpsc::UnboundedSender<ReceivedDm>,
     channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
     channels: Mutex<ChannelBook>,
+    /// Durable, encrypted store of this node's per-channel sending keys (`my_sender`).
+    /// `my_sender` is in-memory only and rebuilt empty on restart; persisting it here
+    /// lets us resume our sending chains so receivers (first-wins on chains they hold)
+    /// can still decrypt our post-restart messages.
+    channel_senders: Mutex<ChannelSenderStore>,
     emitted: Mutex<HashSet<EventId>>,
     file_incoming: mpsc::UnboundedSender<ReceivedFile>,
     files: Mutex<FileBook>,
-    // wired up in Task 2
-    #[allow(dead_code)]
+    /// Per-peer Double Ratchet sessions (forward-secret DM crypto), encrypted on disk.
     dm_ratchet: Mutex<DmRatchet>,
-    // wired up in Task 2
-    #[allow(dead_code)]
+    /// Decrypted received-message plaintext, for serving history after the wire key is gone.
     received: Mutex<ReceivedLog>,
     /// Own DM reactions: sealed to the peer so un-openable from our own log.
     /// Stored in memory so `reactions` can merge them. Lost on restart (MVP limitation).
@@ -156,19 +179,86 @@ impl Node {
         sent_path: &Path,
         password: &str,
     ) -> Result<Arc<Self>, LogError> {
-        let log = PersistentEventLog::open(log_path, password)?;
-        let sentlog = SentLog::open(sent_path, password)?;
+        // Default: a deterministic per-device account derived from the device key, so
+        // each unlinked device is its own stable account until it links (Plan 4).
+        let account = Account::from_secret_bytes(identity.secret_bytes().0);
+        Self::open_with_account(
+            identity,
+            account,
+            roster,
+            incoming,
+            channel_incoming,
+            file_incoming,
+            log_path,
+            sent_path,
+            password,
+        )
+    }
+
+    /// Open a node bound to an explicit cryptographic `account` (the cross-device
+    /// handle). Used by the real app/CLI, which load the account from its keystore;
+    /// most tests use [`Node::open`], which defaults the account to the device key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_account(
+        identity: DeviceIdentity,
+        account: Account,
+        roster: Arc<Mutex<Roster>>,
+        incoming: mpsc::UnboundedSender<ReceivedDm>,
+        channel_incoming: mpsc::UnboundedSender<ReceivedChannelMessage>,
+        file_incoming: mpsc::UnboundedSender<ReceivedFile>,
+        log_path: &Path,
+        sent_path: &Path,
+        password: &str,
+    ) -> Result<Arc<Self>, LogError> {
         let dir = log_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let sessions = RatchetSessions::open(&dir.join("ratchet.sessions"), password)?;
+        // Each store does its own slow, CPU-bound password KDF over an independent
+        // file. Open them on scoped threads so the KDFs run in parallel: on a
+        // multi-core machine the wall-clock cost collapses to roughly one KDF.
+        let (log_res, sent_res, sessions_res, received_res, csenders_res) =
+            std::thread::scope(|s| {
+                let h_log = s.spawn(|| PersistentEventLog::open(log_path, password));
+                let h_sent = s.spawn(|| SentLog::open(sent_path, password));
+                let h_sess =
+                    s.spawn(|| RatchetSessions::open(&dir.join("ratchet.sessions"), password));
+                let h_recv = s.spawn(|| ReceivedLog::open(&dir.join("received.log"), password));
+                let h_csnd =
+                    s.spawn(|| ChannelSenderStore::open(&dir.join("channel.senders"), password));
+                (
+                    h_log.join(),
+                    h_sent.join(),
+                    h_sess.join(),
+                    h_recv.join(),
+                    h_csnd.join(),
+                )
+            });
+        // A join() error means the opening thread panicked; re-raise the panic so it
+        // is not silently swallowed. A normal open failure surfaces as the inner Err.
+        let log = log_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let sentlog = sent_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let sessions = sessions_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let received = received_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let channel_senders = csenders_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let dm_ratchet = DmRatchet::new(sessions);
-        let received = ReceivedLog::open(&dir.join("received.log"), password)?;
         let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
         let mut channels = ChannelBook::new();
         for conv in log.conversations() {
             let events = log.events(&conv);
             let _ = channels.process(&identity, conv, &events);
+        }
+        // Restore our persisted sending chains into each channel state. The event log
+        // only carries OTHER members' sender keys, so `my_sender` rebuilds empty above;
+        // without this, a post-restart send would mint a fresh chain that receivers
+        // (first-wins on the chain they already hold) cannot follow.
+        for channel in channels.channel_ids() {
+            for (epoch, bytes) in channel_senders.get(&channel) {
+                if let Some(sk) = SenderKey::deserialize(&bytes) {
+                    if let Some(state) = channels.state_mut(&channel) {
+                        state.import_my_sender(epoch, sk);
+                    }
+                }
+            }
         }
         // Seed the file book's emitted set so existing manifests are not re-surfaced
         // after restart. Opening them needs roster/channel crypto unavailable at open
@@ -183,12 +273,15 @@ impl Node {
         }
         Ok(Arc::new(Self {
             identity,
+            account,
+            pending_link: Mutex::new(None),
             log: Mutex::new(log),
             sentlog: Mutex::new(sentlog),
             roster,
             incoming,
             channel_incoming,
             channels: Mutex::new(channels),
+            channel_senders: Mutex::new(channel_senders),
             emitted: Mutex::new(emitted),
             file_incoming,
             files: Mutex::new(files),
@@ -201,6 +294,11 @@ impl Node {
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> UserId {
         self.identity.public().user_id()
+    }
+
+    /// This node's cryptographic account id (cross-device handle).
+    pub fn account_id(&self) -> String {
+        self.account.account_id()
     }
 
     /// Summaries of all channels this node is a member of.
@@ -216,6 +314,14 @@ impl Node {
                 })
             })
             .collect()
+    }
+
+    /// The current members of `channel` (empty if the channel is unknown).
+    pub fn channel_members(&self, channel: ConversationId) -> Vec<PublicIdentity> {
+        let book = self.channels.lock().expect("channels mutex not poisoned");
+        book.state(&channel)
+            .map(|s| s.members().to_vec())
+            .unwrap_or_default()
     }
 
     /// Send a DM to `recipient` (a known peer): seal it, append the Message event
@@ -304,6 +410,271 @@ impl Node {
         }
     }
 
+    /// Send a DM to an ACCOUNT: fan out a per-device ratcheted copy to every known
+    /// device of `target_account_id`, and self-sync a copy to this user's own other
+    /// devices. Records ONE sent entry under the account conversation (so own history
+    /// shows it once). Best-effort delivery per device (direct, else post office).
+    /// Errors only if there is no known device of the target account to send to.
+    pub async fn send_to_account(
+        &self,
+        target_account_id: &str,
+        text: &[u8],
+        reply_to: Option<EventId>,
+    ) -> Result<(), NodeError> {
+        let my_account = self.account.account_id();
+        let inner = MessageBody::new(text.to_vec(), reply_to).encode();
+        // A stable logical id shared by every per-device copy, so reactions/replies
+        // can target this message account-wide.
+        let msg_id = random_msg_id();
+        let envelope = DmEnvelope::new(
+            my_account.clone(),
+            target_account_id.to_string(),
+            msg_id,
+            inner.clone(),
+        )
+        .encode();
+
+        // Resolve destinations: the target account's devices + our OWN other devices.
+        let me = self.identity.public().user_id();
+        let (targets, own): (Vec<PeerRecord>, Vec<PeerRecord>) = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            let targets = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(target_account_id))
+                .collect();
+            let own = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(my_account.as_str()))
+                .filter(|p| p.public.user_id() != me)
+                .collect();
+            (targets, own)
+        };
+
+        if targets.is_empty() {
+            return Err(NodeError::UnknownPeer(target_account_id.to_string()));
+        }
+
+        // Record one plaintext copy for our own account history (the from_me side).
+        let conv_account = account_conversation_id(&my_account, target_account_id);
+        let wall_clock = now_millis();
+        {
+            // Store the full envelope (carries msg_id) so account history surfaces a
+            // stable id for reactions/replies.
+            let mut sentlog = self.sentlog.lock().expect("sentlog mutex not poisoned");
+            let seq = sentlog.entries(&conv_account).len() as u64 + 1;
+            let _ = sentlog.record(conv_account, seq, wall_clock, &envelope);
+        }
+
+        // Fan out: seal+append+deliver one copy per destination device.
+        for peer in targets.iter().chain(own.iter()) {
+            self.deliver_enveloped(peer, &envelope).await;
+        }
+        Ok(())
+    }
+
+    /// Seal `plaintext` to `peer`'s device ratchet, append it to the device-pair
+    /// conversation's event log, and deliver it (direct, then post office). Best-effort:
+    /// transport failures are swallowed (the event is durably logged and syncs later).
+    /// The conversation id here is the per-DEVICE-pair id (the transport layer).
+    async fn deliver_enveloped(&self, peer: &PeerRecord, plaintext: &[u8]) {
+        let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        let wire = {
+            let mut r = self
+                .dm_ratchet
+                .lock()
+                .expect("dm_ratchet mutex not poisoned");
+            match r.encrypt(&self.identity, &peer.public, plaintext) {
+                Ok(w) => w,
+                Err(_) => return,
+            }
+        };
+        if self.append_event(conv, EventKind::Message, wire).is_err() {
+            return;
+        }
+        let _ = self.deliver_direct(peer, conv).await;
+        let _ = self.replicate_to_post_office(conv).await;
+        self.emit_new_messages(conv);
+    }
+
+    /// Enter "link a device" mode: generate a one-time code to display. The next valid
+    /// pairing request from a device proving this code is served the account secret.
+    pub fn start_linking(&self) -> String {
+        let code = PairingCode::generate();
+        let hex = code.as_hex();
+        *self.pending_link.lock().expect("pending_link mutex") = Some(code);
+        hex
+    }
+
+    /// Leave linking mode (clear any pending code).
+    pub fn stop_linking(&self) {
+        *self.pending_link.lock().expect("pending_link mutex") = None;
+    }
+
+    /// Joiner side: dial `addr` (the linker, pinned to `peer_public`), prove `code_hex`,
+    /// and receive the account secret + a certificate for this device.
+    pub async fn link_to_device(
+        &self,
+        addr: std::net::SocketAddr,
+        peer_public: &PublicIdentity,
+        code_hex: &str,
+    ) -> Result<LinkedAccount, NodeError> {
+        let code = PairingCode::from_hex(code_hex)
+            .ok_or_else(|| NodeError::Channel("invalid pairing code".into()))?;
+        let mut channel = dial(addr, &self.identity, Some(peer_public))
+            .await
+            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+        let tag = code.authenticator(
+            &peer_public.ed25519_pub,
+            &self.identity.public().ed25519_pub,
+        );
+        let req = PairingRequest {
+            joiner: self.identity.public(),
+            tag,
+        };
+        channel
+            .send(&req.encode())
+            .await
+            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+        let resp_bytes = channel
+            .recv()
+            .await
+            .map_err(|e| NodeError::Session(SessionError::Transport(e)))?;
+        let resp = PairingResponse::decode(&resp_bytes)
+            .ok_or_else(|| NodeError::Channel("pairing rejected".into()))?;
+        // Verify the returned cert really binds THIS device to THAT account.
+        if !resp.cert.verify()
+            || resp.cert.device_ed25519_pub != self.identity.public().ed25519_pub
+            || resp.cert.account_ed25519_pub != resp.account_ed25519_pub
+        {
+            return Err(NodeError::Channel("pairing cert invalid".into()));
+        }
+        // Receive the linker's account-history backfill (records until an empty frame),
+        // so this device starts populated. Best-effort: stop on any recv error.
+        let mut backfill = Vec::new();
+        loop {
+            let frame = match channel.recv().await {
+                Ok(f) => f,
+                Err(_) => break,
+            };
+            if frame.is_empty() {
+                break; // terminator
+            }
+            match BackfillRecord::decode(&frame) {
+                Some(rec) => backfill.push(rec),
+                None => break,
+            }
+        }
+        self.import_account_backfill(&backfill);
+
+        let account = Account::from_secret_bytes(resp.account_secret);
+        Ok(LinkedAccount {
+            secret: resp.account_secret,
+            account_id: account.account_id(),
+        })
+    }
+
+    /// Linker side: handle a pairing request on an inbound (authenticated) channel.
+    /// Releases the account secret only if a code is pending AND the request both
+    /// proves it and binds the authenticated channel peer. Clears the code on success.
+    async fn serve_pairing(&self, channel: &mut SecureChannel<TcpStream>, req: PairingRequest) {
+        // Bind the proof to the Noise-authenticated peer.
+        if req.joiner.ed25519_pub != channel.peer_identity().ed25519_pub {
+            return;
+        }
+        let code = {
+            self.pending_link
+                .lock()
+                .expect("pending_link mutex")
+                .clone()
+        };
+        let Some(code) = code else {
+            return;
+        };
+        let my_ed = self.identity.public().ed25519_pub;
+        if !code.verify(&my_ed, &req.joiner.ed25519_pub, &req.tag) {
+            return;
+        }
+        let cert = self.account.certify(&req.joiner.ed25519_pub);
+        let resp = PairingResponse {
+            account_secret: self.account.secret_bytes(),
+            account_ed25519_pub: self.account.public().ed25519_pub,
+            cert,
+        };
+        if channel.send(&resp.encode()).await.is_err() {
+            return;
+        }
+        self.stop_linking(); // single-use
+                             // Backfill: stream our account history so the new device starts populated,
+                             // then an empty frame as terminator. Best-effort — failures just mean the
+                             // joiner backfills nothing.
+        for rec in self.export_account_backfill() {
+            if channel.send(&rec.encode()).await.is_err() {
+                return;
+            }
+        }
+        let _ = channel.send(&[]).await;
+    }
+
+    /// Export every account-history message we hold (sent + received) as transferable
+    /// [`BackfillRecord`]s — for handing to a freshly-linked device. Only entries that
+    /// are account `DmEnvelope`s are included (device DMs / channels are skipped). Sent
+    /// entries are attributed to our own account; received to the recorded sender.
+    fn export_account_backfill(&self) -> Vec<BackfillRecord> {
+        let my_account = self.account.account_id();
+        let mut out = Vec::new();
+        {
+            let sentlog = self.sentlog.lock().expect("sentlog mutex not poisoned");
+            for conv in sentlog.conversations() {
+                for e in sentlog.entries(&conv) {
+                    if let Some(env) = DmEnvelope::decode(&e.plaintext) {
+                        out.push(BackfillRecord {
+                            conv: *conv.as_bytes(),
+                            from: my_account.clone(),
+                            wall_clock: e.wall_clock,
+                            plaintext: e.plaintext.clone(),
+                            event_id: env.msg_id,
+                        });
+                    }
+                }
+            }
+        }
+        {
+            let received = self.received.lock().expect("received mutex not poisoned");
+            for conv in received.conversations() {
+                for e in received.entries(&conv) {
+                    if DmEnvelope::decode(&e.plaintext).is_some() {
+                        out.push(BackfillRecord {
+                            conv: *conv.as_bytes(),
+                            from: e.from.clone(),
+                            wall_clock: e.wall_clock,
+                            plaintext: e.plaintext.clone(),
+                            event_id: *e.event_id.as_bytes(),
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Import backfilled account history into our received store (used by a freshly
+    /// linked device). Each record is keyed by its account conversation id, which is
+    /// identical on both devices once they share the account.
+    fn import_account_backfill(&self, records: &[BackfillRecord]) {
+        let mut received = self.received.lock().expect("received mutex not poisoned");
+        for r in records {
+            let _ = received.record(
+                ConversationId::new(r.conv),
+                r.from.clone(),
+                r.wall_clock,
+                &r.plaintext,
+                EventId::new(r.event_id),
+            );
+        }
+    }
+
     /// Dial `peer` directly and run one sync round for `conv`. Best-effort: the
     /// peer may be offline, in which case the dial fails.
     async fn deliver_direct(
@@ -357,8 +728,26 @@ impl Node {
     }
 
     /// Serve one authenticated inbound connection: handle sync rounds and surface
-    /// any newly-received DMs, until the peer disconnects.
+    /// any newly-received DMs, until the peer disconnects. The first frame is peeked:
+    /// a device-pairing request gets the linking handler; anything else is a sync wire
+    /// and is served normally (then the loop continues).
     pub async fn serve_connection(&self, mut channel: SecureChannel<TcpStream>) {
+        let first = match channel.recv().await {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        if let Some(req) = PairingRequest::decode(&first) {
+            self.serve_pairing(&mut channel, req).await;
+            return;
+        }
+        match serve_wire_bytes(&mut channel, &self.log, &first).await {
+            Ok(Served::Handled(conv)) => {
+                self.emit_new_messages(conv);
+                self.process_channel(conv);
+                self.process_file_events(conv);
+            }
+            _ => return,
+        }
         while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
             self.emit_new_messages(conv);
             self.process_channel(conv);
@@ -577,7 +966,26 @@ impl Node {
                 .map_err(|e| NodeError::Channel(format!("key sealing failed: {e}")))?
         };
         self.append_event(channel, EventKind::KeyRotation, sealed.encode())?;
+        self.persist_my_senders(channel);
         Ok(())
+    }
+
+    /// Snapshot `channel`'s `my_sender` (under the channels lock) and persist it to the
+    /// durable store so our sending chains survive a restart. Best-effort: a store
+    /// write error must not fail an already-appended message. No `MutexGuard` is held
+    /// across the persist (the snapshot is taken first, then the lock is dropped).
+    fn persist_my_senders(&self, channel: ConversationId) {
+        let snapshot = {
+            let book = self.channels.lock().expect("channels mutex not poisoned");
+            book.state(&channel).map(|s| s.export_my_senders())
+        };
+        if let Some(senders) = snapshot {
+            let _ = self
+                .channel_senders
+                .lock()
+                .expect("channel_senders mutex not poisoned")
+                .put(&channel, &senders);
+        }
     }
 
     /// Add `new_member` to `channel`, bumping the epoch. Posts a `MembershipChange`
@@ -694,6 +1102,9 @@ impl Node {
                 .seal_sender_message(&wrapped)
                 .map_err(|e| NodeError::Channel(format!("message sealing failed: {e}")))?
         };
+        // Persist our advanced sending chain so a post-restart send resumes THIS chain
+        // (receivers are first-wins and keep the chain they already hold).
+        self.persist_my_senders(channel);
         let seq = self.append_event(channel, EventKind::Message, payload)?;
         // Keep a local plaintext copy of what we sent — the sender-key wire key is
         // single-use and not self-decryptable, so channel history is served from the
@@ -738,6 +1149,60 @@ impl Node {
         Ok(file_conv)
     }
 
+    /// Send a file to an ACCOUNT: stage it once (shared symmetric chunks), then seal
+    /// the manifest to every known device of `target_account_id` AND our own other
+    /// devices (self-sync), delivering the file + manifest to each. Mirrors
+    /// [`Node::send_to_account`] for files. Errors only if no device of the target
+    /// account is known.
+    pub async fn send_file_to_account(
+        &self,
+        target_account_id: &str,
+        path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        let (targets, own): (Vec<PeerRecord>, Vec<PeerRecord>) = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            let targets = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(target_account_id))
+                .collect();
+            let own = roster
+                .peers()
+                .into_iter()
+                .filter(|p| p.account_id.as_deref() == Some(my_account.as_str()))
+                .filter(|p| p.public.user_id() != me)
+                .collect();
+            (targets, own)
+        };
+        if targets.is_empty() {
+            return Err(NodeError::UnknownPeer(target_account_id.to_string()));
+        }
+
+        let (manifest, file_conv) = self.stage_file(path)?;
+        let manifest_bytes = manifest.encode();
+        for peer in targets.iter().chain(own.iter()) {
+            let sealed =
+                match crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest_bytes) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+            let dm_conv = dm_conversation_id(&self.identity.public(), &peer.public);
+            if self
+                .append_event(dm_conv, EventKind::FileManifest, sealed)
+                .is_err()
+            {
+                continue;
+            }
+            self.deliver_direct(peer, file_conv).await.ok();
+            self.replicate_to_post_office(file_conv).await.ok();
+            self.deliver_direct(peer, dm_conv).await.ok();
+            self.replicate_to_post_office(dm_conv).await.ok();
+        }
+        Ok(file_conv)
+    }
+
     /// Send the file at `path` to a channel we hold the key for.
     pub async fn send_file_channel(
         &self,
@@ -767,6 +1232,8 @@ impl Node {
                 .seal_sender_message(&manifest.encode())
                 .map_err(|e| NodeError::File(format!("manifest sealing failed: {e}")))?
         };
+        // Persist our advanced sending chain (see `send_channel_message_reply`).
+        self.persist_my_senders(channel);
         self.append_event(channel, EventKind::FileManifest, sealed)?;
         self.distribute_channel(file_conv, &members).await;
         self.distribute_channel(channel, &members).await;
@@ -973,6 +1440,59 @@ impl Node {
         self.history(conv, limit)
     }
 
+    /// Account-level conversation history with `peer_account_id`, merging our sent
+    /// copies (recorded once under the account conversation) and the per-device copies
+    /// we received and filed under it. `from_me` is derived from the recorded sender
+    /// account, so self-synced copies of our own sends show as ours.
+    pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
+        let my_account = self.account.account_id();
+        let conv = account_conversation_id(&my_account, peer_account_id);
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+
+        // Account messages are stored as full `DmEnvelope`s; the logical `msg_id` is
+        // the stable, cross-device id reactions/replies target.
+        for sent in self
+            .sentlog
+            .lock()
+            .expect("sentlog mutex not poisoned")
+            .entries(&conv)
+        {
+            let (id, body) = decode_account_entry(&sent.plaintext);
+            entries.push(HistoryEntry {
+                id,
+                from_me: true,
+                who: "you".to_string(),
+                text: body.text,
+                wall_clock: sent.wall_clock,
+                reply_to: body.reply_to,
+            });
+        }
+
+        for rcv in self
+            .received
+            .lock()
+            .expect("received mutex not poisoned")
+            .entries(&conv)
+        {
+            let (id, body) = decode_account_entry(&rcv.plaintext);
+            let from_me = rcv.from == my_account;
+            entries.push(HistoryEntry {
+                id,
+                from_me,
+                who: if from_me { "you".to_string() } else { rcv.from },
+                text: body.text,
+                wall_clock: rcv.wall_clock,
+                reply_to: body.reply_to,
+            });
+        }
+
+        entries.sort_by_key(|e| e.wall_clock);
+        if entries.len() > limit {
+            entries.drain(0..entries.len() - limit);
+        }
+        entries
+    }
+
     /// The last `limit` messages of `conversation`, both directions, sorted by
     /// wall-clock: our own sent plaintext from the local sidecar, plus the plaintext
     /// of peer-authored messages we decrypted on receipt (from the received store).
@@ -1132,6 +1652,135 @@ impl Node {
         Ok(())
     }
 
+    /// React to an account message (toggle off with `remove = true`). `target` is the
+    /// logical message id (from account history). Fans the reaction out to every device
+    /// of `target_account_id` + our own devices, so it aggregates account-wide.
+    pub async fn react_to_account(
+        &self,
+        target_account_id: &str,
+        target: EventId,
+        emoji: &str,
+        remove: bool,
+    ) -> Result<(), NodeError> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        let dests: Vec<PeerRecord> = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .peers()
+                .into_iter()
+                .filter(|p| {
+                    let a = p.account_id.as_deref();
+                    a == Some(target_account_id)
+                        || (a == Some(my_account.as_str()) && p.public.user_id() != me)
+                })
+                .collect()
+        };
+        let envelope = ReactionEnvelope::new(
+            my_account.clone(),
+            target_account_id.to_string(),
+            *target.as_bytes(),
+            emoji.to_string(),
+            remove,
+        )
+        .encode();
+        for peer in &dests {
+            let sealed = match crate::dm::seal(&self.identity, &peer.public.x25519_pub, &envelope) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+            if self.append_event(conv, EventKind::React, sealed).is_err() {
+                continue;
+            }
+            self.deliver_direct(peer, conv).await.ok();
+            self.replicate_to_post_office(conv).await.ok();
+        }
+        // Record our own reaction (sealed to peers, so un-openable from our own log)
+        // under the account conversation, for `account_reactions` to merge.
+        let acct_conv = account_conversation_id(&my_account, target_account_id);
+        self.my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned")
+            .push((
+                acct_conv,
+                ReactionPayload {
+                    target,
+                    emoji: emoji.to_string(),
+                    remove,
+                },
+            ));
+        Ok(())
+    }
+
+    /// Aggregated reactions for the account conversation with `peer_account_id`. Scans
+    /// `React` events across every device-pair conversation between us and that
+    /// account's devices (and our own devices), opens each account reaction envelope,
+    /// keys it by its logical target + reacting account, and merges our own.
+    pub fn account_reactions(&self, peer_account_id: &str) -> Vec<ReactionView> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        // The device-pair conversations whose React events can carry this account's
+        // reactions: ours-with-each-target-device and ours-with-each-own-other-device.
+        let convs: Vec<(ConversationId, [u8; 32])> = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .peers()
+                .into_iter()
+                .filter(|p| {
+                    let a = p.account_id.as_deref();
+                    a == Some(peer_account_id)
+                        || (a == Some(my_account.as_str()) && p.public.user_id() != me)
+                })
+                .map(|p| {
+                    (
+                        dm_conversation_id(&self.identity.public(), &p.public),
+                        p.public.x25519_pub,
+                    )
+                })
+                .collect()
+        };
+        let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
+        for (conv, author_x) in convs {
+            let react_events: Vec<Event> = {
+                let log = self.log.lock().expect("log mutex not poisoned");
+                log.events(&conv)
+                    .into_iter()
+                    .filter(|e| e.kind == EventKind::React)
+                    .cloned()
+                    .collect()
+            };
+            for event in &react_events {
+                let Ok(pt) = crate::dm::open(&self.identity, &author_x, &event.ciphertext) else {
+                    continue;
+                };
+                if let Some(env) = ReactionEnvelope::decode(&pt) {
+                    decoded.push((
+                        env.route.sender_account,
+                        ReactionPayload {
+                            target: EventId::new(env.target),
+                            emoji: env.emoji,
+                            remove: env.remove,
+                        },
+                    ));
+                }
+            }
+        }
+        // Merge our own account reactions (sealed to peers; not openable from our log).
+        let acct_conv = account_conversation_id(&my_account, peer_account_id);
+        for (c, p) in self
+            .my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned")
+            .iter()
+        {
+            if *c == acct_conv {
+                decoded.push((my_account.clone(), p.clone()));
+            }
+        }
+        aggregate(&decoded)
+    }
+
     /// React to a message in a channel we hold the key for.
     pub async fn react_channel(
         &self,
@@ -1268,7 +1917,36 @@ impl Node {
                     Err(_) => continue, // not yet decryptable / not a ratchet DM (NOT emitted)
                 }
             };
-            let body = MessageBody::decode(&wrapped);
+            // Account-addressed (multi-device) envelope? File it under the ACCOUNT
+            // conversation, recording the route's sender account (account history
+            // derives `from_me` from it). A legacy plaintext keeps today's device-pair
+            // behavior. The live `ReceivedDm` still carries the author device's
+            // id/name — it is just a "something changed" poke; display reads history.
+            let (record_conv, record_from, record_plaintext, body) =
+                match DmEnvelope::decode(&wrapped) {
+                    Some(env) => {
+                        let my_account = self.account.account_id();
+                        let counterparty = if env.route.sender_account == my_account {
+                            env.route.recipient_account.clone() // self-synced copy of our own send
+                        } else {
+                            env.route.sender_account.clone()
+                        };
+                        let acct_conv = account_conversation_id(&my_account, &counterparty);
+                        let body = MessageBody::decode(&env.body);
+                        // Record the FULL envelope so account history recovers the
+                        // logical msg_id (for reactions/replies).
+                        (
+                            acct_conv,
+                            env.route.sender_account.clone(),
+                            wrapped.clone(),
+                            body,
+                        )
+                    }
+                    None => {
+                        let body = MessageBody::decode(&wrapped);
+                        (conv, author_uid.clone(), wrapped.clone(), body)
+                    }
+                };
             // Persist the received plaintext (the wire key is single-use/gone), then
             // mark emitted — only AFTER a successful decrypt + record.
             let _ = self
@@ -1276,10 +1954,10 @@ impl Node {
                 .lock()
                 .expect("received mutex not poisoned")
                 .record(
-                    conv,
-                    author_uid.clone(),
+                    record_conv,
+                    record_from,
                     event.wall_clock,
-                    &wrapped,
+                    &record_plaintext,
                     event.id,
                 );
             self.emitted
@@ -1304,1650 +1982,25 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::discovery::announce::Announce;
-    use crate::node::postbox::run_relay_accept_loop;
-    use crate::postoffice::PostOffice;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::time::Duration;
-
-    fn seed_roster(
-        peer: &DeviceIdentity,
-        name: &str,
-        port: u16,
-        self_user_id: &str,
-    ) -> Arc<Mutex<Roster>> {
-        let roster = Arc::new(Mutex::new(Roster::default()));
-        roster.lock().unwrap().update(
-            &Announce::new(peer, name, port),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            self_user_id,
-        );
-        roster
-    }
-
-    /// Add another known peer to an existing roster (for multi-peer rigs).
-    fn add_peer(
-        roster: &Arc<Mutex<Roster>>,
-        peer: &DeviceIdentity,
-        name: &str,
-        port: u16,
-        self_user_id: &str,
-    ) {
-        roster.lock().unwrap().update(
-            &Announce::new(peer, name, port),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            self_user_id,
-        );
-    }
-
-    #[tokio::test]
-    async fn send_dm_to_unknown_peer_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let me = DeviceIdentity::generate();
-        let roster = Arc::new(Mutex::new(Roster::default())); // empty
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
-        let (file_tx, _file_rx) = mpsc::unbounded_channel();
-        let node = Node::open(
-            me,
-            roster,
-            tx,
-            ch_tx,
-            file_tx,
-            &dir.path().join("me.log"),
-            &dir.path().join("me-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let err = node.send_dm("nope", b"hi").await.unwrap_err();
-        assert!(matches!(err, NodeError::UnknownPeer(u) if u == "nope"));
-    }
-
-    #[tokio::test]
-    async fn two_nodes_exchange_a_dm_over_loopback_tcp() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let alice_uid = alice.public().user_id();
-        let bob_uid = bob.public().user_id();
-
-        // Bob's listener (ephemeral loopback port).
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-
-        // Rosters: Alice knows Bob (at his real listen port); Bob knows Alice
-        // (any port — Bob never dials Alice; he just needs her key to decrypt).
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
-        let bob_roster = seed_roster(&alice, "Alice", 4000, &bob_uid);
-
-        let dir = tempfile::tempdir().unwrap();
-        let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
-        let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
-        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
-        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
-        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
-        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            alice_tx,
-            a_ch_tx,
-            a_file_tx,
-            &dir.path().join("alice.log"),
-            &dir.path().join("alice-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            bob_tx,
-            b_ch_tx,
-            b_file_tx,
-            &dir.path().join("bob.log"),
-            &dir.path().join("bob-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        // Bob accepts and serves connections.
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-
-        // Alice sends Bob a DM.
-        alice_node
-            .send_dm(&bob_uid, b"meet at 5")
-            .await
-            .expect("send_dm");
-
-        // Bob surfaces the decrypted DM (bounded wait).
-        let received = tokio::time::timeout(Duration::from_secs(5), bob_rx.recv())
-            .await
-            .expect("bob received a dm within 5s")
-            .expect("incoming channel open");
-        assert_eq!(received.from, alice_uid);
-        assert_eq!(received.from_name, "Alice");
-        assert_eq!(received.text, b"meet at 5");
-    }
-
-    #[tokio::test]
-    async fn offline_dm_delivered_via_post_office_over_loopback() {
-        // Alice sends Bob a DM while Bob is offline; a post office holds it; Bob
-        // drains it and decrypts — all in-process over loopback TCP.
-        let dir = tempfile::tempdir().unwrap();
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let po_id = DeviceIdentity::generate();
-        let alice_uid = alice.public().user_id();
-        let bob_uid = bob.public().user_id();
-
-        // Post office relay on loopback. Keep extra identity copies (open() moves one).
-        let po_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let po_addr = po_listener.local_addr().unwrap();
-        let (po_ed, po_x) = po_id.secret_bytes();
-        let po_transport = DeviceIdentity::from_secret_bytes(po_ed, po_x);
-        let po_seed = DeviceIdentity::from_secret_bytes(po_ed, po_x);
-        let po_store = Arc::new(Mutex::new(
-            PostOffice::open(&dir.path().join("po.log"), "pw", po_id).unwrap(),
-        ));
-        tokio::spawn(run_relay_accept_loop(
-            po_transport,
-            po_listener,
-            Arc::clone(&po_store),
-        ));
-
-        // A closed port stands in for offline Bob — Alice's direct dial fails fast.
-        let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_dead_addr = dead.local_addr().unwrap();
-        drop(dead);
-
-        // Seed a roster entry whose addr/keys/role we control (addr = (ip, port)).
-        fn seed(
-            roster: &Arc<Mutex<Roster>>,
-            id: &DeviceIdentity,
-            name: &str,
-            addr: SocketAddr,
-            post_office: bool,
-            self_uid: &str,
-        ) {
-            let announce = if post_office {
-                Announce::new_post_office(id, name, addr.port())
-            } else {
-                Announce::new(id, name, addr.port())
-            };
-            roster
-                .lock()
-                .unwrap()
-                .update(&announce, addr.ip(), self_uid);
-        }
-
-        // Alice knows offline-Bob (dead addr) + the PO (real addr).
-        let alice_roster = Arc::new(Mutex::new(Roster::default()));
-        seed(&alice_roster, &bob, "Bob", bob_dead_addr, false, &alice_uid);
-        seed(&alice_roster, &po_seed, "PO", po_addr, true, &alice_uid);
-        // Bob knows Alice (real keys, for decryption) + the PO (to drain).
-        let bob_roster = Arc::new(Mutex::new(Roster::default()));
-        seed(
-            &bob_roster,
-            &alice,
-            "Alice",
-            "127.0.0.1:4000".parse().unwrap(),
-            false,
-            &bob_uid,
-        );
-        seed(&bob_roster, &po_seed, "PO", po_addr, true, &bob_uid);
-
-        let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
-        let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
-        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
-        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
-        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
-        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            alice_tx,
-            a_ch_tx,
-            a_file_tx,
-            &dir.path().join("alice.log"),
-            &dir.path().join("alice-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            bob_tx,
-            b_ch_tx,
-            b_file_tx,
-            &dir.path().join("bob.log"),
-            &dir.path().join("bob-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        // Alice sends while Bob is offline: direct fails, PO replication succeeds.
-        // Delivery is provably PO-only here: Alice's direct dial targets a closed
-        // port pinned to Bob's identity (cannot succeed), and Bob never dials Alice
-        // (his drain only dials the PO) — so anything Bob receives transited the PO.
-        alice_node
-            .send_dm(&bob_uid, b"held-hello")
-            .await
-            .expect("send_dm succeeds via the post office despite offline recipient");
-
-        // Bob drains from the PO (retry to absorb the relay's async ingest).
-        let mut received = None;
-        for _ in 0..25 {
-            bob_node.drain_from_post_office().await;
-            if let Ok(dm) = tokio::time::timeout(Duration::from_millis(200), bob_rx.recv()).await {
-                received = dm;
-                break;
-            }
-        }
-        let received = received.expect("Bob received the held DM from the post office");
-        assert_eq!(received.from, alice_uid);
-        assert_eq!(received.from_name, "Alice");
-        assert_eq!(received.text, b"held-hello");
-    }
-
-    #[tokio::test]
-    async fn history_merges_sent_and_received_in_time_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let me = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let me_pub = me.public();
-        let bob_uid = bob.public().user_id();
-        let conv = crate::node::conversation::dm_conversation_id(&me_pub, &bob.public());
-
-        let roster = Arc::new(Mutex::new(Roster::default()));
-        roster.lock().unwrap().update(
-            &Announce::new(&bob, "Bob", 4000),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            &me_pub.user_id(),
-        );
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
-        let (file_tx, _file_rx) = mpsc::unbounded_channel();
-        let node = Node::open(
-            me,
-            roster,
-            tx,
-            ch_tx,
-            file_tx,
-            &dir.path().join("me.log"),
-            &dir.path().join("me-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        // Bob sent us a message at t=1000 (decrypted on receipt → received store).
-        node.received
-            .lock()
-            .unwrap()
-            .record(
-                conv,
-                bob_uid.clone(),
-                1000,
-                &MessageBody::new(b"hi from bob".to_vec(), None).encode(),
-                EventId::new([7u8; 32]),
-            )
-            .unwrap();
-        // We sent one at t=2000 (recorded in the sidecar as the wrapped body).
-        node.sentlog
-            .lock()
-            .unwrap()
-            .record(
-                conv,
-                1,
-                2000,
-                &MessageBody::new(b"hi from me".to_vec(), None).encode(),
-            )
-            .unwrap();
-
-        let hist = node.dm_history(&bob.public(), 10);
-        assert_eq!(hist.len(), 2);
-        assert!(!hist[0].from_me && hist[0].text == b"hi from bob"); // t=1000 first
-        assert!(hist[1].from_me && hist[1].who == "you" && hist[1].text == b"hi from me");
-
-        // `limit` keeps the most-recent entries.
-        let last1 = node.dm_history(&bob.public(), 1);
-        assert_eq!(last1.len(), 1);
-        assert!(last1[0].from_me); // the newer (t=2000) one
-    }
-
-    #[tokio::test]
-    async fn reopen_seeds_emitted_so_history_is_not_restreamed() {
-        let dir = tempfile::tempdir().unwrap();
-        let me = DeviceIdentity::generate();
-        let alice = DeviceIdentity::generate();
-        let me_pub = me.public();
-        let conv = crate::node::conversation::dm_conversation_id(&me_pub, &alice.public());
-        let log_path = dir.path().join("me.log");
-        let sent_path = dir.path().join("me-sent.log");
-
-        // Alice's ratchet (to seal wire she sends us). Her sessions live in their own
-        // temp dir — only the wire bytes matter to us.
-        let alice_dir = dir.path().join("alice-sess");
-        std::fs::create_dir_all(&alice_dir).unwrap();
-        let mut alice_ratchet = DmRatchet::new(
-            RatchetSessions::open(&alice_dir.join("ratchet.sessions"), "pw").unwrap(),
-        );
-
-        // Prior session: a received DM from Alice is already in the persistent log
-        // (its ratchet wire, sealed to us). We seed `emitted` from it at open.
-        let old_wire = alice_ratchet
-            .encrypt(
-                &alice,
-                &me_pub,
-                &MessageBody::new(b"old".to_vec(), None).encode(),
-            )
-            .unwrap();
-        let old = crate::eventlog::event::Event::new(
-            &alice,
-            conv,
-            1,
-            vec![],
-            1,
-            1000,
-            EventKind::Message,
-            old_wire,
-        );
-        let old_id = old.id;
-        {
-            let mut log =
-                crate::eventlog::persist::PersistentEventLog::open(&log_path, "pw").unwrap();
-            log.append(old).unwrap();
-        }
-
-        // Roster knows Alice (so decryption is possible if it were attempted).
-        let roster = Arc::new(Mutex::new(Roster::default()));
-        roster.lock().unwrap().update(
-            &Announce::new(&alice, "Alice", 4000),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            &me_pub.user_id(),
-        );
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
-        let (file_tx, _file_rx) = mpsc::unbounded_channel();
-        let node = Node::open(me, roster, tx, ch_tx, file_tx, &log_path, &sent_path, "pw").unwrap();
-
-        // Restored history must NOT be re-streamed (seeded into `emitted` at open).
-        node.emit_new_messages(conv);
-        assert!(rx.try_recv().is_err(), "restored history was re-streamed");
-
-        // A genuinely-new received event (not present at open) IS surfaced.
-        let fresh_wire = alice_ratchet
-            .encrypt(
-                &alice,
-                &me_pub,
-                &MessageBody::new(b"new".to_vec(), None).encode(),
-            )
-            .unwrap();
-        let fresh = crate::eventlog::event::Event::new(
-            &alice,
-            conv,
-            2,
-            vec![old_id],
-            2,
-            2000,
-            EventKind::Message,
-            fresh_wire,
-        );
-        node.log.lock().unwrap().append(fresh).unwrap();
-        node.emit_new_messages(conv);
-        let got = rx.try_recv().expect("a new message is emitted");
-        assert_eq!(got.text, b"new");
-    }
-
-    #[tokio::test]
-    async fn two_nodes_exchange_a_channel_message_over_loopback_tcp() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let bob_pub = bob.public();
-        let dir = tempfile::tempdir().unwrap();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
-        let bob_roster = Arc::new(Mutex::new(Roster::default()));
-
-        let (alice_dm_tx, _alice_dm_rx) = mpsc::unbounded_channel();
-        let (alice_ch_tx, _alice_ch_rx) = mpsc::unbounded_channel();
-        let (alice_file_tx, _alice_file_rx) = mpsc::unbounded_channel();
-        let (bob_dm_tx, _bob_dm_rx) = mpsc::unbounded_channel();
-        let (bob_ch_tx, mut bob_ch_rx) = mpsc::unbounded_channel();
-        let (bob_file_tx, _bob_file_rx) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            alice_dm_tx,
-            alice_ch_tx,
-            alice_file_tx,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            bob_dm_tx,
-            bob_ch_tx,
-            bob_file_tx,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-
-        let channel = alice_node
-            .create_channel("general", vec![bob_pub])
-            .await
-            .unwrap();
-        alice_node
-            .send_channel_message(channel, b"hello channel")
-            .await
-            .unwrap();
-
-        let got = tokio::time::timeout(std::time::Duration::from_secs(5), bob_ch_rx.recv())
-            .await
-            .expect("bob received a channel message within 5s")
-            .expect("channel stream open");
-        assert_eq!(got.text, b"hello channel");
-        assert_eq!(got.from, alice_node.user_id());
-        assert_eq!(got.channel_name, "general");
-
-        // Alice's own channel_history shows her sent message — served from the sent
-        // sidecar (the sender-key wire key is single-use and not self-decryptable).
-        let hist = alice_node.channel_history(channel, 10);
-        assert_eq!(hist.len(), 1);
-        assert!(hist[0].from_me);
-        assert_eq!(hist[0].text, b"hello channel");
-
-        // Bob's channel_history shows Alice's message — served from his received store
-        // (he decrypted it once via the sender-key ratchet; the key is now consumed).
-        let bob_hist = bob_node.channel_history(channel, 10);
-        assert_eq!(bob_hist.len(), 1);
-        assert!(!bob_hist[0].from_me);
-        assert_eq!(bob_hist[0].text, b"hello channel");
-        assert_eq!(bob_hist[0].who, alice_node.user_id());
-    }
-
-    /// Bidirectional channel rig: Alice (creator) + Bob both run accept loops and know
-    /// each other. Alice sends -> Bob receives (already worked). THEN Bob sends -> Alice
-    /// receives + decrypts. The reverse direction was BROKEN before the fix: a
-    /// non-creator never distributed its own sender-key distribution, so the creator
-    /// had no `SenderChain` for it and silently dropped its messages.
-    #[tokio::test]
-    async fn two_nodes_exchange_channel_messages_both_directions_over_loopback_tcp() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let bob_pub = bob.public();
-        let alice_uid = alice.public().user_id();
-        let bob_uid = bob.public().user_id();
-        let dir = tempfile::tempdir().unwrap();
-
-        // Both nodes listen, so each can receive the other's pushed channel events.
-        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let alice_addr = alice_listener.local_addr().unwrap();
-        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = bob_listener.local_addr().unwrap();
-
-        // Each knows the other at its real listen port (so distribution can dial back).
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
-        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
-
-        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, mut a_ch_r) = mpsc::unbounded_channel();
-        let (a_file, _a_file_r) = mpsc::unbounded_channel();
-        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
-        let (b_file, _b_file_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_file,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_file,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
-
-        let channel = alice_node
-            .create_channel("general", vec![bob_pub])
-            .await
-            .unwrap();
-
-        // Forward direction: Alice -> Bob (already worked).
-        alice_node
-            .send_channel_message(channel, b"hi bob")
-            .await
-            .unwrap();
-        let got = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
-            .await
-            .expect("bob received Alice's message within 5s")
-            .expect("channel stream open");
-        assert_eq!(got.text, b"hi bob");
-        assert_eq!(got.from, alice_node.user_id());
-
-        // Reverse direction: Bob -> Alice. This is the path the fix repairs. Bob is a
-        // non-creator member; his send must first distribute his own SKD so Alice can
-        // build his sender chain and decrypt.
-        bob_node
-            .send_channel_message(channel, b"hi alice")
-            .await
-            .unwrap();
-        let back = tokio::time::timeout(Duration::from_secs(5), a_ch_r.recv())
-            .await
-            .expect("alice received Bob's message within 5s (broken before the fix)")
-            .expect("channel stream open");
-        assert_eq!(back.text, b"hi alice");
-        assert_eq!(back.from, bob_node.user_id());
-
-        // Alice's channel_history now shows both: her own sent line + Bob's decrypted one.
-        let alice_hist = alice_node.channel_history(channel, 10);
-        assert!(alice_hist.iter().any(|h| h.from_me && h.text == b"hi bob"));
-        assert!(alice_hist
-            .iter()
-            .any(|h| !h.from_me && h.text == b"hi alice" && h.who == bob_node.user_id()));
-    }
-
-    /// Live add-member rig over loopback TCP: Alice creates a {Alice, Bob} channel and
-    /// they exchange an epoch-0 message. Alice then adds Carol (a third node, member of
-    /// nobody) via `add_channel_member`, bumping to epoch 1, and sends a new message.
-    /// Carol — who got the `MembershipChange` + Alice's lazily-distributed epoch-1 SKD —
-    /// receives + decrypts the epoch-1 message, but NOT the epoch-0 one she joined after
-    /// (late-join isolation / forward secrecy).
-    #[tokio::test]
-    async fn adding_a_channel_member_lets_them_receive_new_messages() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let carol = DeviceIdentity::generate();
-        let bob_pub = bob.public();
-        let carol_pub = carol.public();
-        let alice_uid = alice.public().user_id();
-        let bob_uid = bob.public().user_id();
-        let carol_uid = carol.public().user_id();
-        let dir = tempfile::tempdir().unwrap();
-
-        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let alice_addr = alice_listener.local_addr().unwrap();
-        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = bob_listener.local_addr().unwrap();
-        let carol_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let carol_addr = carol_listener.local_addr().unwrap();
-
-        // Alice knows Bob and Carol (so she can dial both to distribute). Bob and Carol
-        // each know Alice (enough to receive her pushes).
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
-        add_peer(
-            &alice_roster,
-            &carol,
-            "Carol",
-            carol_addr.port(),
-            &alice_uid,
-        );
-        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
-        let carol_roster = seed_roster(&alice, "Alice", alice_addr.port(), &carol_uid);
-
-        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
-        let (a_file, _a_file_r) = mpsc::unbounded_channel();
-        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
-        let (b_file, _b_file_r) = mpsc::unbounded_channel();
-        let (c_dm, _c_dm_r) = mpsc::unbounded_channel();
-        let (c_ch, mut c_ch_r) = mpsc::unbounded_channel();
-        let (c_file, _c_file_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_file,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_file,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let carol_node = Node::open(
-            carol,
-            carol_roster,
-            c_dm,
-            c_ch,
-            c_file,
-            &dir.path().join("c.log"),
-            &dir.path().join("c-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
-        tokio::spawn(Arc::clone(&carol_node).run_accept_loop(carol_listener));
-
-        // Epoch 0: {Alice, Bob}. Alice sends; Bob receives.
-        let channel = alice_node
-            .create_channel("general", vec![bob_pub])
-            .await
-            .unwrap();
-        alice_node
-            .send_channel_message(channel, b"epoch0 msg")
-            .await
-            .unwrap();
-        let got0 = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
-            .await
-            .expect("bob received the epoch-0 message within 5s")
-            .expect("channel stream open");
-        assert_eq!(got0.text, b"epoch0 msg");
-
-        // Add Carol (epoch 1). She gets the MembershipChange via Alice's distribution.
-        alice_node
-            .add_channel_member(channel, carol_pub)
-            .await
-            .unwrap();
-
-        // Epoch 1: Alice sends. Her lazy SKD for epoch 1 is distributed before the seal,
-        // so both Bob (still a member) and Carol (newly joined) can read it.
-        alice_node
-            .send_channel_message(channel, b"epoch1 msg")
-            .await
-            .unwrap();
-
-        let got_carol = tokio::time::timeout(Duration::from_secs(5), c_ch_r.recv())
-            .await
-            .expect("carol received the epoch-1 message within 5s")
-            .expect("channel stream open");
-        assert_eq!(got_carol.text, b"epoch1 msg");
-        assert_eq!(got_carol.from, alice_node.user_id());
-
-        // Late-join isolation: Carol never receives the epoch-0 message (she joined at
-        // epoch 1). Her history holds only the epoch-1 message.
-        let carol_hist = carol_node.channel_history(channel, 10);
-        assert!(
-            carol_hist.iter().all(|h| h.text != b"epoch0 msg"),
-            "late joiner must not read pre-join messages"
-        );
-        assert!(carol_hist.iter().any(|h| h.text == b"epoch1 msg"));
-        assert!(
-            c_ch_r.try_recv().is_err(),
-            "carol must not receive the pre-join epoch-0 message"
-        );
-    }
-
-    /// Forward-secrecy rig: Alice + Bob channel; Alice sends two messages; Bob reads
-    /// both via the sender-key ratchet and `channel_history` serves them from his
-    /// store; re-feeding the events does NOT re-open them (single-use keys).
-    #[tokio::test]
-    async fn channel_messages_are_forward_secret_and_history_comes_from_stores() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let bob_pub = bob.public();
-        let dir = tempfile::tempdir().unwrap();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
-        let bob_roster = Arc::new(Mutex::new(Roster::default()));
-
-        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
-        let (a_file, _a_file_r) = mpsc::unbounded_channel();
-        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
-        let (b_file, _b_file_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_file,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_file,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-
-        let channel = alice_node
-            .create_channel("general", vec![bob_pub])
-            .await
-            .unwrap();
-        alice_node
-            .send_channel_message(channel, b"m0")
-            .await
-            .unwrap();
-        alice_node
-            .send_channel_message(channel, b"m1")
-            .await
-            .unwrap();
-
-        // Bob receives both via the sender-key ratchet.
-        let mut texts: Vec<Vec<u8>> = Vec::new();
-        for _ in 0..2 {
-            let got = tokio::time::timeout(std::time::Duration::from_secs(5), b_ch_r.recv())
-                .await
-                .expect("bob received a channel message within 5s")
-                .expect("channel stream open");
-            texts.push(got.text);
-        }
-        texts.sort();
-        assert_eq!(texts, vec![b"m0".to_vec(), b"m1".to_vec()]);
-
-        // Bob's history is served from his received store (single-use keys consumed).
-        let bob_hist = bob_node.channel_history(channel, 10);
-        assert_eq!(bob_hist.len(), 2);
-        assert!(bob_hist.iter().all(|e| !e.from_me));
-        let mut htexts: Vec<Vec<u8>> = bob_hist.iter().map(|e| e.text.clone()).collect();
-        htexts.sort();
-        assert_eq!(htexts, vec![b"m0".to_vec(), b"m1".to_vec()]);
-
-        // Re-feeding the same events does NOT re-open them (single-use ratchet keys);
-        // history is unchanged and nothing new is streamed.
-        bob_node.process_channel(channel);
-        assert!(
-            b_ch_r.try_recv().is_err(),
-            "a consumed message was re-opened"
-        );
-        assert_eq!(bob_node.channel_history(channel, 10).len(), 2);
-    }
-
-    #[tokio::test]
-    async fn list_channels_reports_created_channels() {
-        let me = DeviceIdentity::generate();
-        let dir = tempfile::tempdir().unwrap();
-        let roster = Arc::new(Mutex::new(Roster::default()));
-        let (dm_tx, _dm_rx) = mpsc::unbounded_channel();
-        let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
-        let (file_tx, _file_rx) = mpsc::unbounded_channel();
-        let node = Node::open(
-            me,
-            roster,
-            dm_tx,
-            ch_tx,
-            file_tx,
-            &dir.path().join("m.log"),
-            &dir.path().join("m-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        assert!(node.list_channels().is_empty());
-        let id = node.create_channel("general", vec![]).await.unwrap();
-        let channels = node.list_channels();
-        assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].id, id);
-        assert_eq!(channels[0].name, "general");
-        assert_eq!(channels[0].member_count, 1); // just the creator
-    }
-
-    #[tokio::test]
-    async fn two_nodes_transfer_a_file_over_loopback_tcp() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let dir = tempfile::tempdir().unwrap();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-        // Bob knows Alice (to open her DM-sealed manifest); Alice knows Bob (to dial).
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
-        let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
-
-        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
-        let (a_f, _a_f_r) = mpsc::unbounded_channel();
-        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
-        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_f,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_f,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-
-        // A multi-chunk payload.
-        let payload = vec![0xABu8; crate::file::CHUNK_SIZE + 1234];
-        let src = dir.path().join("photo.bin");
-        std::fs::write(&src, &payload).unwrap();
-
-        let bob_uid = bob_node.user_id();
-        let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
-
-        // Bob surfaces the received file.
-        let rf = tokio::time::timeout(std::time::Duration::from_secs(5), b_f_r.recv())
-            .await
-            .expect("bob received a file within 5s")
-            .expect("file stream open");
-        assert_eq!(rf.name, "photo.bin");
-        assert_eq!(rf.size, payload.len() as u64);
-        assert_eq!(rf.file_conv, file_conv);
-        assert_eq!(rf.from, alice_node.user_id());
-
-        // Bob saves it and the bytes match. Retry briefly: the file_conv chunk
-        // sync runs in a separate task and may land just after the manifest
-        // notification fires (separate TCP connection, same loopback).
-        let dest = dir.path().join("saved.bin");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                match bob_node.save_file(rf.file_conv, &dest) {
-                    Ok(()) => break,
-                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
-                }
-            }
-        })
-        .await
-        .expect("bob saved the file within 5s");
-        assert_eq!(std::fs::read(&dest).unwrap(), payload);
-    }
-
-    #[tokio::test]
-    async fn two_nodes_transfer_a_multi_chunk_file_over_loopback_tcp() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let dir = tempfile::tempdir().unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
-        let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
-
-        let (a_dm, _a) = mpsc::unbounded_channel();
-        let (a_ch, _b) = mpsc::unbounded_channel();
-        let (a_f, _c) = mpsc::unbounded_channel();
-        let (b_dm, _d) = mpsc::unbounded_channel();
-        let (b_ch, _e) = mpsc::unbounded_channel();
-        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_f,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_f,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-
-        // ~5 chunks → the file_conv batch far exceeds one frame → multiple rounds.
-        let payload = vec![0x5Au8; crate::file::CHUNK_SIZE * 4 + 999];
-        let src = dir.path().join("big.bin");
-        std::fs::write(&src, &payload).unwrap();
-
-        let bob_uid = bob_node.user_id();
-        let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
-
-        let rf = tokio::time::timeout(std::time::Duration::from_secs(10), b_f_r.recv())
-            .await
-            .expect("received within 10s")
-            .expect("stream open");
-        assert_eq!(rf.size, payload.len() as u64);
-
-        // Saving may need a brief retry while the file_conv chunks finish syncing.
-        let dest = dir.path().join("big-saved.bin");
-        let mut saved = false;
-        for _ in 0..100 {
-            if bob_node.save_file(rf.file_conv, &dest).is_ok() {
-                saved = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert!(saved, "bob saved the multi-chunk file");
-        assert_eq!(std::fs::read(&dest).unwrap(), payload);
-        let _ = file_conv;
-    }
-
-    #[tokio::test]
-    async fn a_dm_reaction_is_visible_to_both_peers() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-
-        // Capture public identities BEFORE moving into Node::open.
-        let alice_pub = alice.public();
-        let bob_pub = bob.public();
-        let alice_uid = alice_pub.user_id();
-        let bob_uid = bob_pub.user_id();
-
-        let dir = tempfile::tempdir().unwrap();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let alice_addr = alice_listener.local_addr().unwrap();
-
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_pub.user_id());
-        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_pub.user_id());
-
-        let (a_dm, _a1) = mpsc::unbounded_channel();
-        let (a_ch, _a2) = mpsc::unbounded_channel();
-        let (a_f, _a3) = mpsc::unbounded_channel();
-        let (b_dm, mut b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, _b2) = mpsc::unbounded_channel();
-        let (b_f, _b3) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_f,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_f,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
-
-        // Alice DMs Bob; Bob receives it and learns its event id from history.
-        alice_node.send_dm(&bob_uid, b"hi bob").await.unwrap();
-        let got = tokio::time::timeout(std::time::Duration::from_secs(5), b_dm_r.recv())
-            .await
-            .expect("bob got the dm")
-            .expect("stream open");
-        assert_eq!(got.text, b"hi bob");
-
-        // Derive the DM conversation id from the two public identities.
-        let conv = dm_conversation_id(&alice_pub, &bob_pub);
-
-        let target = {
-            let h = bob_node.dm_history(&alice_pub, 10);
-            h.iter()
-                .find(|e| !e.from_me)
-                .map(|e| e.id)
-                .expect("bob has the message id")
-        };
-
-        // Bob reacts; it distributes to Alice.
-        bob_node
-            .react_dm(&alice_uid, target, "👍", false)
-            .await
-            .unwrap();
-
-        // Bob sees his own reaction (from my_dm_reactions).
-        let bob_views = bob_node.reactions(conv);
-        assert!(
-            bob_views
-                .iter()
-                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
-            "bob sees his own reaction"
-        );
-
-        // Give the distribution a moment, then check Alice.
-        let mut ok = false;
-        for _ in 0..50 {
-            let av = alice_node.reactions(conv);
-            if av
-                .iter()
-                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
-            {
-                ok = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert!(ok, "alice sees bob's reaction");
-    }
-
-    /// Channel file transfer over the wire, both directions. The manifest is sealed
-    /// with the sender-key ratchet (`seal_sender_message`) and opened by
-    /// `process_file_events`; the chunk conversation syncs separately. Bob is a
-    /// non-creator member, so his send must first distribute his own sender key —
-    /// the same path the creator-only-send fix repaired for messages.
-    #[tokio::test]
-    async fn two_nodes_transfer_a_file_in_a_channel() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let bob_pub = bob.public();
-        let alice_uid = alice.public().user_id();
-        let bob_uid = bob.public().user_id();
-        let dir = tempfile::tempdir().unwrap();
-
-        // Both nodes listen so each can receive the other's pushed file events.
-        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let alice_addr = alice_listener.local_addr().unwrap();
-        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = bob_listener.local_addr().unwrap();
-
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
-        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
-
-        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
-        let (a_f, mut a_f_r) = mpsc::unbounded_channel();
-        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
-        let (b_f, mut b_f_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_f,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_f,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
-
-        let channel = alice_node
-            .create_channel("general", vec![bob_pub])
-            .await
-            .unwrap();
-
-        // Forward direction: Alice -> Bob. Multi-chunk payload.
-        let payload = vec![0xABu8; crate::file::CHUNK_SIZE + 1234];
-        let src = dir.path().join("photo.bin");
-        std::fs::write(&src, &payload).unwrap();
-        let file_conv = alice_node.send_file_channel(channel, &src).await.unwrap();
-
-        let rf = tokio::time::timeout(Duration::from_secs(5), b_f_r.recv())
-            .await
-            .expect("bob received the channel file within 5s")
-            .expect("file stream open");
-        assert_eq!(rf.name, "photo.bin");
-        assert_eq!(rf.size, payload.len() as u64);
-        assert_eq!(rf.conv, channel);
-        assert_eq!(rf.file_conv, file_conv);
-        assert_eq!(rf.from, alice_node.user_id());
-
-        let dest = dir.path().join("saved.bin");
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match bob_node.save_file(rf.file_conv, &dest) {
-                    Ok(()) => break,
-                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-                }
-            }
-        })
-        .await
-        .expect("bob saved the channel file within 5s");
-        assert_eq!(std::fs::read(&dest).unwrap(), payload);
-
-        // Reverse direction: Bob -> Alice. Bob is a non-creator member; his
-        // send_file_channel must distribute his own sender key first so Alice can
-        // open the manifest (mirrors the bidirectional message fix).
-        let payload2 = vec![0xCDu8; crate::file::CHUNK_SIZE * 2 + 77];
-        let src2 = dir.path().join("from-bob.bin");
-        std::fs::write(&src2, &payload2).unwrap();
-        let file_conv2 = bob_node.send_file_channel(channel, &src2).await.unwrap();
-
-        let rf2 = tokio::time::timeout(Duration::from_secs(5), a_f_r.recv())
-            .await
-            .expect("alice received Bob's channel file within 5s (non-creator send)")
-            .expect("file stream open");
-        assert_eq!(rf2.name, "from-bob.bin");
-        assert_eq!(rf2.size, payload2.len() as u64);
-        assert_eq!(rf2.conv, channel);
-        assert_eq!(rf2.file_conv, file_conv2);
-        assert_eq!(rf2.from, bob_node.user_id());
-
-        let dest2 = dir.path().join("alice-saved.bin");
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match alice_node.save_file(rf2.file_conv, &dest2) {
-                    Ok(()) => break,
-                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-                }
-            }
-        })
-        .await
-        .expect("alice saved Bob's channel file within 5s");
-        assert_eq!(std::fs::read(&dest2).unwrap(), payload2);
-    }
-
-    /// Channel reactions over the wire. They use a per-member `SealedPayload`
-    /// (re-readable, not single-use), so both the reacting author and the other
-    /// members must see them via `reactions(channel)`. Also covers toggle-off.
-    #[tokio::test]
-    async fn channel_reactions_are_visible_to_members() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let bob_pub = bob.public();
-        let alice_uid = alice.public().user_id();
-        let bob_uid = bob.public().user_id();
-        let dir = tempfile::tempdir().unwrap();
-
-        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let alice_addr = alice_listener.local_addr().unwrap();
-        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = bob_listener.local_addr().unwrap();
-
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
-        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_uid);
-
-        let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
-        let (a_f, _a_f_r) = mpsc::unbounded_channel();
-        let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, mut b_ch_r) = mpsc::unbounded_channel();
-        let (b_f, _b_f_r) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_f,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_f,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
-
-        let channel = alice_node
-            .create_channel("general", vec![bob_pub])
-            .await
-            .unwrap();
-
-        // Alice sends a channel message; Bob receives it and learns its event id.
-        alice_node
-            .send_channel_message(channel, b"hi bob")
-            .await
-            .unwrap();
-        let got = tokio::time::timeout(Duration::from_secs(5), b_ch_r.recv())
-            .await
-            .expect("bob received Alice's channel message within 5s")
-            .expect("channel stream open");
-        assert_eq!(got.text, b"hi bob");
-        let target = got.event_id;
-
-        // Bob reacts; it distributes to Alice.
-        bob_node
-            .react_channel(channel, target, "👍", false)
-            .await
-            .unwrap();
-
-        // Bob re-reads his own channel reaction (sealed per-member, re-readable).
-        let bob_views = bob_node.reactions(channel);
-        assert!(
-            bob_views
-                .iter()
-                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
-            "bob sees his own channel reaction"
-        );
-
-        // Alice sees Bob's reaction after distribution lands.
-        let mut ok = false;
-        for _ in 0..50 {
-            let av = alice_node.reactions(channel);
-            if av
-                .iter()
-                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
-            {
-                ok = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(ok, "alice sees bob's channel reaction");
-        let _ = alice_uid;
-
-        // Toggle off: Bob removes the reaction; it disappears for both.
-        bob_node
-            .react_channel(channel, target, "👍", true)
-            .await
-            .unwrap();
-
-        let bob_after = bob_node.reactions(channel);
-        assert!(
-            !bob_after
-                .iter()
-                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid)),
-            "bob's reaction is gone after toggle-off"
-        );
-
-        let mut gone = false;
-        for _ in 0..50 {
-            let av = alice_node.reactions(channel);
-            if !av
-                .iter()
-                .any(|v| v.emoji == "👍" && v.who.contains(&bob_uid))
-            {
-                gone = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(gone, "alice no longer sees bob's reaction after toggle-off");
-    }
-
-    #[tokio::test]
-    async fn search_finds_a_sent_dm_by_keyword() {
-        let me = DeviceIdentity::generate();
-        let peer = DeviceIdentity::generate();
-        let dir = tempfile::tempdir().unwrap();
-        let roster = seed_roster(&peer, "Peer", 1, &me.public().user_id());
-        let (dm, _a) = mpsc::unbounded_channel();
-        let (ch, _b) = mpsc::unbounded_channel();
-        let (f, _c) = mpsc::unbounded_channel();
-        let node = Node::open(
-            me,
-            roster,
-            dm,
-            ch,
-            f,
-            &dir.path().join("m.log"),
-            &dir.path().join("m-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        // No peer is reachable (port 1), but send_dm still records to the sidecar.
-        let peer_uid = peer.public().user_id();
-        let _ = node.send_dm(&peer_uid, b"lunch at noon tomorrow").await; // delivery fails; sidecar written
-        let hits = node.search("NOON");
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].from_me);
-        assert_eq!(hits[0].label, "Peer");
-        assert_eq!(hits[0].target, peer_uid);
-        assert!(node.search("   ").is_empty());
-        assert!(node.search("absent-keyword").is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_reply_round_trips_with_its_reply_to() {
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-
-        // Capture public identities BEFORE moving into Node::open.
-        let alice_pub = alice.public();
-        let bob_pub = bob.public();
-        let alice_uid = alice_pub.user_id();
-        let bob_uid = bob_pub.user_id();
-
-        let dir = tempfile::tempdir().unwrap();
-
-        let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = bob_listener.local_addr().unwrap();
-        let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let alice_addr = alice_listener.local_addr().unwrap();
-
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_pub.user_id());
-        let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob_pub.user_id());
-
-        let (a_dm, mut a_dm_r) = mpsc::unbounded_channel();
-        let (a_ch, _a_ch) = mpsc::unbounded_channel();
-        let (a_f, _a_f) = mpsc::unbounded_channel();
-        let (b_dm, mut b_dm_r) = mpsc::unbounded_channel();
-        let (b_ch, _b_ch) = mpsc::unbounded_channel();
-        let (b_f, _b_f) = mpsc::unbounded_channel();
-
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            a_dm,
-            a_ch,
-            a_f,
-            &dir.path().join("a.log"),
-            &dir.path().join("a-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            b_dm,
-            b_ch,
-            b_f,
-            &dir.path().join("b.log"),
-            &dir.path().join("b-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
-        tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
-
-        // Alice sends a normal DM to Bob (no reply_to).
-        alice_node
-            .send_dm(&bob_uid, b"hi")
-            .await
-            .expect("alice sends hi");
-
-        // Bob receives it.
-        let got = tokio::time::timeout(Duration::from_secs(5), b_dm_r.recv())
-            .await
-            .expect("bob got alice's dm within 5s")
-            .expect("stream open");
-        assert_eq!(got.text, b"hi");
-        assert_eq!(got.reply_to, None, "normal message has no reply_to");
-
-        // Bob looks up the parent message id from his history.
-        let parent_id = bob_node
-            .dm_history(&alice_pub, 10)
-            .into_iter()
-            .find(|e| !e.from_me)
-            .map(|e| e.id)
-            .expect("bob has alice's message in history");
-
-        // Bob replies to Alice's message.
-        bob_node
-            .send_dm_reply(&alice_uid, b"hey back", Some(parent_id))
-            .await
-            .expect("bob sends reply");
-
-        // Alice receives the reply with reply_to set.
-        let reply = tokio::time::timeout(Duration::from_secs(5), a_dm_r.recv())
-            .await
-            .expect("alice got bob's reply within 5s")
-            .expect("stream open");
-        assert_eq!(reply.text, b"hey back");
-        assert_eq!(
-            reply.reply_to,
-            Some(parent_id),
-            "alice's ReceivedDm carries reply_to"
-        );
-
-        // Alice's dm_history shows the reply entry with reply_to.
-        let alice_hist = alice_node.dm_history(&bob_pub, 10);
-        let reply_entry = alice_hist
-            .iter()
-            .find(|e| !e.from_me)
-            .expect("alice has bob's reply in history");
-        assert_eq!(reply_entry.text, b"hey back");
-        assert_eq!(
-            reply_entry.reply_to,
-            Some(parent_id),
-            "history entry carries reply_to"
-        );
-
-        // A normal send_dm (no reply) yields reply_to == None in history.
-        alice_node.send_dm(&bob_uid, b"just a message").await.ok();
-        let alice_hist2 = alice_node.dm_history(&bob_pub, 10);
-        let normal_sent = alice_hist2
-            .iter()
-            .find(|e| e.from_me && e.text == b"just a message")
-            .expect("alice's normal sent message is in history");
-        assert_eq!(
-            normal_sent.reply_to, None,
-            "normal send_dm yields reply_to == None"
-        );
-    }
-
-    #[tokio::test]
-    async fn dm_messages_are_forward_secret_over_the_ratchet() {
-        // Two nodes over loopback TCP. Alice sends DMs sealed with the Double
-        // Ratchet; Bob decrypts them once into his received store. Proves: (a) both
-        // land in Bob's dm_history; (b) re-feeding the SAME wire event to
-        // emit_new_messages does NOT re-surface it (the wire key is single-use); and
-        // (c) out-of-order arrival still surfaces every message.
-        let alice = DeviceIdentity::generate();
-        let bob = DeviceIdentity::generate();
-        let alice_pub = alice.public();
-        let bob_pub = bob.public();
-        let alice_uid = alice_pub.user_id();
-        let bob_uid = bob_pub.user_id();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bob_addr = listener.local_addr().unwrap();
-        let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice_uid);
-        let bob_roster = seed_roster(&alice, "Alice", 4000, &bob_uid);
-
-        let dir = tempfile::tempdir().unwrap();
-        let (alice_tx, _alice_rx) = mpsc::unbounded_channel();
-        let (bob_tx, mut bob_rx) = mpsc::unbounded_channel();
-        let (a_ch_tx, _a_ch_rx) = mpsc::unbounded_channel();
-        let (b_ch_tx, _b_ch_rx) = mpsc::unbounded_channel();
-        let (a_file_tx, _a_file_rx) = mpsc::unbounded_channel();
-        let (b_file_tx, _b_file_rx) = mpsc::unbounded_channel();
-        let alice_node = Node::open(
-            alice,
-            alice_roster,
-            alice_tx,
-            a_ch_tx,
-            a_file_tx,
-            &dir.path().join("alice.log"),
-            &dir.path().join("alice-sent.log"),
-            "pw",
-        )
-        .unwrap();
-        let bob_node = Node::open(
-            bob,
-            bob_roster,
-            bob_tx,
-            b_ch_tx,
-            b_file_tx,
-            &dir.path().join("bob.log"),
-            &dir.path().join("bob-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
-
-        // Alice sends two DMs; Bob receives both via the ratchet.
-        alice_node.send_dm(&bob_uid, b"first").await.unwrap();
-        let r1 = tokio::time::timeout(Duration::from_secs(5), bob_rx.recv())
-            .await
-            .expect("bob got the first dm")
-            .expect("stream open");
-        assert_eq!(r1.text, b"first");
-        assert_eq!(r1.from, alice_uid);
-        alice_node.send_dm(&bob_uid, b"second").await.unwrap();
-        let r2 = tokio::time::timeout(Duration::from_secs(5), bob_rx.recv())
-            .await
-            .expect("bob got the second dm")
-            .expect("stream open");
-        assert_eq!(r2.text, b"second");
-
-        // (a) Bob's dm_history shows both (served from his received store).
-        let conv = dm_conversation_id(&alice_pub, &bob_pub);
-        let hist = bob_node.dm_history(&alice_pub, 10);
-        assert_eq!(hist.len(), 2);
-        assert_eq!(hist[0].text, b"first");
-        assert_eq!(hist[1].text, b"second");
-
-        // (b) Re-feeding the same wire events does NOT re-surface them: the ratchet
-        // keys were consumed (single-use) AND they're marked emitted. Draining again
-        // yields nothing new.
-        bob_node.emit_new_messages(conv);
-        assert!(
-            bob_rx.try_recv().is_err(),
-            "consumed-key events must not re-surface"
-        );
-        assert_eq!(
-            bob_node.dm_history(&alice_pub, 10).len(),
-            2,
-            "history unchanged after re-feed"
-        );
-
-        // (c) Out-of-order: Alice seals m0,m1,m2 and Bob is fed them as 2,0,1. The
-        // ratchet opens skipped messages, so all three surface. Use a fresh peer pair
-        // so this exercises a clean session.
-        let carol = DeviceIdentity::generate();
-        let dave = DeviceIdentity::generate();
-        let carol_pub = carol.public();
-        let dave_pub = dave.public();
-        let dave_uid = dave_pub.user_id();
-        let conv2 = dm_conversation_id(&carol_pub, &dave_pub);
-
-        // Carol's ratchet (seals the wire she "sends"); only the bytes matter.
-        let carol_sess_dir = dir.path().join("carol-sess");
-        std::fs::create_dir_all(&carol_sess_dir).unwrap();
-        let mut carol_ratchet = DmRatchet::new(
-            RatchetSessions::open(&carol_sess_dir.join("ratchet.sessions"), "pw").unwrap(),
-        );
-        let mk = |r: &mut DmRatchet, body: &[u8], seq: u64, wc: u64| {
-            let wire = r
-                .encrypt(
-                    &carol,
-                    &dave_pub,
-                    &MessageBody::new(body.to_vec(), None).encode(),
-                )
-                .unwrap();
-            Event::new(
-                &carol,
-                conv2,
-                seq,
-                vec![],
-                seq,
-                wc,
-                EventKind::Message,
-                wire,
-            )
-        };
-        let m0 = mk(&mut carol_ratchet, b"m0", 1, 1000);
-        let m1 = mk(&mut carol_ratchet, b"m1", 2, 2000);
-        let m2 = mk(&mut carol_ratchet, b"m2", 3, 3000);
-
-        // Dave's node knows Carol.
-        let dave_roster = seed_roster(&carol, "Carol", 4000, &dave_uid);
-        let (dave_tx, mut dave_rx) = mpsc::unbounded_channel();
-        let (d_ch_tx, _d_ch_rx) = mpsc::unbounded_channel();
-        let (d_file_tx, _d_file_rx) = mpsc::unbounded_channel();
-        let dave_node = Node::open(
-            dave,
-            dave_roster,
-            dave_tx,
-            d_ch_tx,
-            d_file_tx,
-            &dir.path().join("dave.log"),
-            &dir.path().join("dave-sent.log"),
-            "pw",
-        )
-        .unwrap();
-
-        // Feed them in arrival order 2,0,1 into Dave's log, draining after each.
-        for ev in [m2, m0, m1] {
-            dave_node.log.lock().unwrap().append(ev).unwrap();
-            dave_node.emit_new_messages(conv2);
-        }
-        let mut got: Vec<Vec<u8>> = Vec::new();
-        while let Ok(dm) = dave_rx.try_recv() {
-            got.push(dm.text);
-        }
-        got.sort();
-        assert_eq!(
-            got,
-            vec![b"m0".to_vec(), b"m1".to_vec(), b"m2".to_vec()],
-            "out-of-order delivery surfaces all three messages"
-        );
-        // History (sorted by wall_clock) shows them in send order.
-        let dhist = dave_node.dm_history(&carol_pub, 10);
-        assert_eq!(
-            dhist.iter().map(|e| e.text.clone()).collect::<Vec<_>>(),
-            vec![b"m0".to_vec(), b"m1".to_vec(), b"m2".to_vec()]
-        );
+/// A fresh random 32-byte logical message id (shared across an account send's
+/// per-device copies, so reactions/replies can target it account-wide).
+fn random_msg_id() -> [u8; 32] {
+    use rand::RngCore;
+    let mut id = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut id);
+    id
+}
+
+/// Decode an account-history store entry (a full `DmEnvelope`) into its logical id
+/// and inner body. A malformed or legacy entry falls back to a bare `MessageBody`
+/// with a zero id, so it still renders rather than breaking history.
+fn decode_account_entry(plaintext: &[u8]) -> (EventId, MessageBody) {
+    match DmEnvelope::decode(plaintext) {
+        Some(env) => (EventId::new(env.msg_id), MessageBody::decode(&env.body)),
+        None => (EventId::new([0u8; 32]), MessageBody::decode(plaintext)),
     }
 }
+
+#[cfg(test)]
+#[path = "node_tests.rs"]
+mod tests;

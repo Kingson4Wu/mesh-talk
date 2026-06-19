@@ -167,6 +167,11 @@ impl SentLog {
         v.sort_by_key(|e| (e.wall_clock, e.seq));
         v
     }
+
+    /// The conversation ids this log holds entries for.
+    pub fn conversations(&self) -> Vec<ConversationId> {
+        self.by_conversation.keys().copied().collect()
+    }
 }
 
 #[cfg(test)]
