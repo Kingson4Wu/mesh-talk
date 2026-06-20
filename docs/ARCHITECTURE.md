@@ -121,8 +121,17 @@ and device linking; `features/auth/LoginScreen.tsx` is the only other screen.
   `cargo test --workspace`, typos, cargo-deny, cargo-machete, gitleaks, shellcheck, audits,
   both builds — **mirrors CI** so failures surface locally, not on CI.
 - **CI** (`.github/workflows/`): `ci.yml` (ubuntu+macOS matrix → the `verify` aggregate
-  check, required by branch protection), `check-health.yml`, `gitleaks.yml`,
-  `dependabot-auto-merge.yml` (patch-only), `glib-0.20-watch.yml` (monthly dep watcher).
+  check, required by branch protection; coverage → Codecov on Linux), `check-health.yml`,
+  `gitleaks.yml`, CodeQL, `dependabot-auto-merge.yml` (patch-only),
+  `glib-0.20-watch.yml` (monthly dep watcher).
+- **Automated bug-finding** (defence in depth — surfaces issues without anyone looking):
+  - *Coverage-guided fuzzing* (`fuzz/`, `fuzz.yml`, weekly + dispatch) of every untrusted
+    wire decoder; the `decoder_smoke` test is the always-on stable complement.
+  - *Mutation testing* (`mutants.yml`, weekly + on PR-diff) — catches weak/missing assertions.
+  - *Coverage* (Codecov), *clippy `-D warnings`*, *cargo-deny*, *cargo-machete*, *CodeQL*, *gitleaks*.
+  - *Claude operations* (`.claude/`): `/bug-hunt` fans out read-only `bug-hunter` subagents
+    (adversarial audit, verified findings only) over the core; `code-reviewer` reviews a diff;
+    `/e2e` runs the `e2e-runner` over the real multi-process integration suite.
 - **Crypto primitives**: ed25519-dalek, x25519-dalek (need rand_core 0.6 — keep `rand` at
   0.8), aes-gcm, snow (Noise), sha2, hkdf, pbkdf2, bincode.
 

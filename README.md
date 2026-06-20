@@ -3,6 +3,8 @@
 # Mesh-Talk
 
 [![CI](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml)
+[![Fuzz](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml)
+[![Mutants](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml)
 [![Gitleaks](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml)
 [![codecov](https://codecov.io/gh/Kingson4Wu/mesh-talk/branch/main/graph/badge.svg)](https://codecov.io/gh/Kingson4Wu/mesh-talk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
