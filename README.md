@@ -62,6 +62,32 @@ mesh-talk/
 └── Cargo.toml              # workspace config + shared [workspace.dependencies]
 ```
 
+## Download & first run
+
+Grab the package for your OS from the [**Releases**](https://github.com/Kingson4Wu/mesh-talk/releases)
+page. The builds are **free and unsigned** (no paid Apple/Windows code-signing certificate), so
+macOS and Windows show a one-time "unidentified developer" / SmartScreen prompt the first time —
+this is expected for unsigned open-source software and does **not** mean the app is unsafe. Each
+release also ships a `SHA256SUMS` list and a Sigstore `cosign` signature so you can verify the
+download came from this project's CI. How to open, per platform:
+
+- **Linux** — no prompt at all.
+  - **AppImage** (portable, no install): `chmod +x Mesh-Talk_*.AppImage && ./Mesh-Talk_*.AppImage`
+  - or install the `.deb` / `.rpm` (adds an app-menu entry): `sudo dpkg -i mesh-talk_*.deb`
+- **macOS** — open the `.dmg`, drag **Mesh-Talk** to Applications. On first launch macOS blocks an
+  unsigned app, so **right-click the app → Open → Open** (only needed once). If it says
+  "damaged", clear the quarantine flag: `xattr -dr com.apple.quarantine /Applications/Mesh-Talk.app`.
+- **Windows** — run the `.exe` (or `.msi`) installer. SmartScreen shows "Windows protected your
+  PC" → click **More info → Run anyway** (only the first time). WebView2 is fetched automatically
+  if missing.
+
+After the one-time approval it behaves like any installed app (Start-menu / Applications / app-menu
+shortcut, icon, double-click to launch). To remove the prompt entirely you'd need paid signing
+(Apple Developer ID for macOS, a code-signing cert or the Microsoft Store for Windows); Linux is
+always prompt-free.
+
+## Build from source
+
 ## Prerequisites
 
 - Rust 2021 edition or later

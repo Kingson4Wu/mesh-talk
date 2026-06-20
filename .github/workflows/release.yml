@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"  # Triggered when pushing tags
+  workflow_dispatch: {}  # Manual run: builds all platforms + uploads artifacts (no GitHub Release)
 
 permissions:
   contents: write  
@@ -104,7 +105,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
-          TAG=${GITHUB_REF#refs/tags/}
+          TAG="${GITHUB_REF_NAME}"
 
           for pattern in \
             target/*/release/bundle/nsis/*.exe \
@@ -161,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG=${GITHUB_REF#refs/tags/}
+          TAG="${GITHUB_REF_NAME}"
           mkdir -p release_zips
 
           OS_NAME=""
@@ -210,8 +211,18 @@ jobs:
           echo "✅ Bundle signature generated: $BUNDLE_FILE"
           ls -lh release_zips
 
-      # 1️⃣1️⃣ Upload zipped artifacts + bundle to GitHub Release
+      # 1️⃣1️⃣ Always expose the signed zips as workflow artifacts — lets a manual
+      # `workflow_dispatch` run be downloaded + verified without cutting a real release.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesh-talk-${{ matrix.os }}-${{ matrix.target }}
+          path: release_zips/*
+          if-no-files-found: error
+
+      # 1️⃣2️⃣ On a version tag only, also publish them to the GitHub Release.
       - name: Upload zipped artifacts and signature bundle to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
