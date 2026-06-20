@@ -16,10 +16,11 @@ jobs:
   checks:
     strategy:
       fail-fast: false
-      # Tauri targets desktop: verify on Linux (fast, with the GTK/WebKit deps)
-      # and macOS (matches the primary build target).
+      # Tauri targets desktop on all three platforms: verify on Linux (fast, with the
+      # GTK/WebKit deps + coverage), macOS, and Windows (so a Windows-only regression is
+      # caught on every push, not only at release time).
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -73,12 +74,14 @@ jobs:
       - name: Clippy
         if: matrix.os == 'ubuntu-latest'
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test (macOS)
-        if: matrix.os == 'macos-latest'
+      # Linux runs the suite under llvm-cov (below); macOS + Windows run it directly.
+      # --workspace so BOTH crates (mesh-talk-core + the app) are tested, not just the app.
+      - name: Test (macOS + Windows)
+        if: matrix.os != 'ubuntu-latest'
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --workspace
 
       # On Linux, run the tests through llvm-cov so we get coverage in the same
       # pass (avoids compiling/running the suite twice).

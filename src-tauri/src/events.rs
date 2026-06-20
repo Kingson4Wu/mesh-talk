@@ -1,18 +1,18 @@
-//! Tauri events emitted to the frontend by the redesign node. (Legacy
+//! Tauri events emitted to the frontend by the node. (Legacy
 //! message/contact/network/file-transfer events were retired with the legacy stack.)
 
-use crate::eventlog::event::EventId;
+use mesh_talk_core::eventlog::event::EventId;
 use tauri::{Emitter, Runtime};
 
-/// A received DM, surfaced to the `/redesign` UI.
-pub const EVENT_REDESIGN_DM_RECEIVED: &str = "redesign-dm-received";
+/// A received DM, surfaced to the `/` UI.
+pub const EVENT_DM_RECEIVED: &str = "dm-received";
 /// A received channel message.
-pub const EVENT_REDESIGN_CHANNEL_MESSAGE: &str = "redesign-channel-message";
+pub const EVENT_CHANNEL_MESSAGE: &str = "channel-message";
 /// A received file (DM or channel).
-pub const EVENT_REDESIGN_FILE_RECEIVED: &str = "redesign-file-received";
+pub const EVENT_FILE_RECEIVED: &str = "file-received";
 
 #[derive(serde::Serialize, Clone)]
-pub struct RedesignDmReceivedEvent {
+pub struct DmReceivedEvent {
     pub from: String,
     pub from_name: String,
     pub text: String,
@@ -20,7 +20,7 @@ pub struct RedesignDmReceivedEvent {
 }
 
 #[derive(serde::Serialize, Clone)]
-pub struct RedesignChannelMessageEvent {
+pub struct ChannelMessageEvent {
     pub channel_id: String, // hex
     pub channel_name: String,
     pub from: String,
@@ -29,7 +29,7 @@ pub struct RedesignChannelMessageEvent {
 }
 
 #[derive(serde::Serialize, Clone)]
-pub struct RedesignFileReceivedEvent {
+pub struct FileReceivedEvent {
     pub conv: String, // hex (channel id for a channel file; the DM conv otherwise)
     pub from: String, // sender user-id
     pub name: String,
@@ -37,26 +37,26 @@ pub struct RedesignFileReceivedEvent {
     pub file_conv: String, // hex — pass to save
 }
 
-/// Emit a received redesign DM to the frontend (text decoded lossily for display).
-pub fn emit_redesign_dm_received<R: Runtime>(
+/// Emit a received DM to the frontend (text decoded lossily for display).
+pub fn emit_dm_received<R: Runtime>(
     app_handle: &tauri::AppHandle<R>,
     from: String,
     from_name: String,
     text: Vec<u8>,
     reply_to: Option<EventId>,
 ) {
-    let event = RedesignDmReceivedEvent {
+    let event = DmReceivedEvent {
         from,
         from_name,
         text: String::from_utf8_lossy(&text).into_owned(),
         reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
     };
-    if let Err(e) = app_handle.emit(EVENT_REDESIGN_DM_RECEIVED, event) {
-        log::error!("Failed to emit redesign dm event: {e}");
+    if let Err(e) = app_handle.emit(EVENT_DM_RECEIVED, event) {
+        log::error!("Failed to emit dm event: {e}");
     }
 }
 
-pub fn emit_redesign_channel_message<R: Runtime>(
+pub fn emit_channel_message<R: Runtime>(
     app_handle: &tauri::AppHandle<R>,
     channel_id: String,
     channel_name: String,
@@ -64,19 +64,19 @@ pub fn emit_redesign_channel_message<R: Runtime>(
     text: Vec<u8>,
     reply_to: Option<EventId>,
 ) {
-    let event = RedesignChannelMessageEvent {
+    let event = ChannelMessageEvent {
         channel_id,
         channel_name,
         from,
         text: String::from_utf8_lossy(&text).into_owned(),
         reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
     };
-    if let Err(e) = app_handle.emit(EVENT_REDESIGN_CHANNEL_MESSAGE, event) {
-        log::error!("Failed to emit redesign channel event: {e}");
+    if let Err(e) = app_handle.emit(EVENT_CHANNEL_MESSAGE, event) {
+        log::error!("Failed to emit channel event: {e}");
     }
 }
 
-pub fn emit_redesign_file_received<R: Runtime>(
+pub fn emit_file_received<R: Runtime>(
     app_handle: &tauri::AppHandle<R>,
     conv: String,
     from: String,
@@ -84,14 +84,14 @@ pub fn emit_redesign_file_received<R: Runtime>(
     size: u64,
     file_conv: String,
 ) {
-    let event = RedesignFileReceivedEvent {
+    let event = FileReceivedEvent {
         conv,
         from,
         name,
         size,
         file_conv,
     };
-    if let Err(e) = app_handle.emit(EVENT_REDESIGN_FILE_RECEIVED, event) {
-        log::error!("Failed to emit redesign file event: {e}");
+    if let Err(e) = app_handle.emit(EVENT_FILE_RECEIVED, event) {
+        log::error!("Failed to emit file event: {e}");
     }
 }

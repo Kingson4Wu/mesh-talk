@@ -1,0 +1,62 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the untrusted-input wire decoders (the `fuzz/` crate). These
+# parse bytes that arrive off the network / post-decryption from a peer, so a panic is a
+# remotely-triggerable crash. Long-running, so NOT on every push: a weekly sweep + on-demand.
+# (The cheap always-on guard is the `decoder_smoke` test, run by the normal CI.)
+on:
+  schedule:
+    - cron: "0 5 * * 2" # Tuesdays 05:00 UTC (mutation testing runs Mondays)
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Seconds to fuzz EACH target"
+        required: false
+        default: "120"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # cargo-fuzz requires a nightly toolchain (libFuzzer + sanitizer instrumentation).
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> target"
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Fuzz every target
+        run: |
+          set -euo pipefail
+          TIME="${{ github.event.inputs.max_total_time || '120' }}"
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::fuzz $target (${TIME}s)"
+            cargo +nightly fuzz run "$target" -- -max_total_time="$TIME" -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+
+      # A crash leaves a reproducer under fuzz/artifacts/<target>/ — keep it for triage.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

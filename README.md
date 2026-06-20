@@ -3,12 +3,14 @@
 # Mesh-Talk
 
 [![CI](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml)
+[![Fuzz](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml)
+[![Mutants](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml)
 [![Gitleaks](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml)
 [![codecov](https://codecov.io/gh/Kingson4Wu/mesh-talk/branch/main/graph/badge.svg)](https://codecov.io/gh/Kingson4Wu/mesh-talk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#prerequisites)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/Kingson4Wu/mesh-talk)
 
@@ -35,22 +37,56 @@ A local network chat tool written in Rust that enables users to communicate dire
 
 ```
 mesh-talk/
-├── src-tauri/              # Rust backend (Tauri + business logic)
+├── crates/mesh-talk-core/  # UI-free protocol core / SDK foundation (no Tauri dep)
 │   ├── src/
-│   │   ├── main.rs         # Tauri main entry
-│   │   ├── lib.rs          # Main library module
-│   │   ├── api.rs          # Command-line argument parsing
-│   │   ├── domain/         # Domain models
-│   │   ├── services/       # Business logic services
-│   │   ├── network/        # Network layer
-│   │   └── utils.rs        # Utility functions
+│   │   ├── lib.rs          # crate root (lib `mesh_talk_core`)
+│   │   ├── node/           # the serverless node: orchestration
+│   │   ├── identity/ transport/ discovery/ eventlog/ ratchet/ channel/ dm.rs file/ postoffice/
+│   │   ├── storage/        # at-rest encryption (PBKDF2 + AES-GCM)
+│   │   └── bin/mesh-talk-node.rs  # headless node CLI (--post-office relay mode)
+│   ├── tests/              # cross-process integration tests
+│   └── Cargo.toml
+├── src-tauri/              # Tauri desktop shell — a thin layer over mesh-talk-core
+│   ├── src/
+│   │   ├── main.rs         # `mesh-talk` desktop binary
+│   │   ├── lib.rs          # Tauri setup + IPC registration
+│   │   ├── commands.rs     # auth IPC (chat_commands.rs = messaging IPC)
+│   │   ├── events.rs tray.rs state.rs perf.rs
+│   │   └── services/       # auth only
 │   ├── Cargo.toml
 │   └── tauri.conf.json
-├── frontend/               # Vue frontend
-├── specifications/         # Project documentation
-├── Makefile               # Build and development commands
-└── Cargo.toml             # Workspace configuration
+├── frontend/               # React + TS + Tailwind frontend
+├── docs/ARCHITECTURE.md    # architecture reference
+├── specifications/         # overview + process/convention docs
+├── Makefile
+└── Cargo.toml              # workspace config + shared [workspace.dependencies]
 ```
+
+## Download & first run
+
+Grab the package for your OS from the [**Releases**](https://github.com/Kingson4Wu/mesh-talk/releases)
+page. The builds are **free and unsigned** (no paid Apple/Windows code-signing certificate), so
+macOS and Windows show a one-time "unidentified developer" / SmartScreen prompt the first time —
+this is expected for unsigned open-source software and does **not** mean the app is unsafe. Each
+release also ships a `SHA256SUMS` list and a Sigstore `cosign` signature so you can verify the
+download came from this project's CI. How to open, per platform:
+
+- **Linux** — no prompt at all.
+  - **AppImage** (portable, no install): `chmod +x Mesh-Talk_*.AppImage && ./Mesh-Talk_*.AppImage`
+  - or install the `.deb` / `.rpm` (adds an app-menu entry): `sudo dpkg -i mesh-talk_*.deb`
+- **macOS** — open the `.dmg`, drag **Mesh-Talk** to Applications. On first launch macOS blocks an
+  unsigned app, so **right-click the app → Open → Open** (only needed once). If it says
+  "damaged", clear the quarantine flag: `xattr -dr com.apple.quarantine /Applications/Mesh-Talk.app`.
+- **Windows** — run the `.exe` (or `.msi`) installer. SmartScreen shows "Windows protected your
+  PC" → click **More info → Run anyway** (only the first time). WebView2 is fetched automatically
+  if missing.
+
+After the one-time approval it behaves like any installed app (Start-menu / Applications / app-menu
+shortcut, icon, double-click to launch). To remove the prompt entirely you'd need paid signing
+(Apple Developer ID for macOS, a code-signing cert or the Microsoft Store for Windows); Linux is
+always prompt-free.
+
+## Build from source
 
 ## Prerequisites
 
@@ -105,12 +141,13 @@ cargo run -- --name YourName --port 8000
 
 ## Development
 
-This project follows a professional Rust project structure with:
-- Domain models in `src-tauri/src/domain/`
-- Business logic in `src-tauri/src/services/`
-- Network handling in `src-tauri/src/network/`
-- Command-line interface in `src-tauri/src/api.rs`
-- Utility functions in `src-tauri/src/utils.rs`
+This project follows a professional Rust project structure — a layered workspace where the
+protocol core is its own crate (`mesh-talk-core`) and the desktop app is a thin shell over it:
+- Node orchestration in `crates/mesh-talk-core/src/node/`
+- Crypto in `identity/`, `transport/` (Noise), `ratchet/`, `channel/`, `dm.rs` (all in the core crate)
+- Event log + sync in `crates/mesh-talk-core/src/eventlog/`; signed discovery in `discovery/`
+- At-rest encryption in `crates/mesh-talk-core/src/storage/`; auth (app-only) in `src-tauri/src/services/`
+- Full architecture reference: `docs/ARCHITECTURE.md`
 
 ## Automation and Code Quality
 

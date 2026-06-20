@@ -8,7 +8,7 @@ pub struct SessionInfo {
     pub user: User,
     /// The user's password, retained in memory for the lifetime of the session.
     ///
-    /// The redesign node opens its per-account encrypted stores (keystore, event log,
+    /// The node opens its per-account encrypted stores (keystore, event log,
     /// ratchet sessions, …) with a key derived from this password, so it must be
     /// available without re-prompting while the session is live. It is never serialized
     /// to disk — it lives only in the in-memory session.
@@ -41,8 +41,8 @@ impl SessionState {
 }
 
 /// Managed Tauri state: the auth service + the current in-memory session. (The legacy
-/// contact/message/network services were retired with the legacy stack; the redesign
-/// node runs out of [`crate::redesign_commands::RedesignState`].)
+/// contact/message/network services were retired with the legacy stack; the
+/// node runs out of [`crate::chat_commands::NodeState`].)
 #[derive(Clone)]
 pub struct AppState {
     auth_service: AuthService,

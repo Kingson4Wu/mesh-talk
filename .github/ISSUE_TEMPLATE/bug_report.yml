@@ -30,7 +30,7 @@ body:
       label: Where did it happen?
       options:
         - Desktop app (Tauri)
-        - CLI (mesh-talk-cli)
+        - Headless node (mesh-talk-node)
         - Build / tooling
     validations:
       required: true

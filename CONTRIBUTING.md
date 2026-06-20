@@ -1,8 +1,9 @@
 # Contributing
 
-Mesh-Talk is a peer-to-peer LAN chat app: a Rust ([Tauri](https://tauri.app/))
-backend in `src-tauri/` and a Vue + Vite frontend in `frontend/`. A headless CLI
-(`mesh-talk-cli`) drives the same core for testing without the GUI.
+Mesh-Talk is a serverless, end-to-end-encrypted LAN chat app: a Rust
+([Tauri](https://tauri.app/)) backend in `src-tauri/` and a React + Vite frontend in
+`frontend/`. A headless CLI (`mesh-talk-node`) drives the same core for testing without
+the GUI. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
 
 ## Development setup
 
@@ -17,7 +18,7 @@ Common loops:
 ```bash
 make tauri-dev      # run the desktop app (backend + frontend) with hot reload
 make frontend-dev   # frontend only (Vite dev server)
-cargo run -p mesh-talk --bin mesh-talk-cli -- --name alice --port 9000   # headless CLI
+cargo run --bin mesh-talk-node -- --name alice   # headless node (add --post-office for relay mode)
 ```
 
 ## Build, test, lint
@@ -26,16 +27,16 @@ cargo run -p mesh-talk --bin mesh-talk-cli -- --name alice --port 9000   # headl
 |---------|--------------|
 | `make build` | `cargo build --release` |
 | `make test` | Rust test suite (`cd src-tauri && cargo test`) |
-| `make lint` | `cargo clippy -- -D warnings` |
+| `make lint` | `cargo clippy --all-targets -- -D warnings` |
 | `make format` | `cargo fmt` + `prettier` on the frontend |
 | `make check` | full health check (`scripts/check-health.sh`) |
 
-> **CPU note.** The test suite generates RSA-2048 keys in many tests and cargo
-> parallelizes to all cores. `.cargo/config.toml` caps `jobs` and
+> **CPU note.** The test suite runs many password-KDF (PBKDF2, 600k rounds) and crypto
+> operations and cargo parallelizes to all cores. `.cargo/config.toml` caps `jobs` and
 > `RUST_TEST_THREADS`; for ad-hoc runs prefer `cargo test -- --test-threads=2`.
 > A `PreToolUse` hook in `.claude/settings.json` enforces this for Claude Code.
 
-Filter tests while iterating: `cd src-tauri && cargo test contacts::`.
+Filter tests while iterating: `cd src-tauri && cargo test node::node`.
 
 ## Coding style
 

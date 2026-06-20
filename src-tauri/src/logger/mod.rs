@@ -4,7 +4,6 @@
 //! with support for file rotation, console output, and retention management.
 
 use log::LevelFilter as LogLevelFilter;
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,8 +15,8 @@ const MAX_LOG_RETENTION_DAYS: u64 = 7;
 
 /// Get the logs directory path (~/.mesh-talk/logs/)
 fn get_mesh_talk_logs_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home_dir = env::var("HOME").map_err(|_| "Failed to get home directory")?;
-    let logs_dir = PathBuf::from(home_dir).join(".mesh-talk").join("logs");
+    let home_dir = crate::user_home_dir().ok_or("Failed to get home directory")?;
+    let logs_dir = home_dir.join(".mesh-talk").join("logs");
     fs::create_dir_all(&logs_dir)?;
     Ok(logs_dir)
 }
@@ -128,7 +127,8 @@ mod tests {
         let result = get_mesh_talk_logs_dir();
         assert!(result.is_ok());
         let logs_dir = result.unwrap();
-        // Check that it contains .mesh-talk/logs
-        assert!(logs_dir.display().to_string().contains(".mesh-talk/logs"));
+        // Separator-agnostic (Windows uses '\'): the path ends with `.mesh-talk/logs`.
+        assert!(logs_dir.ends_with("logs"));
+        assert!(logs_dir.parent().unwrap().ends_with(".mesh-talk"));
     }
 }

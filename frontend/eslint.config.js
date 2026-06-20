@@ -1,46 +1,37 @@
 import js from "@eslint/js";
-import pluginVue from "eslint-plugin-vue";
-import configPrettier from "eslint-config-prettier";
 import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
+import reactRefresh from "eslint-plugin-react-refresh";
+import tseslint from "typescript-eslint";
 
-// ESLint 9 flat config for the Vue 3 frontend. Code-quality only — Prettier
-// owns formatting (eslint-config-prettier turns the conflicting rules off).
-export default [
-  { ignores: ["dist/**", "node_modules/**", "coverage/**"] },
-
-  js.configs.recommended,
-  ...pluginVue.configs["flat/essential"],
-  configPrettier,
-
+export default tseslint.config(
+  { ignores: ["dist", "**/*.config.{js,ts}"] },
   {
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    files: ["**/*.{ts,tsx}"],
     languageOptions: {
-      ecmaVersion: "latest",
-      sourceType: "module",
-      globals: {
-        ...globals.browser,
-        ...globals.node,
-      },
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+    plugins: {
+      "react-hooks": reactHooks,
+      "react-refresh": reactRefresh,
     },
     rules: {
-      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      ...reactHooks.configs.recommended.rules,
+      "react-refresh/only-export-components": [
+        "warn",
+        { allowConstantExport: true },
+      ],
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
     },
   },
-
-  // Vitest test files.
   {
-    files: ["**/*.spec.js", "**/*.test.js", "tests/**/*.js"],
-    languageOptions: {
-      globals: {
-        describe: "readonly",
-        it: "readonly",
-        test: "readonly",
-        expect: "readonly",
-        beforeEach: "readonly",
-        afterEach: "readonly",
-        beforeAll: "readonly",
-        afterAll: "readonly",
-        vi: "readonly",
-      },
-    },
+    // shadcn/ui primitives intentionally co-export variant helpers with components.
+    files: ["src/components/ui/**/*.{ts,tsx}"],
+    rules: { "react-refresh/only-export-components": "off" },
   },
-];
+);

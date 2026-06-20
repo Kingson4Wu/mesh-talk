@@ -1,25 +1,25 @@
 # Mesh-Talk Architecture
 
 A decentralized, end-to-end-encrypted LAN messenger. **Tauri** desktop shell, **Rust**
-backend, **Vue 3** frontend. No server: peers discover each other over signed UDP
+backend, **React + TypeScript** frontend. No server: peers discover each other over signed UDP
 broadcasts, connect directly over a Noise-encrypted TCP channel, and store messages as
 an append-only, hash-linked **event log** that syncs CRDT-style. When a peer is offline,
 an elected **post office** node stores-and-forwards the (still-encrypted) events.
 
 > The earlier RSA-contact / plaintext-UDP / TCP-relay *legacy* stack has been retired;
 > this serverless stack is the entire product and lives at `/`. The only retained
-> non-redesign piece is the auth/session layer (`services/auth_service.rs` + `state.rs`),
-> which `login` uses before starting the redesign node.
+> piece outside the node is the auth/session layer (`services/auth_service.rs` + `state.rs`),
+> which `login` uses before starting the node.
 
 ---
 
 ## 1. Process & layers
 
 ```
-Vue 3 UI (RedesignChatView.vue) ──invoke()──▶ Tauri IPC (redesign_commands.rs)
+React UI (features/chat/*.tsx) ──invoke()──▶ Tauri IPC (chat_commands.rs)
         ▲   ──listen() events──                         │
         │                                               ▼
-        │                                   RedesignRuntime (node/runtime.rs)
+        │                                   NodeRuntime (node/runtime.rs)
         │                                   starts 7 bg tasks per login:
         │                                   UDP listen / UDP broadcast /
         └────────── on_dm/on_channel/on_file callbacks ── TCP accept / PO drain /
@@ -94,28 +94,44 @@ Vue 3 UI (RedesignChatView.vue) ──invoke()──▶ Tauri IPC (redesign_comm
 
 ## 5. Frontend (`frontend/`)
 
-Vue 3 + Pinia + Vue Router (hash). `src/services/api.js` exposes `authAPI` + `redesignAPI`
-(wrapping every `redesign_*` Tauri command). `views/redesign/RedesignChatView.vue` is the
-app (3-pane UI: peers/channels · messages · members) with @mentions, replies, reactions,
-files, search, and the link-a-device panel, served at `/`. `stores/appStore.js` is an
-auth/session-only store; `LoginView` is the only other view.
+**React 18 + TypeScript + Tailwind + shadcn/ui**, state in **zustand**, built with Vite.
+`lib/api.ts` exposes typed `auth` + `chat` wrappers over `invoke()` (every command);
+`lib/events.ts` subscribes to `dm-received`/`channel-message`/`file-received`.
+`store/auth.ts` holds the session; `store/chat.ts` holds per-conversation message/
+reaction/unread state and routes incoming DMs to the sender's *account* (one conversation
+per multi-device contact). `features/chat/` is the 3-pane app (sidebar · messages ·
+members) with replies, reactions, @mentions, file send + a received-files tray, search,
+and device linking; `features/auth/LoginScreen.tsx` is the only other screen.
 
 ## 6. Binaries
 
 - `mesh-talk` (`main.rs` → `lib.rs::run_tauri`) — the desktop app.
-- `mesh-talk-node` (`bin/mesh-talk-node.rs`) — headless redesign node CLI; `--post-office`
+- `mesh-talk-node` (`bin/mesh-talk-node.rs`) — headless node CLI; `--post-office`
   runs relay mode.
 
 ## 7. Build, test, CI
 
-- **Workspace**: root `Cargo.toml` (`members = ["src-tauri"]`); Rust code in `src-tauri/`.
+- **Workspace** (two layered crates): `crates/mesh-talk-core/` — the UI-free protocol
+  core / SDK foundation (lib `mesh_talk_core` + the `mesh-talk-node` CLI bin) — and
+  `src-tauri/` — the Tauri desktop shell, a thin layer that depends on the core. Shared
+  dependency versions live in the root `[workspace.dependencies]`. The app references the
+  core as `mesh_talk_core::…`; a third party can depend on `mesh-talk-core` alone (no Tauri).
 - **Local gate** (`scripts/check-health.sh`, run by the `hooks/pre-commit` hook): fmt,
-  `clippy --all-targets -D warnings`, ESLint, full `cargo test`, typos, cargo-deny,
-  cargo-machete, gitleaks, shellcheck, audits, both builds — **mirrors CI** so failures
-  surface locally, not on CI.
+  `clippy --workspace --all-targets -D warnings`, ESLint, frontend tests (Vitest), full
+  `cargo test --workspace`, typos, cargo-deny, cargo-machete, gitleaks, shellcheck, audits,
+  both builds — **mirrors CI** so failures surface locally, not on CI.
 - **CI** (`.github/workflows/`): `ci.yml` (ubuntu+macOS matrix → the `verify` aggregate
-  check, required by branch protection), `check-health.yml`, `gitleaks.yml`,
-  `dependabot-auto-merge.yml` (patch-only), `glib-0.20-watch.yml` (monthly dep watcher).
+  check, required by branch protection; coverage → Codecov on Linux), `check-health.yml`,
+  `gitleaks.yml`, CodeQL, `dependabot-auto-merge.yml` (patch-only),
+  `glib-0.20-watch.yml` (monthly dep watcher).
+- **Automated bug-finding** (defence in depth — surfaces issues without anyone looking):
+  - *Coverage-guided fuzzing* (`fuzz/`, `fuzz.yml`, weekly + dispatch) of every untrusted
+    wire decoder; the `decoder_smoke` test is the always-on stable complement.
+  - *Mutation testing* (`mutants.yml`, weekly + on PR-diff) — catches weak/missing assertions.
+  - *Coverage* (Codecov), *clippy `-D warnings`*, *cargo-deny*, *cargo-machete*, *CodeQL*, *gitleaks*.
+  - *Claude operations* (`.claude/`): `/bug-hunt` fans out read-only `bug-hunter` subagents
+    (adversarial audit, verified findings only) over the core; `code-reviewer` reviews a diff;
+    `/e2e` runs the `e2e-runner` over the real multi-process integration suite.
 - **Crypto primitives**: ed25519-dalek, x25519-dalek (need rand_core 0.6 — keep `rand` at
   0.8), aes-gcm, snow (Noise), sha2, hkdf, pbkdf2, bincode.
 
@@ -124,5 +140,9 @@ auth/session-only store; `LoginView` is the only other view.
 Standard primitives + consistent domain separation; AEAD everywhere; PBKDF2-600k at rest;
 Noise XX with identity binding; Double-Ratchet + sender-key forward secrecy with
 zeroize-on-drop; signed content-addressed log with fork detection; deterministic relay
-election. Known limitations: device linking has no key-pinning/SAS (LAN MITM window);
-backfill history travels as plaintext over Noise.
+election; the sync `have` id-set is streamed in chunks so arbitrarily large conversations
+reconcile; the relay bounds its storage (LRU whole-conversation eviction) and its serve
+loop (round cap + idle timeout). Known limitations (by design): device linking relies on
+the one-time pairing code (no separate SAS UX); backfill history travels as plaintext over
+the Noise channel; a relay inevitably sees event authors + the participant pair (content
+stays encrypted).

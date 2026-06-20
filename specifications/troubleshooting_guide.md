@@ -390,7 +390,7 @@ Mesh-Talk stores configuration and data in platform-specific locations:
 - **Linux**: `~/.local/share/mesh-talk/`
 
 Check these directories for:
-- Database files (SQLite)
+- Encrypted data stores (event logs, keystores, ratchet state) under `~/.mesh-talk`
 - Log files
 - Configuration files
 
