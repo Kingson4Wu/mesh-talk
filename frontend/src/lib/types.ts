@@ -30,7 +30,7 @@ export interface PeerInfo {
 }
 
 export interface HistoryItem {
-  id: string;
+  id: string | null; // null when there is no stable event id yet
   from_me: boolean;
   who: string;
   text: string;

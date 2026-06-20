@@ -39,12 +39,33 @@ pub struct PeerInfo {
 /// One merged history line (sent or received) for display.
 #[derive(Serialize)]
 pub struct HistoryItem {
-    pub id: String, // hex EventId
+    pub id: Option<String>, // hex EventId; null when there is no stable id (see From impl)
     pub from_me: bool,
     pub who: String,
     pub text: String,
     pub wall_clock: u64,
     pub reply_to: Option<String>, // hex EventId of the parent message, if any
+}
+
+impl From<mesh_talk_core::node::HistoryEntry> for HistoryItem {
+    fn from(h: mesh_talk_core::node::HistoryEntry) -> Self {
+        // A sent entry whose event isn't yet in the log gets the all-zero sentinel id; surface
+        // it as null (like a pending message) so the UI never targets a react/reply at a
+        // bogus id, instead of leaking the sentinel as a real hex id.
+        let id = if h.id.as_bytes() == &[0u8; 32] {
+            None
+        } else {
+            Some(hex::encode(h.id.as_bytes()))
+        };
+        HistoryItem {
+            id,
+            from_me: h.from_me,
+            who: h.who,
+            text: String::from_utf8_lossy(&h.text).into_owned(),
+            wall_clock: h.wall_clock,
+            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
+        }
+    }
 }
 
 /// Aggregated reaction for display.
@@ -127,14 +148,7 @@ pub async fn history(
     Ok(rt
         .history(&public, limit)
         .into_iter()
-        .map(|h| HistoryItem {
-            id: hex::encode(h.id.as_bytes()),
-            from_me: h.from_me,
-            who: h.who,
-            text: String::from_utf8_lossy(&h.text).into_owned(),
-            wall_clock: h.wall_clock,
-            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
-        })
+        .map(HistoryItem::from)
         .collect())
 }
 
@@ -179,14 +193,7 @@ pub async fn account_history(
     Ok(rt
         .account_history(&account, limit)
         .into_iter()
-        .map(|h| HistoryItem {
-            id: hex::encode(h.id.as_bytes()),
-            from_me: h.from_me,
-            who: h.who,
-            text: String::from_utf8_lossy(&h.text).into_owned(),
-            wall_clock: h.wall_clock,
-            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
-        })
+        .map(HistoryItem::from)
         .collect())
 }
 
@@ -505,14 +512,7 @@ pub async fn channel_history(
     Ok(rt
         .channel_history(id, limit)
         .into_iter()
-        .map(|h| HistoryItem {
-            id: hex::encode(h.id.as_bytes()),
-            from_me: h.from_me,
-            who: h.who,
-            text: String::from_utf8_lossy(&h.text).into_owned(),
-            wall_clock: h.wall_clock,
-            reply_to: h.reply_to.map(|id| hex::encode(id.as_bytes())),
-        })
+        .map(HistoryItem::from)
         .collect())
 }
 
