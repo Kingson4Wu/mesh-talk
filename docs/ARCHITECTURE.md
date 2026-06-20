@@ -127,7 +127,7 @@ and device linking; `features/auth/LoginScreen.tsx` is the only other screen.
 Standard primitives + consistent domain separation; AEAD everywhere; PBKDF2-600k at rest;
 Noise XX with identity binding; Double-Ratchet + sender-key forward secrecy with
 zeroize-on-drop; signed content-addressed log with fork detection; deterministic relay
-election. Known limitations: device linking has no key-pinning/SAS (LAN MITM window);
-backfill history travels as plaintext over Noise; the sync `have` id-set is sent whole
-(unchunked), so a single conversation past ~2040 events can no longer reconcile in one
-frame (tracked in `specifications/TODO.md`).
+election; the sync `have` id-set is streamed in chunks so arbitrarily large conversations
+reconcile. Known limitations: device linking relies on the one-time pairing code (no
+separate SAS/key-pinning UX); backfill history travels as plaintext over Noise; the post
+office has no storage quota/retention yet (tracked in `specifications/TODO.md`).

@@ -16,31 +16,14 @@ per-phase implementation plans: **`docs/superpowers/specs/`** and
 **`docs/superpowers/plans/`**. Detailed task history lives in git.
 
 ## Known follow-ups (not blocking)
-- Device linking has no SAS/key-pinning (LAN MITM window); backfill history travels as
-  plaintext over the Noise channel. Also: the pairing code has no TTL and a failed attempt
-  doesn't invalidate it (defense-in-depth only — the code is a full 128-bit secret, so
-  brute force is infeasible; add a short TTL + attempt ceiling anyway). Backfill records
-  from the linker are imported without re-verification (linker is in the trust boundary).
-- **Post office** (`postoffice/`, `node/postbox.rs`): the relay serve loop has no per-
-  connection round cap / idle timeout, and storage has no quota/retention — an
-  authenticated peer can spin it or fill it (DoS). Also a confirmed metadata leak: the
-  relay sees cleartext `author` + can derive the participant pair from `conversation_id`
-  (content stays encrypted). Needs rate-limit + quota/GC; metadata leak is inherent to a
-  relay but should be documented.
-- **Channel membership no-op edges** (`node/channels.rs`): `add_channel_member` of an
-  existing member and `remove_channel_member` of a non-member still bump the epoch +
-  re-key (wasteful); removing the last member yields an unreadable channel. Add guards.
-- **Sync `have` id-set is not frame-bounded** (`eventlog/sync.rs`): the 3-message
-  reconciliation sends each side's full event-id set in one frame. A single conversation
-  past ~2040 events (32 B/id vs `MAX_PLAINTEXT` 65519) overflows the frame →
-  `PlaintextTooLarge` → that conversation can no longer sync. Only the *events* are
-  budgeted today, not the `have` set. Needs a protocol change (chunk/page the id-set, or
-  range/IBLT reconciliation) — a focused design, not a hasty patch.
-- **Sync `have` id-set is not frame-bounded** (`eventlog/sync.rs`): the 3-message
-  reconciliation sends each side's full event-id set in one frame. A single conversation
-  past ~2040 events (32 B/id vs `MAX_PLAINTEXT` 65519) overflows the frame →
-  `PlaintextTooLarge` → that conversation can no longer sync. Only the *events* are
-  budgeted today, not the `have` set. Needs a protocol change (chunk/page the id-set, or
-  range/IBLT reconciliation) — a focused design, not a hasty patch.
+- Device linking relies on the one-time code as its authenticator (no separate SAS/key-
+  pinning UX); backfill records from the linker are imported without re-verification
+  (the linker is inside the trust boundary — it's handing you the account secret).
+- **Post office storage retention** (`postoffice/`): the relay's store has no quota/GC, so
+  a spammer could grow it unbounded. (The relay *serve loop* is now bounded — round cap +
+  idle timeout.) A correct fix needs a retention policy + log compaction (the store is
+  append-only); a global reject-cap would harm a busy relay. Also a confirmed metadata
+  leak: the relay sees cleartext `author` + can derive the participant pair from the
+  conversation id (content stays encrypted) — inherent to a relay.
 - A `glib 0.20` bump is gated on tauri's gtk stack (auto-watched by
   `.github/workflows/glib-0.20-watch.yml`).
