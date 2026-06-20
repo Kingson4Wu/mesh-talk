@@ -417,6 +417,100 @@ async fn reopen_suppresses_recorded_history_but_retries_unrecorded() {
 }
 
 #[tokio::test]
+async fn reopen_retries_unsurfaced_file_manifest_after_restart() {
+    // The file-path analogue of the message test: a FileManifest that arrived durably but was
+    // never opened (author not yet in the roster — the convergence race) must be RETRIED after
+    // restart, not silently lost; an already-surfaced manifest must NOT re-surface.
+    let dir = tempfile::tempdir().unwrap();
+    let me = DeviceIdentity::generate();
+    let alice = DeviceIdentity::generate();
+    let me_pub = me.public();
+    let conv = crate::node::conversation::dm_conversation_id(&me_pub, &alice.public());
+    let log_path = dir.path().join("me.log");
+    let sent_path = dir.path().join("me-sent.log");
+
+    let mk = |fc: u8| crate::file::FileManifest {
+        name: "f.txt".into(),
+        size: 3,
+        mime: "text/plain".into(),
+        checksum: [0u8; 32],
+        file_key: [1u8; 32],
+        file_conv: crate::eventlog::event::ConversationId::new([fc; 32]),
+        chunk_count: 1,
+    };
+    // Two manifests from Alice (sealed to me), both durably in the log.
+    let surfaced_m = mk(50);
+    let surfaced_ev = crate::eventlog::event::Event::new(
+        &alice,
+        conv,
+        1,
+        vec![],
+        1,
+        1000,
+        EventKind::FileManifest,
+        crate::dm::seal(&alice, &me_pub.x25519_pub, &surfaced_m.encode()).unwrap(),
+    );
+    let surfaced_id = surfaced_ev.id;
+    let unsurfaced_m = mk(51);
+    let unsurfaced_ev = crate::eventlog::event::Event::new(
+        &alice,
+        conv,
+        2,
+        vec![surfaced_id],
+        2,
+        2000,
+        EventKind::FileManifest,
+        crate::dm::seal(&alice, &me_pub.x25519_pub, &unsurfaced_m.encode()).unwrap(),
+    );
+    {
+        let mut log = crate::eventlog::persist::PersistentEventLog::open(&log_path, "pw").unwrap();
+        log.append(surfaced_ev).unwrap();
+        log.append(unsurfaced_ev).unwrap();
+    }
+    // Record ONLY `surfaced` durably, as a real surface last session would have.
+    {
+        let mut rf = crate::node::received_log::ReceivedLog::open(
+            &dir.path().join("received_files.log"),
+            "pw",
+        )
+        .unwrap();
+        rf.record(
+            surfaced_m.file_conv,
+            alice.public().user_id(),
+            1000,
+            &surfaced_m.encode(),
+            surfaced_id,
+        )
+        .unwrap();
+    }
+
+    let roster = Arc::new(Mutex::new(Roster::default()));
+    roster.lock().unwrap().update(
+        &Announce::new(&alice, "Alice", 4000),
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        &me_pub.user_id(),
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+    let (file_tx, mut file_rx) = mpsc::unbounded_channel();
+    let node = Node::open(me, roster, tx, ch_tx, file_tx, &log_path, &sent_path, "pw").unwrap();
+
+    node.process_file_events(conv);
+    let mut convs: Vec<crate::eventlog::event::ConversationId> = Vec::new();
+    while let Ok(rf) = file_rx.try_recv() {
+        convs.push(rf.file_conv);
+    }
+    assert!(
+        !convs.contains(&surfaced_m.file_conv),
+        "an already-surfaced file manifest must not re-surface after restart"
+    );
+    assert!(
+        convs.contains(&unsurfaced_m.file_conv),
+        "a durably-received-but-unsurfaced file manifest must be retried after restart, not lost"
+    );
+}
+
+#[tokio::test]
 async fn two_nodes_exchange_a_channel_message_over_loopback_tcp() {
     let alice = DeviceIdentity::generate();
     let bob = DeviceIdentity::generate();

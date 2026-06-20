@@ -151,6 +151,10 @@ pub struct Node {
     pub(in crate::node) dm_ratchet: Mutex<DmRatchet>,
     /// Decrypted received-message plaintext, for serving history after the wire key is gone.
     pub(in crate::node) received: Mutex<ReceivedLog>,
+    /// Durable record of file manifests we've SURFACED (reuses the ReceivedLog format),
+    /// so the file book's emitted set + manifests survive restart without marking
+    /// never-opened manifests as emitted (which would lose the file). See `Node::open`.
+    pub(in crate::node) received_files: Mutex<ReceivedLog>,
     /// Own DM reactions: sealed to the peer so un-openable from our own log. Stored in
     /// memory (with the wall-clock we made each at) so `reactions` can merge them and
     /// resolve toggles by recency independent of merge order. `(conv, wall_clock_ms,
@@ -210,7 +214,7 @@ impl Node {
         // Each store does its own slow, CPU-bound password KDF over an independent
         // file. Open them on scoped threads so the KDFs run in parallel: on a
         // multi-core machine the wall-clock cost collapses to roughly one KDF.
-        let (log_res, sent_res, sessions_res, received_res, csenders_res) =
+        let (log_res, sent_res, sessions_res, received_res, csenders_res, recv_files_res) =
             std::thread::scope(|s| {
                 let h_log = s.spawn(|| PersistentEventLog::open(log_path, password));
                 let h_sent = s.spawn(|| SentLog::open(sent_path, password));
@@ -219,12 +223,18 @@ impl Node {
                 let h_recv = s.spawn(|| ReceivedLog::open(&dir.join("received.log"), password));
                 let h_csnd =
                     s.spawn(|| ChannelSenderStore::open(&dir.join("channel.senders"), password));
+                // Durable record of surfaced file manifests (reuses the ReceivedLog format),
+                // so the file book's emitted set survives restart WITHOUT marking unopened
+                // manifests as emitted — see the seeding below.
+                let h_files =
+                    s.spawn(|| ReceivedLog::open(&dir.join("received_files.log"), password));
                 (
                     h_log.join(),
                     h_sent.join(),
                     h_sess.join(),
                     h_recv.join(),
                     h_csnd.join(),
+                    h_files.join(),
                 )
             });
         // A join() error means the opening thread panicked; re-raise the panic so it
@@ -234,6 +244,7 @@ impl Node {
         let sessions = sessions_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let received = received_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let channel_senders = csenders_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let received_files = recv_files_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let dm_ratchet = DmRatchet::new(sessions);
         // Seed `emitted` with the events we have ALREADY recorded to the received store — NOT
         // every id in the log. An event that was ingested durably but never recorded (it
@@ -266,15 +277,19 @@ impl Node {
                 }
             }
         }
-        // Seed the file book's emitted set so existing manifests are not re-surfaced
-        // after restart. Opening them needs roster/channel crypto unavailable at open
-        // time — persisting opened manifests across restart is deferred.
+        // Seed the file book from the durable `received_files` record — the manifests we
+        // actually SURFACED last session (restoring them so they stay saveable), and only
+        // THOSE ids into the emitted set. A manifest that was ingested durably but never
+        // opened (its author not yet in the roster — the DM-convergence race) is absent
+        // here, so `process_file_events` retries it after restart instead of dropping the
+        // file forever. (Mirrors the message-path `emitted` seeding above.)
         let mut files = FileBook::new();
-        for conv in log.conversations() {
-            for event in log.events(&conv) {
-                if event.kind == EventKind::FileManifest {
-                    files.mark_emitted(event.id);
+        for c in received_files.conversations() {
+            for entry in received_files.entries(&c) {
+                if let Some(manifest) = crate::file::FileManifest::decode(&entry.plaintext) {
+                    files.record(manifest);
                 }
+                files.mark_emitted(entry.event_id);
             }
         }
         Ok(Arc::new(Self {
@@ -293,6 +308,7 @@ impl Node {
             files: Mutex::new(files),
             dm_ratchet: Mutex::new(dm_ratchet),
             received: Mutex::new(received),
+            received_files: Mutex::new(received_files),
             my_dm_reactions: Mutex::new(Vec::new()),
         }))
     }

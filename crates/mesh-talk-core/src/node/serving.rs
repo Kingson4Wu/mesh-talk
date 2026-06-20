@@ -170,6 +170,21 @@ impl Node {
                 mime: manifest.mime.clone(),
                 file_conv: manifest.file_conv,
             };
+            // Persist the surfaced manifest durably so the file book's emitted set + this
+            // manifest survive a restart — WITHOUT the old bug of marking never-opened
+            // manifests emitted (which lost the file). Best-effort: a failure here at worst
+            // re-surfaces the file after restart, never loses it.
+            let _ = self
+                .received_files
+                .lock()
+                .expect("received_files mutex not poisoned")
+                .record(
+                    manifest.file_conv,
+                    event.author.user_id(),
+                    event.wall_clock,
+                    &manifest.encode(),
+                    event.id,
+                );
             {
                 let mut files = self.files.lock().expect("files mutex not poisoned");
                 files.mark_emitted(event.id);
