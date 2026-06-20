@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose, Engine as _};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use std::convert::TryInto;
 
@@ -40,18 +40,5 @@ impl KeyManager {
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let signature = signing_key.sign(message);
         Ok(signature.to_bytes().to_vec())
-    }
-
-    pub fn verify_signature(
-        public_key: &VerifyingKey,
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, Box<dyn std::error::Error>> {
-        let array: [u8; 64] = signature
-            .try_into()
-            .map_err(|_| "Invalid signature length")?;
-        let signature = Signature::from_bytes(&array);
-        let result = public_key.verify(message, &signature);
-        Ok(result.is_ok())
     }
 }

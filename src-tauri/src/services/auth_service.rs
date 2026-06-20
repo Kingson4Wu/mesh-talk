@@ -3,8 +3,6 @@ use crate::services::user::User;
 use mesh_talk_core::identity::manager::IdentityManager;
 use mesh_talk_core::storage::file_manager::FileManager;
 
-use base64::engine::general_purpose;
-use base64::Engine as _;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -252,9 +250,6 @@ impl AuthService {
                 _ => AuthError::StorageError(format!("Failed to authenticate user: {}", e)),
             })?;
 
-        // Print key information during login
-        self.print_key_info(normalized_name, &password)?;
-
         let mut user = User {
             user_id: identity_user.user_id.clone(),
             name: identity_user.username,
@@ -288,39 +283,6 @@ impl AuthService {
         sessions.insert(token.clone(), session);
 
         Ok((user, token))
-    }
-
-    /// Print key information for the user
-    fn print_key_info(&self, username: &str, password: &str) -> AuthResult<()> {
-        // Get private key
-        let private_key_bytes = self
-            .identity_manager
-            .get_user_private_key(username, password)
-            .map_err(|e| AuthError::StorageError(format!("Failed to get private key: {}", e)))?;
-
-        // Print key information
-        println!("=== Account Key Information ===");
-        println!("Account: {}", username);
-        println!(
-            "Private Key File Location: data/users/{}/meta/private_key.enc",
-            username
-        );
-        println!("Private Key (bytes): {:?}", private_key_bytes);
-        println!(
-            "Private Key (base64): {}",
-            general_purpose::STANDARD.encode(&private_key_bytes)
-        );
-
-        // Try to get public key from user info as well
-        let identity_user = self
-            .identity_manager
-            .authenticate_user(username, password)
-            .map_err(|e| AuthError::StorageError(format!("Failed to authenticate user: {}", e)))?;
-        println!("Public Key: {}", identity_user.public_key);
-        println!("User ID: {}", identity_user.user_id);
-        println!("=============================");
-
-        Ok(())
     }
 
     /// Logout the current user

@@ -19,6 +19,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
 /// Domain separator for DM key derivation.
 const DM_DOMAIN: &[u8] = b"mesh-talk-dm-v1";
@@ -89,12 +90,16 @@ fn derive_key_nonce(
     hk.expand(&info, &mut okm)
         .expect("hkdf okm length is valid");
 
-    // Phase-1 hardening: the derived key/nonce and `ikm`/`okm` are not zeroized
-    // on drop yet (consistent with the keystore's current handling).
     let mut key = [0u8; KEY_LEN];
     let mut nonce = [0u8; NONCE_LEN];
     key.copy_from_slice(&okm[..KEY_LEN]);
     nonce.copy_from_slice(&okm[KEY_LEN..]);
+    // Wipe the intermediate keying material — `ikm` holds both DH shared secrets
+    // (incl. the static-static DH that also wraps every group key) and `okm` holds
+    // the derived key+nonce — so it does not linger in freed stack memory. The
+    // returned `key`/`nonce` are wiped by the caller after the AEAD op.
+    ikm.zeroize();
+    okm.zeroize();
     (key, nonce)
 }
 
@@ -115,21 +120,24 @@ pub fn seal(
     let ephemeral = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
     let ephemeral_pub = PublicKey::from(&ephemeral);
 
-    let dh1 = sender_static.diffie_hellman(&recipient_pub).to_bytes();
-    let dh2 = ephemeral.diffie_hellman(&recipient_pub).to_bytes();
+    let mut dh1 = sender_static.diffie_hellman(&recipient_pub).to_bytes();
+    let mut dh2 = ephemeral.diffie_hellman(&recipient_pub).to_bytes();
 
-    let (key, nonce) = derive_key_nonce(
+    let (mut key, mut nonce) = derive_key_nonce(
         &dh1,
         &dh2,
         &sender_x_pub,
         recipient_x25519_pub,
         &ephemeral_pub.to_bytes(),
     );
+    dh1.zeroize();
+    dh2.zeroize();
 
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| DmError::Encrypt)?;
-    let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext)
-        .map_err(|_| DmError::Encrypt)?;
+    let result = cipher.encrypt(Nonce::from_slice(&nonce), plaintext);
+    key.zeroize();
+    nonce.zeroize();
+    let ciphertext = result.map_err(|_| DmError::Encrypt)?;
 
     let envelope = SealedEnvelope {
         ephemeral_pub: ephemeral_pub.to_bytes(),
@@ -160,21 +168,24 @@ pub fn open(
     let sender_pub = PublicKey::from(*sender_x25519_pub);
     let ephemeral_pub = PublicKey::from(envelope.ephemeral_pub);
 
-    let dh1 = recipient_static.diffie_hellman(&sender_pub).to_bytes();
-    let dh2 = recipient_static.diffie_hellman(&ephemeral_pub).to_bytes();
+    let mut dh1 = recipient_static.diffie_hellman(&sender_pub).to_bytes();
+    let mut dh2 = recipient_static.diffie_hellman(&ephemeral_pub).to_bytes();
 
-    let (key, nonce) = derive_key_nonce(
+    let (mut key, mut nonce) = derive_key_nonce(
         &dh1,
         &dh2,
         sender_x25519_pub,
         &recipient_x_pub,
         &envelope.ephemeral_pub,
     );
+    dh1.zeroize();
+    dh2.zeroize();
 
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| DmError::Decrypt)?;
-    cipher
-        .decrypt(Nonce::from_slice(&nonce), envelope.ciphertext.as_ref())
-        .map_err(|_| DmError::Decrypt)
+    let result = cipher.decrypt(Nonce::from_slice(&nonce), envelope.ciphertext.as_ref());
+    key.zeroize();
+    nonce.zeroize();
+    result.map_err(|_| DmError::Decrypt)
 }
 
 #[cfg(test)]

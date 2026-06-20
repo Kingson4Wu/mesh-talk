@@ -2450,7 +2450,6 @@ dependencies = [
 name = "mesh-talk"
 version = "0.1.0"
 dependencies = [
- "base64 0.21.7",
  "hex",
  "lazy_static",
  "log",

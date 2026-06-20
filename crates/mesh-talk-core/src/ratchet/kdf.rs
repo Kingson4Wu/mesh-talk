@@ -6,7 +6,6 @@ use sha2::Sha256;
 
 /// Root KDF: derive the next root key + a new chain key from the current root key
 /// and a fresh DH output. `salt = rk`, `ikm = dh_out`.
-#[allow(dead_code)]
 pub fn kdf_rk(rk: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(rk), dh_out);
     let mut okm = [0u8; 64];
@@ -21,7 +20,6 @@ pub fn kdf_rk(rk: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
 
 /// Chain KDF: derive the next chain key + a single-use message key from a chain key.
 /// `salt = ck`, `ikm = empty`.
-#[allow(dead_code)]
 pub fn kdf_ck(ck: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(ck), &[]);
     let mut okm = [0u8; 64];
@@ -35,7 +33,6 @@ pub fn kdf_ck(ck: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
 }
 
 /// Derive the AES-256-GCM key + 96-bit nonce for one message from its message key.
-#[allow(dead_code)]
 pub fn message_keys(mk: &[u8; 32]) -> ([u8; 32], [u8; 12]) {
     let hk = Hkdf::<Sha256>::new(Some(mk), &[]);
     let mut okm = [0u8; 44];

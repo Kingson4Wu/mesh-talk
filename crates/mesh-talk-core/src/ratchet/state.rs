@@ -517,7 +517,12 @@ mod tests {
             n: 9,
         };
         assert_eq!(Header::decode(&h.encode()).unwrap().n, 9);
-        assert!(Header::decode(b"junk").is_none() || Header::decode(b"junk").is_some());
+        // Fail closed: too-short input decodes to None (no panic)...
+        assert!(Header::decode(b"junk").is_none());
+        // ...and trailing bytes after a valid header are rejected.
+        let mut trailing = h.encode();
+        trailing.push(0xff);
+        assert!(Header::decode(&trailing).is_none());
     }
 
     #[test]

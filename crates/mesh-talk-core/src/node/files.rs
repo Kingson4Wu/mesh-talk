@@ -153,7 +153,7 @@ impl Node {
         // id-set fitting one frame; files over the cap are rejected up front.
         if data.len() > MAX_FILE_SIZE {
             return Err(NodeError::File(format!(
-                "file too large: {} bytes (max {MAX_FILE_SIZE} until streaming sync lands)",
+                "file too large: {} bytes (max {MAX_FILE_SIZE})",
                 data.len()
             )));
         }
