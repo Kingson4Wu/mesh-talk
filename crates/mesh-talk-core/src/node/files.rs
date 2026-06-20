@@ -2,7 +2,6 @@
 
 use super::node::MAX_FILE_SIZE;
 use super::*;
-use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{ConversationId, EventKind};
 use crate::file::{
     file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
@@ -51,38 +50,17 @@ impl Node {
         target_account_id: &str,
         path: &Path,
     ) -> Result<ConversationId, NodeError> {
-        let my_account = self.account.account_id();
-        let me = self.identity.public().user_id();
-        let (targets, own): (Vec<PeerRecord>, Vec<PeerRecord>) = {
-            let roster = self.roster.lock().expect("roster mutex not poisoned");
-            let targets = roster
-                .peers()
-                .into_iter()
-                .filter(|p| p.account_id.as_deref() == Some(target_account_id))
-                .filter(|p| p.public.user_id() != me) // never seal to ourselves
-                .collect();
-            let own = roster
-                .peers()
-                .into_iter()
-                .filter(|p| p.account_id.as_deref() == Some(my_account.as_str()))
-                .filter(|p| p.public.user_id() != me)
-                .collect();
-            (targets, own)
-        };
-        if targets.is_empty() {
+        let dests = self.account_fanout_targets(target_account_id);
+        if !dests
+            .iter()
+            .any(|p| p.account_id.as_deref() == Some(target_account_id))
+        {
             return Err(NodeError::UnknownPeer(target_account_id.to_string()));
         }
 
         let (manifest, file_conv) = self.stage_file(path)?;
         let manifest_bytes = manifest.encode();
-        // De-dupe by user-id: when the target is our own account, `targets`/`own` overlap.
-        let mut delivered: Vec<String> = Vec::new();
-        for peer in targets.iter().chain(own.iter()) {
-            let uid = peer.public.user_id();
-            if delivered.contains(&uid) {
-                continue;
-            }
-            delivered.push(uid);
+        for peer in &dests {
             let sealed =
                 match crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest_bytes) {
                     Ok(s) => s,

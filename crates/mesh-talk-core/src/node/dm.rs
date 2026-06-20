@@ -7,6 +7,31 @@ use crate::eventlog::event::{Author, Event, EventId, EventKind};
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
 
 impl Node {
+    /// The deduped set of devices an account-addressed message fans out to: every known
+    /// device of `target_account_id` PLUS our own account's other devices, never ourselves,
+    /// de-duped by user-id. (Note-to-self makes target/own overlap; the dedup collapses it,
+    /// so a device never receives — or surfaces — the same message twice.) Callers that
+    /// require the target to be reachable check for a target device in the result themselves.
+    pub(in crate::node) fn account_fanout_targets(
+        &self,
+        target_account_id: &str,
+    ) -> Vec<PeerRecord> {
+        let my_account = self.account.account_id();
+        let me = self.identity.public().user_id();
+        let roster = self.roster.lock().expect("roster mutex not poisoned");
+        let mut seen = std::collections::HashSet::new();
+        roster
+            .peers()
+            .into_iter()
+            .filter(|p| {
+                let a = p.account_id.as_deref();
+                a == Some(target_account_id) || a == Some(my_account.as_str())
+            })
+            .filter(|p| p.public.user_id() != me) // never seal to ourselves
+            .filter(|p| seen.insert(p.public.user_id())) // dedup by user-id
+            .collect()
+    }
+
     /// Send a DM to `recipient` (a known peer): seal it, append the Message event
     /// locally, then deliver it. Delivery is best-effort DIRECT (the recipient may
     /// be offline) plus ALWAYS replicating to the elected post office (so an
@@ -117,26 +142,12 @@ impl Node {
         )
         .encode();
 
-        // Resolve destinations: the target account's devices + our OWN other devices.
-        let me = self.identity.public().user_id();
-        let (targets, own): (Vec<PeerRecord>, Vec<PeerRecord>) = {
-            let roster = self.roster.lock().expect("roster mutex not poisoned");
-            let targets = roster
-                .peers()
-                .into_iter()
-                .filter(|p| p.account_id.as_deref() == Some(target_account_id))
-                .filter(|p| p.public.user_id() != me) // never seal to ourselves
-                .collect();
-            let own = roster
-                .peers()
-                .into_iter()
-                .filter(|p| p.account_id.as_deref() == Some(my_account.as_str()))
-                .filter(|p| p.public.user_id() != me)
-                .collect();
-            (targets, own)
-        };
-
-        if targets.is_empty() {
+        // Resolve destinations: the target account's devices + our OWN other devices (deduped).
+        let dests = self.account_fanout_targets(target_account_id);
+        if !dests
+            .iter()
+            .any(|p| p.account_id.as_deref() == Some(target_account_id))
+        {
             return Err(NodeError::UnknownPeer(target_account_id.to_string()));
         }
 
@@ -151,17 +162,8 @@ impl Node {
             let _ = sentlog.record(conv_account, seq, wall_clock, &envelope);
         }
 
-        // Fan out: seal+append+deliver one copy per destination device, de-duped by
-        // user-id. When the target IS our own account (note-to-self), `targets` and `own`
-        // overlap — without the dedup each device would receive (and surface) the message
-        // twice.
-        let mut delivered: Vec<String> = Vec::new();
-        for peer in targets.iter().chain(own.iter()) {
-            let uid = peer.public.user_id();
-            if delivered.contains(&uid) {
-                continue;
-            }
-            delivered.push(uid);
+        // Fan out: seal+append+deliver one copy per (deduped) destination device.
+        for peer in &dests {
             self.deliver_enveloped(peer, &envelope).await;
         }
         Ok(())

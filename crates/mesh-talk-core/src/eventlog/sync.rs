@@ -26,6 +26,18 @@ use std::collections::HashSet;
 /// conversation id, bincode wrappers) on top of the event/id payload.
 const SYNC_MARGIN: usize = 256;
 
+/// `cap_events` guarantees progress by always emitting at least the first event — which is
+/// only safe if a single event fits one sync frame, else the responder emits an oversized
+/// `Response` the transport rejects and that conversation can never sync past it. The
+/// largest event is a file-chunk: `CHUNK_SIZE` ciphertext + AEAD tag + event metadata.
+/// Assert the relationship at compile time so a `CHUNK_SIZE` bump (or a new large event
+/// kind) breaks the build here rather than silently breaking large-event sync in the field.
+const MAX_EVENT_METADATA_OVERHEAD: usize = 4096;
+const _: () = assert!(
+    crate::file::crypto::CHUNK_SIZE + 16 + MAX_EVENT_METADATA_OVERHEAD + SYNC_MARGIN
+        < crate::transport::MAX_PLAINTEXT
+);
+
 /// Sent by the peer initiating sync: "for this conversation, here are the ids I have."
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
