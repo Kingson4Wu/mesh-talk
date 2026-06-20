@@ -312,7 +312,7 @@ async fn history_merges_sent_and_received_in_time_order() {
 }
 
 #[tokio::test]
-async fn reopen_seeds_emitted_so_history_is_not_restreamed() {
+async fn reopen_suppresses_recorded_history_but_retries_unrecorded() {
     let dir = tempfile::tempdir().unwrap();
     let me = DeviceIdentity::generate();
     let alice = DeviceIdentity::generate();
@@ -328,16 +328,19 @@ async fn reopen_seeds_emitted_so_history_is_not_restreamed() {
     let mut alice_ratchet =
         DmRatchet::new(RatchetSessions::open(&alice_dir.join("ratchet.sessions"), "pw").unwrap());
 
-    // Prior session: a received DM from Alice is already in the persistent log
-    // (its ratchet wire, sealed to us). We seed `emitted` from it at open.
-    let old_wire = alice_ratchet
+    // Two prior-session DMs from Alice are durably in the log:
+    //  - `recorded` was decrypted + written to the received store last session (surfaced).
+    //  - `unrecorded` arrived durably but was NEVER recorded — e.g. Alice wasn't in the
+    //    roster yet when it arrived (the DM-convergence race). It must be RETRIED after a
+    //    restart, not silently dropped.
+    let rec_wire = alice_ratchet
         .encrypt(
             &alice,
             &me_pub,
-            &MessageBody::new(b"old".to_vec(), None).encode(),
+            &MessageBody::new(b"recorded".to_vec(), None).encode(),
         )
         .unwrap();
-    let old = crate::eventlog::event::Event::new(
+    let recorded = crate::eventlog::event::Event::new(
         &alice,
         conv,
         1,
@@ -345,15 +348,48 @@ async fn reopen_seeds_emitted_so_history_is_not_restreamed() {
         1,
         1000,
         EventKind::Message,
-        old_wire,
+        rec_wire,
     );
-    let old_id = old.id;
+    let recorded_id = recorded.id;
+    let unrec_wire = alice_ratchet
+        .encrypt(
+            &alice,
+            &me_pub,
+            &MessageBody::new(b"unrecorded".to_vec(), None).encode(),
+        )
+        .unwrap();
+    let unrecorded = crate::eventlog::event::Event::new(
+        &alice,
+        conv,
+        2,
+        vec![recorded_id],
+        2,
+        2000,
+        EventKind::Message,
+        unrec_wire,
+    );
     {
         let mut log = crate::eventlog::persist::PersistentEventLog::open(&log_path, "pw").unwrap();
-        log.append(old).unwrap();
+        log.append(recorded).unwrap();
+        log.append(unrecorded).unwrap();
+    }
+    // Record ONLY `recorded` in the received store, as a real receipt last session would have.
+    {
+        let mut received =
+            crate::node::received_log::ReceivedLog::open(&dir.path().join("received.log"), "pw")
+                .unwrap();
+        received
+            .record(
+                conv,
+                alice.public().user_id(),
+                1000,
+                b"recorded",
+                recorded_id,
+            )
+            .unwrap();
     }
 
-    // Roster knows Alice (so decryption is possible if it were attempted).
+    // Roster now knows Alice, so the previously-undecryptable `unrecorded` event can be retried.
     let roster = Arc::new(Mutex::new(Roster::default()));
     roster.lock().unwrap().update(
         &Announce::new(&alice, "Alice", 4000),
@@ -365,32 +401,19 @@ async fn reopen_seeds_emitted_so_history_is_not_restreamed() {
     let (file_tx, _file_rx) = mpsc::unbounded_channel();
     let node = Node::open(me, roster, tx, ch_tx, file_tx, &log_path, &sent_path, "pw").unwrap();
 
-    // Restored history must NOT be re-streamed (seeded into `emitted` at open).
     node.emit_new_messages(conv);
-    assert!(rx.try_recv().is_err(), "restored history was re-streamed");
-
-    // A genuinely-new received event (not present at open) IS surfaced.
-    let fresh_wire = alice_ratchet
-        .encrypt(
-            &alice,
-            &me_pub,
-            &MessageBody::new(b"new".to_vec(), None).encode(),
-        )
-        .unwrap();
-    let fresh = crate::eventlog::event::Event::new(
-        &alice,
-        conv,
-        2,
-        vec![old_id],
-        2,
-        2000,
-        EventKind::Message,
-        fresh_wire,
+    let mut texts: Vec<Vec<u8>> = Vec::new();
+    while let Ok(dm) = rx.try_recv() {
+        texts.push(dm.text);
+    }
+    assert!(
+        !texts.iter().any(|t| t == b"recorded"),
+        "already-recorded history must not be re-streamed after restart"
     );
-    node.log.lock().unwrap().append(fresh).unwrap();
-    node.emit_new_messages(conv);
-    let got = rx.try_recv().expect("a new message is emitted");
-    assert_eq!(got.text, b"new");
+    assert!(
+        texts.iter().any(|t| t == b"unrecorded"),
+        "a durably-received-but-unrecorded event must be retried after restart, not lost"
+    );
 }
 
 #[tokio::test]

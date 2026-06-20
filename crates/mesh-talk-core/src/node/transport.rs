@@ -6,7 +6,14 @@
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::transport::{SecureChannel, TransportError};
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
+
+/// Wall-clock bound on the server-side handshake. A peer that completes the TCP connect
+/// but stalls mid-handshake (sends nothing / a partial frame) must not tie up the caller —
+/// accept loops run [`secure_accept`] in a per-connection task, but the timeout is the
+/// backstop that frees the slot. Generous: a real LAN handshake is sub-second.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Dial `addr`, perform the Noise XX handshake + identity auth as the initiator.
 /// If `expected_peer` is `Some`, the authenticated identity must match it
@@ -21,14 +28,30 @@ pub async fn dial(
     SecureChannel::connect(stream, identity, expected_peer).await
 }
 
-/// Accept one inbound connection on `listener` and authenticate the peer.
+/// Run the server-side Noise handshake + identity auth on an already-accepted `stream`,
+/// bounded by [`HANDSHAKE_TIMEOUT`]. Accept loops call this in a per-connection task so a
+/// stalled handshake can never park the loop (and the timeout frees the slot regardless).
+pub async fn secure_accept(
+    stream: TcpStream,
+    identity: &DeviceIdentity,
+) -> Result<SecureChannel<TcpStream>, TransportError> {
+    stream.set_nodelay(true)?;
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, SecureChannel::accept(stream, identity)).await {
+        Ok(result) => result,
+        Err(_) => Err(TransportError::Noise("accept handshake timed out".into())),
+    }
+}
+
+/// Accept one inbound connection on `listener` and authenticate the peer (handshake
+/// bounded by [`HANDSHAKE_TIMEOUT`]). NOTE: this awaits the handshake, so an accept LOOP
+/// should instead `listener.accept()` then run [`secure_accept`] in a spawned task — see
+/// `run_accept_loop` / `run_relay_accept_loop`.
 pub async fn accept(
     listener: &TcpListener,
     identity: &DeviceIdentity,
 ) -> Result<SecureChannel<TcpStream>, TransportError> {
     let (stream, _addr) = listener.accept().await?;
-    stream.set_nodelay(true)?;
-    SecureChannel::accept(stream, identity).await
+    secure_accept(stream, identity).await
 }
 
 #[cfg(test)]

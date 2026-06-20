@@ -6,7 +6,7 @@
 use crate::discovery::roster::{PeerRecord, Roster};
 use crate::identity::device::DeviceIdentity;
 use crate::node::session::{serve_one, Served};
-use crate::node::transport::accept;
+use crate::node::transport::secure_accept;
 use crate::postoffice::{elect, PostOffice};
 use crate::transport::SecureChannel;
 use std::sync::{Arc, Mutex};
@@ -70,6 +70,7 @@ pub async fn run_relay_accept_loop(
     store: Arc<Mutex<PostOffice>>,
 ) {
     let conns = Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY_CONNS));
+    let identity = Arc::new(identity);
     loop {
         // Reserve a connection slot BEFORE accepting, so we never serve more than the cap;
         // excess inbound connections wait in the OS accept queue until a slot frees.
@@ -77,19 +78,25 @@ pub async fn run_relay_accept_loop(
             Ok(p) => p,
             Err(_) => return, // semaphore closed — shouldn't happen, but stop cleanly
         };
-        match accept(&listener, &identity).await {
-            Ok(channel) => {
-                let store = Arc::clone(&store);
-                tokio::spawn(async move {
-                    let _permit = permit; // held for the connection's lifetime, freed on drop
-                    serve_relay_connection(channel, store).await
-                });
-            }
+        // Only the (fast) TCP accept runs on the loop; the Noise handshake runs in the
+        // spawned task (bounded by HANDSHAKE_TIMEOUT), so a peer that connects then stalls
+        // mid-handshake can't park the loop and block the always-on relay's accept capacity.
+        let stream = match listener.accept().await {
+            Ok((stream, _addr)) => stream,
             Err(_) => {
                 drop(permit);
                 tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
-        }
+        };
+        let store = Arc::clone(&store);
+        let identity = Arc::clone(&identity);
+        tokio::spawn(async move {
+            let _permit = permit; // held for the connection's lifetime, freed on drop
+            if let Ok(channel) = secure_accept(stream, &identity).await {
+                serve_relay_connection(channel, store).await;
+            }
+        });
     }
 }
 

@@ -235,7 +235,19 @@ impl Node {
         let received = received_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let channel_senders = csenders_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let dm_ratchet = DmRatchet::new(sessions);
-        let emitted: HashSet<EventId> = log.all_event_ids().into_iter().collect();
+        // Seed `emitted` with the events we have ALREADY recorded to the received store — NOT
+        // every id in the log. An event that was ingested durably but never recorded (it
+        // arrived before we learned its author — the DM-convergence race — or before its
+        // ratchet key was derivable) must stay eligible for `emit_new_messages` to retry after
+        // a restart; seeding it as emitted here would drop it from history forever. Self-
+        // authored events are excluded by the author check in `emit_new_messages`, so they
+        // need not be seeded.
+        let emitted: HashSet<EventId> = received
+            .conversations()
+            .iter()
+            .flat_map(|c| received.entries(c))
+            .map(|e| e.event_id)
+            .collect();
         let mut channels = ChannelBook::new();
         for conv in log.conversations() {
             let events = log.events(&conv);

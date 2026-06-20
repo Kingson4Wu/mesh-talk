@@ -6,7 +6,7 @@ use crate::eventlog::event::{Author, ConversationId, Event, EventKind};
 use crate::file::FileManifest;
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
 use crate::node::session::{request_round, serve_one, serve_wire_bytes, Served, SessionError};
-use crate::node::transport::{accept, dial};
+use crate::node::transport::{dial, secure_accept};
 use crate::transport::SecureChannel;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -52,18 +52,24 @@ impl Node {
     /// until the listener errors. (The binary calls this; the test drives it too.)
     pub async fn run_accept_loop(self: Arc<Self>, listener: TcpListener) {
         loop {
-            match accept(&listener, &self.identity).await {
-                Ok(channel) => {
-                    let node = Arc::clone(&self);
-                    tokio::spawn(async move { node.serve_connection(channel).await });
-                }
-                Err(_e) => {
-                    // A failed accept (handshake failure, or a listener-level error such
-                    // as fd exhaustion) shouldn't stop the loop; back off briefly so a
-                    // persistent error can't become a busy-spin.
+            // Only the (fast) TCP accept runs on the loop; the Noise handshake runs in the
+            // spawned task (bounded by HANDSHAKE_TIMEOUT), so a peer that connects then stalls
+            // mid-handshake can't park the loop and block all other inbound connections.
+            let stream = match listener.accept().await {
+                Ok((stream, _addr)) => stream,
+                Err(_) => {
+                    // A listener-level error (e.g. fd exhaustion) shouldn't stop the loop;
+                    // back off briefly so a persistent error can't become a busy-spin.
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
                 }
-            }
+            };
+            let node = Arc::clone(&self);
+            tokio::spawn(async move {
+                if let Ok(channel) = secure_accept(stream, &node.identity).await {
+                    node.serve_connection(channel).await;
+                }
+            });
         }
     }
 
