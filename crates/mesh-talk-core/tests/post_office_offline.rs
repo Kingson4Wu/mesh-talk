@@ -3,7 +3,7 @@
 //! holds the sealed event); Bob returns and his drain pulls and decrypts it.
 //! `#[ignore]`d — three real processes, a slow-starting post office (~15-25s cold
 //! start: two KDFs), and UDP broadcast. Run explicitly:
-//!   cd src-tauri && nice -n 10 cargo test --test post_office_offline -- --ignored --test-threads=2
+//!   nice -n 10 cargo test -p mesh-talk-core --test post_office_offline -- --ignored
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -140,16 +140,30 @@ fn offline_dm_delivered_via_post_office() {
     // cross-talk. All three processes here use this same value.
     let dp = 48700 + (std::process::id() % 100) as u16;
 
-    // Post office first (it is slow to cold-start: two KDFs). Wait for its line.
-    let po = CliNode::post_office(&dir.path().join("po.keystore"), "Relay", dp);
-    let po_uid = read_user_id(&po, "post-office ", Duration::from_secs(45));
+    // Every process cold-starts slowly: several PBKDF2-600k unlocks each (a node opens the
+    // device + account keystores + encrypted log stores; the relay also opens its log) —
+    // ~18s+ per process on an idle machine under `nice`, and here THREE start concurrently
+    // and contend. Timeouts are generous so the rig isn't flaky, not tuned to the cold start.
+    // Each process gets its OWN subdir: a node's account.keystore + messages.log + sent.log
+    // (and the relay's log) are all derived from the keystore's PARENT dir, so sharing one
+    // dir would clobber them and crash a process on startup.
+    let po = CliNode::post_office(
+        &dir.path().join("relay").join("identity.keystore"),
+        "Relay",
+        dp,
+    );
+    let po_uid = read_user_id(&po, "post-office ", Duration::from_secs(90));
 
     // Alice and Bob (normal nodes). Keep Bob's keystore path to restart him later.
-    let mut alice = CliNode::node(&dir.path().join("alice.keystore"), "Alice", dp);
-    let bob_keystore = dir.path().join("bob.keystore");
+    let mut alice = CliNode::node(
+        &dir.path().join("alice").join("identity.keystore"),
+        "Alice",
+        dp,
+    );
+    let bob_keystore = dir.path().join("bob").join("identity.keystore");
     let mut bob = CliNode::node(&bob_keystore, "Bob", dp);
-    let alice_uid = read_user_id(&alice, "node ", Duration::from_secs(20));
-    let bob_uid = read_user_id(&bob, "node ", Duration::from_secs(20));
+    let alice_uid = read_user_id(&alice, "node ", Duration::from_secs(90));
+    let bob_uid = read_user_id(&bob, "node ", Duration::from_secs(90));
     assert_ne!(alice_uid, bob_uid);
 
     // Everyone converges: Alice needs Bob (to address) + PO (to replicate); Bob
@@ -171,7 +185,7 @@ fn offline_dm_delivered_via_post_office() {
 
     // Bob comes back (same keystore → same identity); his drain pulls from the PO.
     let bob = CliNode::node(&bob_keystore, "Bob", dp);
-    let _ = read_user_id(&bob, "node ", Duration::from_secs(20));
+    let _ = read_user_id(&bob, "node ", Duration::from_secs(90));
     let got = bob
         .wait_for(
             |l| l.starts_with(&format!("from {alice_uid}")) && l.contains("held-hello"),

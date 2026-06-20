@@ -3,7 +3,7 @@
 //! loopback, then one DMs the other and we assert the recipient prints the
 //! decrypted message. `#[ignore]`d — spawns real processes and uses UDP
 //! broadcast, which can be blocked/flaky in sandboxed CI. Run explicitly:
-//!   cd src-tauri && nice -n 10 cargo test --test two_node_cli -- --ignored --test-threads=2
+//!   nice -n 10 cargo test -p mesh-talk-core --test two_node_cli -- --ignored
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -90,7 +90,10 @@ impl Drop for CliNode {
 /// Read the `user_id` from a node's startup line: `node <uid> listening ...`.
 fn read_user_id(node: &CliNode) -> String {
     let line = node
-        .wait_for(|l| l.starts_with("node "), Duration::from_secs(10))
+        // A node's cold start runs several PBKDF2-600k unlocks (device + account keystores
+        // + encrypted log stores) — ~18s on an idle machine under `nice`, more under
+        // contention. Generous so the rig isn't flaky (persistent_history uses 90s too).
+        .wait_for(|l| l.starts_with("node "), Duration::from_secs(90))
         .expect("node printed its startup line");
     line.split_whitespace()
         .nth(1)
@@ -126,8 +129,18 @@ fn two_cli_nodes_exchange_a_dm() {
     // cross-talk. Both children use this same value, so they still find each other.
     let discovery_port = 47600 + (std::process::id() % 1000) as u16;
 
-    let mut alpha = CliNode::spawn(&dir.path().join("alpha.keystore"), "Alpha", discovery_port);
-    let mut bravo = CliNode::spawn(&dir.path().join("bravo.keystore"), "Bravo", discovery_port);
+    // Each node gets its OWN subdir: account.keystore + messages.log + sent.log are derived
+    // from the keystore's parent dir, so a shared dir would clobber them and crash a node.
+    let mut alpha = CliNode::spawn(
+        &dir.path().join("alpha").join("identity.keystore"),
+        "Alpha",
+        discovery_port,
+    );
+    let mut bravo = CliNode::spawn(
+        &dir.path().join("bravo").join("identity.keystore"),
+        "Bravo",
+        discovery_port,
+    );
 
     let alpha_uid = read_user_id(&alpha);
     let bravo_uid = read_user_id(&bravo);

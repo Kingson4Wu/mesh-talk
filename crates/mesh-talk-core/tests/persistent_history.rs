@@ -3,7 +3,7 @@
 //! sidecar) and Bob's reply (decrypted from the durable log) — proving message
 //! history survives a real process restart. No post office: history comes purely
 //! from disk. `#[ignore]`d (real processes + UDP broadcast). Run explicitly:
-//!   cd src-tauri && nice -n 10 cargo test --test persistent_history -- --ignored --test-threads=2
+//!   nice -n 10 cargo test -p mesh-talk-core --test persistent_history -- --ignored
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
