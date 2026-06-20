@@ -173,6 +173,14 @@ if ! cd frontend && npm run lint; then
 fi
 cd ..
 
+# Run frontend unit tests (Vitest)
+print_status "success" "Running frontend tests..."
+if ! cd frontend && npm test; then
+    print_status "error" "Frontend tests failed. Please fix the failing tests."
+    exit 1
+fi
+cd ..
+
 # Run tests
 print_status "success" "Running tests..."
 if ! cd src-tauri && cargo test; then
