@@ -22,5 +22,13 @@ per-phase implementation plans: **`docs/superpowers/specs/`** and
 - Post-office **metadata** exposure (by design, inherent to any relay): the relay sees
   each event's cleartext `author` and can derive the participant pair from the conversation
   id. Content stays encrypted (it has no key). Not fixable without onion-routing/mixing.
+- **Reaction toggle ordering** (`node/reaction.rs`, `reactions.rs`): aggregation is
+  last-writer-wins folded in `(lamport, id)` order, deterministic across replicas. Two edges
+  are not "intent-perfect": (a) an add and its remove that end up at the SAME lamport are
+  tie-broken by event-id hash, not by which the user did last; (b) own reactions are merged
+  after log events, so in the rare multi-device same-account-same-target toggle case the
+  result can invert. Both are consistent (no divergence) — fixing needs a per-author causal
+  seq on reactions, deferred. Also: a removed channel member's past reactions stop rendering
+  (implicit membership filter).
 - A `glib 0.20` bump is gated on tauri's gtk stack (auto-watched by
   `.github/workflows/glib-0.20-watch.yml`).

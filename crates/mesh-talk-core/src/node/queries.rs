@@ -71,7 +71,13 @@ impl Node {
                 reply_to: body.reply_to,
             });
         }
-        entries.sort_by_key(|e| e.wall_clock);
+        // Tie-break equal wall-clocks by the (global, content-addressed) event id so
+        // both participants render the same order on a same-millisecond collision.
+        entries.sort_by(|a, b| {
+            a.wall_clock
+                .cmp(&b.wall_clock)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         if entries.len() > limit {
             entries.drain(0..entries.len() - limit);
         }
@@ -131,7 +137,13 @@ impl Node {
             });
         }
 
-        entries.sort_by_key(|e| e.wall_clock);
+        // Tie-break equal wall-clocks by the (global, content-addressed) event id so
+        // both participants render the same order on a same-millisecond collision.
+        entries.sort_by(|a, b| {
+            a.wall_clock
+                .cmp(&b.wall_clock)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         if entries.len() > limit {
             entries.drain(0..entries.len() - limit);
         }
@@ -193,7 +205,13 @@ impl Node {
                 reply_to: body.reply_to,
             });
         }
-        entries.sort_by_key(|e| e.wall_clock);
+        // Tie-break equal wall-clocks by the (global, content-addressed) event id so
+        // both participants render the same order on a same-millisecond collision.
+        entries.sort_by(|a, b| {
+            a.wall_clock
+                .cmp(&b.wall_clock)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         if entries.len() > limit {
             entries.drain(0..entries.len() - limit);
         }
@@ -225,6 +243,33 @@ impl Node {
                     hits.push(SearchHit {
                         is_channel: false,
                         target: peer.public.user_id(),
+                        label: peer.name.clone(),
+                        from_me: entry.from_me,
+                        who: entry.who,
+                        text: entry.text,
+                        wall_clock: entry.wall_clock,
+                    });
+                }
+            }
+        }
+        // Account-addressed DMs (the multi-device path the app uses) live under account
+        // conversations, not device-pair ones — scan them too, deduped by account id.
+        let mut seen_accounts = std::collections::HashSet::new();
+        for peer in peers.iter().filter(|p| !p.post_office) {
+            let Some(acct) = peer.account_id.clone() else {
+                continue;
+            };
+            if !seen_accounts.insert(acct.clone()) {
+                continue;
+            }
+            for entry in self.account_history(&acct, PER_CONV) {
+                if String::from_utf8_lossy(&entry.text)
+                    .to_lowercase()
+                    .contains(&q)
+                {
+                    hits.push(SearchHit {
+                        is_channel: false,
+                        target: acct.clone(),
                         label: peer.name.clone(),
                         from_me: entry.from_me,
                         who: entry.who,

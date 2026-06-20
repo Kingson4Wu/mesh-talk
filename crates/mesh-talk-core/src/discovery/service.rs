@@ -26,15 +26,33 @@ pub fn handle_datagram(
         .update(&announce, source.ip(), self_user_id)
 }
 
+/// Peers not heard from within this window are evicted from the roster. Broadcast
+/// interval is ~2s, so this tolerates ~15 missed announces before dropping a peer —
+/// long enough to ride out brief loss, short enough that stale addresses (a peer that
+/// went offline or changed IP) don't linger and misdirect fan-out / post-office picks.
+const PEER_TTL: Duration = Duration::from_secs(30);
+
 /// Listen for announces on `socket`, feeding the roster, until the socket errors
-/// (e.g. the task is aborted on shutdown).
+/// (e.g. the task is aborted on shutdown). Also evicts stale peers each iteration —
+/// after every datagram (busy network) and on a `PEER_TTL` recv timeout (silent
+/// network) — so a roster never grows unbounded or retains dead endpoints.
 /// Phase-1: a single socket error currently ends the loop silently; production
 /// needs transient-error retry, supervision/restart, and error surfacing to a
 /// caller. The same applies to [`run_broadcast`].
 pub async fn run_listen(socket: Arc<UdpSocket>, roster: Arc<Mutex<Roster>>, self_user_id: String) {
     let mut buf = vec![0u8; 2048];
-    while let Ok((n, source)) = socket.recv_from(&mut buf).await {
-        handle_datagram(&roster, &buf[..n], source, &self_user_id);
+    loop {
+        match tokio::time::timeout(PEER_TTL, socket.recv_from(&mut buf)).await {
+            Ok(Ok((n, source))) => {
+                handle_datagram(&roster, &buf[..n], source, &self_user_id);
+            }
+            Ok(Err(_)) => break, // socket error — end the loop (shutdown)
+            Err(_) => {}         // recv timed out → fall through to evict
+        }
+        roster
+            .lock()
+            .expect("roster mutex not poisoned")
+            .evict_stale(PEER_TTL);
     }
 }
 

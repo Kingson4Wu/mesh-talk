@@ -148,7 +148,12 @@ impl RatchetState {
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, RatchetError> {
         // 1. A previously-skipped key for this exact (ratchet_pub, n)?
-        if let Some(mk) = self.skipped.remove(&(header.ratchet_pub, header.n)) {
+        let key = (header.ratchet_pub, header.n);
+        if let Some(mk) = self.skipped.remove(&key) {
+            // Drop the matching FIFO entry too, or `skipped_order` would accumulate
+            // consumed-key tombstones without bound (the MAX_SKIPPED_TOTAL cap only
+            // bounds the map). Kept in sync, `skipped_order.len() == skipped.len()`.
+            self.skipped_order.retain(|k| *k != key);
             return aead_decrypt(&mk, ciphertext, &header.encode());
         }
         // 2. New DH ratchet key? Skip the rest of the current receiving chain, then ratchet.
@@ -394,6 +399,30 @@ mod tests {
         assert_eq!(bob.ratchet_decrypt(&h2, &c2).unwrap(), b"m2");
         assert_eq!(bob.ratchet_decrypt(&h0, &c0).unwrap(), b"m0");
         assert_eq!(bob.ratchet_decrypt(&h1, &c1).unwrap(), b"m1");
+    }
+
+    #[test]
+    fn consuming_a_skipped_key_prunes_the_fifo_order() {
+        // Regression: consuming a buffered out-of-order key must drop its FIFO entry too,
+        // or `skipped_order` accumulates consumed-key tombstones without bound (the
+        // MAX_SKIPPED_TOTAL cap only bounds the map). The two must stay the same length.
+        let (mut alice, mut bob) = pair();
+        let msgs: Vec<(Header, Vec<u8>)> = (0..4u8)
+            .map(|i| alice.ratchet_encrypt(&[i]).unwrap())
+            .collect();
+        // Receive #3 first → 0,1,2 buffered as skipped, FIFO [0,1,2].
+        bob.ratchet_decrypt(&msgs[3].0, &msgs[3].1).unwrap();
+        assert_eq!(bob.skipped_len(), 3);
+        assert_eq!(bob.skipped_order_ns(), vec![0, 1, 2]);
+        // Consuming a buffered key shrinks BOTH structures and preserves FIFO order.
+        bob.ratchet_decrypt(&msgs[1].0, &msgs[1].1).unwrap();
+        assert_eq!(bob.skipped_len(), 2);
+        assert_eq!(bob.skipped_order_ns(), vec![0, 2]);
+        bob.ratchet_decrypt(&msgs[0].0, &msgs[0].1).unwrap();
+        bob.ratchet_decrypt(&msgs[2].0, &msgs[2].1).unwrap();
+        // All consumed → no tombstones left behind.
+        assert_eq!(bob.skipped_len(), 0);
+        assert!(bob.skipped_order_ns().is_empty());
     }
 
     #[test]
