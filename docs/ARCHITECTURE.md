@@ -128,6 +128,8 @@ Standard primitives + consistent domain separation; AEAD everywhere; PBKDF2-600k
 Noise XX with identity binding; Double-Ratchet + sender-key forward secrecy with
 zeroize-on-drop; signed content-addressed log with fork detection; deterministic relay
 election; the sync `have` id-set is streamed in chunks so arbitrarily large conversations
-reconcile. Known limitations: device linking relies on the one-time pairing code (no
-separate SAS/key-pinning UX); backfill history travels as plaintext over Noise; the post
-office has no storage quota/retention yet (tracked in `specifications/TODO.md`).
+reconcile; the relay bounds its storage (LRU whole-conversation eviction) and its serve
+loop (round cap + idle timeout). Known limitations (by design): device linking relies on
+the one-time pairing code (no separate SAS UX); backfill history travels as plaintext over
+the Noise channel; a relay inevitably sees event authors + the participant pair (content
+stays encrypted).

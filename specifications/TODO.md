@@ -19,11 +19,8 @@ per-phase implementation plans: **`docs/superpowers/specs/`** and
 - Device linking relies on the one-time code as its authenticator (no separate SAS/key-
   pinning UX); backfill records from the linker are imported without re-verification
   (the linker is inside the trust boundary — it's handing you the account secret).
-- **Post office storage retention** (`postoffice/`): the relay's store has no quota/GC, so
-  a spammer could grow it unbounded. (The relay *serve loop* is now bounded — round cap +
-  idle timeout.) A correct fix needs a retention policy + log compaction (the store is
-  append-only); a global reject-cap would harm a busy relay. Also a confirmed metadata
-  leak: the relay sees cleartext `author` + can derive the participant pair from the
-  conversation id (content stays encrypted) — inherent to a relay.
+- Post-office **metadata** exposure (by design, inherent to any relay): the relay sees
+  each event's cleartext `author` and can derive the participant pair from the conversation
+  id. Content stays encrypted (it has no key). Not fixable without onion-routing/mixing.
 - A `glib 0.20` bump is gated on tauri's gtk stack (auto-watched by
   `.github/workflows/glib-0.20-watch.yml`).
