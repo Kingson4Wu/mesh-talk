@@ -1,6 +1,6 @@
-use mesh_talk_core::identity::manager::IdentityManager;
 use crate::services::common::{Service, ServiceDependencies, ServiceHealth};
 use crate::services::user::User;
+use mesh_talk_core::identity::manager::IdentityManager;
 use mesh_talk_core::storage::file_manager::FileManager;
 
 use base64::engine::general_purpose;
@@ -243,7 +243,9 @@ impl AuthService {
             .identity_manager
             .authenticate_user(normalized_name, &password)
             .map_err(|e| match e {
-                mesh_talk_core::identity::errors::IdentityError::UserNotFound(_) => AuthError::UserNotFound,
+                mesh_talk_core::identity::errors::IdentityError::UserNotFound(_) => {
+                    AuthError::UserNotFound
+                }
                 mesh_talk_core::identity::errors::IdentityError::InvalidPassword => {
                     AuthError::InvalidCredentials
                 }
@@ -395,8 +397,9 @@ impl Default for AuthService {
         use std::path::PathBuf;
 
         let file_manager = FileManager::new(PathBuf::from("./data"));
-        let identity_manager =
-            Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(file_manager));
+        let identity_manager = Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(
+            file_manager,
+        ));
         Self::new(identity_manager)
     }
 }
@@ -407,14 +410,18 @@ mod tests {
     use mesh_talk_core::storage::file_manager::FileManager;
     use std::sync::Arc;
 
-    fn setup_test_context() -> (AuthService, Arc<mesh_talk_core::identity::manager::IdentityManager>) {
+    fn setup_test_context() -> (
+        AuthService,
+        Arc<mesh_talk_core::identity::manager::IdentityManager>,
+    ) {
         // Create a temporary directory for test data
         let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
         let data_path = temp_dir.path().to_path_buf();
 
         let file_manager = FileManager::new(data_path);
-        let identity_manager =
-            Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(file_manager));
+        let identity_manager = Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(
+            file_manager,
+        ));
         (
             AuthService::new(Arc::clone(&identity_manager)),
             identity_manager,

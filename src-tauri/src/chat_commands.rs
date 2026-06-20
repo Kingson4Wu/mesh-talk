@@ -278,7 +278,9 @@ fn parse_event_id(hex_id: &str) -> Result<EventId, String> {
     Ok(EventId::new(arr))
 }
 
-fn to_reaction_infos(views: Vec<mesh_talk_core::node::reaction::ReactionView>) -> Vec<ReactionInfo> {
+fn to_reaction_infos(
+    views: Vec<mesh_talk_core::node::reaction::ReactionView>,
+) -> Vec<ReactionInfo> {
     views
         .into_iter()
         .map(|v| ReactionInfo {
