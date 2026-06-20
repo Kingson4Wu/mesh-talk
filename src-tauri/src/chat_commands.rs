@@ -641,3 +641,36 @@ pub async fn search(
         })
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_channel_id_accepts_64_hex_chars() {
+        let id = parse_channel_id(&"ab".repeat(32)).expect("valid id");
+        assert_eq!(id.as_bytes(), &[0xab; 32]);
+    }
+
+    #[test]
+    fn parse_channel_id_rejects_wrong_length() {
+        assert!(parse_channel_id(&"ab".repeat(16)).is_err()); // 16 bytes, not 32
+        assert!(parse_channel_id("").is_err());
+    }
+
+    #[test]
+    fn parse_channel_id_rejects_non_hex() {
+        assert!(parse_channel_id(&"zz".repeat(32)).is_err()); // not hex
+        assert!(parse_channel_id("abc").is_err()); // odd-length hex
+    }
+
+    #[test]
+    fn parse_event_id_accepts_valid_and_rejects_bad_input() {
+        assert_eq!(
+            parse_event_id(&"cd".repeat(32)).expect("valid").as_bytes(),
+            &[0xcd; 32]
+        );
+        assert!(parse_event_id(&"cd".repeat(10)).is_err()); // too short
+        assert!(parse_event_id(&"gg".repeat(32)).is_err()); // not hex
+    }
+}
