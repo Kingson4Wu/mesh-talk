@@ -35,6 +35,14 @@ pub(crate) fn user_home_dir() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// The app's data directory (`~/.mesh-talk`, falling back to `./.mesh-talk` if no home
+/// dir is resolvable). Single source of truth for the keystore, node, and logs locations.
+pub(crate) fn data_dir() -> std::path::PathBuf {
+    user_home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".mesh-talk")
+}
+
 /// Tauri application entry point. The serverless node is the whole product now;
 /// it starts per-session on login (see `commands::login` → `spawn_node_runtime`).
 pub fn run_tauri() {
@@ -44,10 +52,8 @@ pub fn run_tauri() {
     // Data directory + file manager (~/.mesh-talk), shared by the auth keystore.
     lazy_static::lazy_static! {
         static ref FILE_MANAGER: Arc<mesh_talk_core::storage::file_manager::FileManager> = {
-            let data_path = user_home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".mesh-talk");
-            log::info!("Data path: {}", data_path.to_str().unwrap_or(".mesh-talk"));
+            let data_path = data_dir();
+            log::info!("Data path: {}", data_path.display());
             Arc::new(mesh_talk_core::storage::file_manager::FileManager::new(data_path))
         };
     }
@@ -118,6 +124,9 @@ pub fn run_tauri() {
             crate::chat_commands::search
         ])
         .run(tauri::generate_context!())
-        .map_err(|e| log::error!("Error while running tauri application: {e}"))
-        .unwrap_or(());
+        .unwrap_or_else(|e| {
+            // A failed launch must be a non-zero exit, not a silent success.
+            log::error!("Error while running tauri application: {e}");
+            std::process::exit(1);
+        });
 }

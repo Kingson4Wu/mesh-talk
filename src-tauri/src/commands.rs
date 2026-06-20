@@ -232,11 +232,9 @@ fn require_session(state: &AppState) -> CommandResult<crate::state::SessionInfo>
 // Node lifecycle bridge
 // ---------------------------------------------------------------------------
 
-/// The base directory for node per-account data (mirrors the app's `~/.mesh-talk`).
+/// The base directory for node per-account data (the app's `~/.mesh-talk`).
 fn node_data_dir() -> std::path::PathBuf {
-    crate::user_home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".mesh-talk")
+    crate::data_dir()
 }
 
 /// Spawn the node runtime in the background, wiring its inbound callbacks to the
@@ -257,12 +255,12 @@ pub(crate) fn spawn_node_runtime(
     let app_handle_for_file = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let base_dir = node_data_dir();
-        match mesh_talk_core::node::runtime::NodeRuntime::start(
+        match mesh_talk_core::node::NodeRuntime::start(
             &base_dir,
             &account_id,
             &display_name,
             &password,
-            mesh_talk_core::node::net::DEFAULT_DISCOVERY_PORT,
+            mesh_talk_core::node::DEFAULT_DISCOVERY_PORT,
             move |dm| {
                 crate::events::emit_dm_received(
                     &app_handle_for_dm,
@@ -272,7 +270,7 @@ pub(crate) fn spawn_node_runtime(
                     dm.reply_to,
                 );
             },
-            move |msg: mesh_talk_core::node::channel::ReceivedChannelMessage| {
+            move |msg: mesh_talk_core::node::ReceivedChannelMessage| {
                 crate::events::emit_channel_message(
                     &app_handle_for_channel,
                     hex::encode(msg.channel_id.as_bytes()),
@@ -282,7 +280,7 @@ pub(crate) fn spawn_node_runtime(
                     msg.reply_to,
                 );
             },
-            move |f: mesh_talk_core::node::filebook::ReceivedFile| {
+            move |f: mesh_talk_core::node::ReceivedFile| {
                 crate::events::emit_file_received(
                     &app_handle_for_file,
                     hex::encode(f.conv.as_bytes()),

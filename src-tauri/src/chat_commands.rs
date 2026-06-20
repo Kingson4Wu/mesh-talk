@@ -3,7 +3,7 @@
 //! login, cleared on logout). All are thin pass-throughs over the node API.
 
 use mesh_talk_core::eventlog::event::{ConversationId, EventId};
-use mesh_talk_core::node::runtime::NodeRuntime;
+use mesh_talk_core::node::NodeRuntime;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -278,9 +278,7 @@ fn parse_event_id(hex_id: &str) -> Result<EventId, String> {
     Ok(EventId::new(arr))
 }
 
-fn to_reaction_infos(
-    views: Vec<mesh_talk_core::node::reaction::ReactionView>,
-) -> Vec<ReactionInfo> {
+fn to_reaction_infos(views: Vec<mesh_talk_core::node::ReactionView>) -> Vec<ReactionInfo> {
     views
         .into_iter()
         .map(|v| ReactionInfo {

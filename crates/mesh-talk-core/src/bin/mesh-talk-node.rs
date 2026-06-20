@@ -7,9 +7,8 @@ use clap::Parser;
 use mesh_talk_core::discovery::service::{run_broadcast, run_listen};
 use mesh_talk_core::discovery::{Announce, PeerRecord, Roster, UserId};
 use mesh_talk_core::identity::device::DeviceIdentity;
-use mesh_talk_core::node::net::{discovery_socket, DEFAULT_DISCOVERY_PORT};
-use mesh_talk_core::node::postbox::run_relay_accept_loop;
-use mesh_talk_core::node::{Node, ReceivedDm};
+use mesh_talk_core::node::run_relay_accept_loop;
+use mesh_talk_core::node::{discovery_socket, Node, ReceivedDm, DEFAULT_DISCOVERY_PORT};
 use mesh_talk_core::postoffice::PostOffice;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -115,9 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
     let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
     let (channel_tx, _channel_rx) =
-        mpsc::unbounded_channel::<mesh_talk_core::node::channel::ReceivedChannelMessage>();
-    let (file_tx, _file_rx) =
-        mpsc::unbounded_channel::<mesh_talk_core::node::filebook::ReceivedFile>();
+        mpsc::unbounded_channel::<mesh_talk_core::node::ReceivedChannelMessage>();
+    let (file_tx, _file_rx) = mpsc::unbounded_channel::<mesh_talk_core::node::ReceivedFile>();
     // Derive log paths from the keystore path (sibling files, same directory).
     let keystore_path = std::path::Path::new(&args.keystore);
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
