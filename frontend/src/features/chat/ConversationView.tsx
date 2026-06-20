@@ -32,6 +32,7 @@ export function ConversationView() {
   const sendFile = useChat((s) => s.sendFile);
   const toggleReaction = useChat((s) => s.toggleReaction);
   const myId = useChat((s) => s.myId);
+  const myAccountId = useChat((s) => s.myAccountId);
   const members = useChat((s) => s.members);
   const key = active ? convKey(active) : "";
   const messages = useChat((s) => (active ? (s.messages[key] ?? []) : []));
@@ -83,6 +84,8 @@ export function ConversationView() {
   }
 
   const isChannel = active.kind === "channel";
+  // Reaction `who` is keyed by account id for account conversations, device user-id for channels.
+  const selfReactionId = isChannel ? myId : myAccountId;
 
   return (
     <main className="flex flex-1 flex-col">
@@ -125,7 +128,7 @@ export function ConversationView() {
               parent={parent}
               showAuthor={showAuthor}
               reactions={m.id ? (reactionsByTarget.get(m.id) ?? []) : []}
-              myId={myId}
+              selfReactionId={selfReactionId}
               myName={myName}
               onReply={setReplyTo}
               onReact={toggleReaction}

@@ -100,14 +100,17 @@ describe("send", () => {
 });
 
 describe("toggleReaction", () => {
+  // For an ACCOUNT conversation, reaction `who` is keyed by ACCOUNT id (myAccountId),
+  // NOT the device id — the self-check must use myAccountId or the reaction can never be
+  // toggled off (regression: account reactions were compared against the device myId).
   beforeEach(() => {
     invoke.mockResolvedValue([]);
     useChat.setState({
       active: { kind: "account", id: "a1", name: "A" },
-      reactions: { "account:a1": [{ target: "t1", emoji: "👍", who: ["me"] }] },
+      reactions: { "account:a1": [{ target: "t1", emoji: "👍", who: ["myacct"] }] },
     });
   });
-  it("removes a reaction I already made", async () => {
+  it("removes my own account reaction (who keyed by account id)", async () => {
     await useChat.getState().toggleReaction("t1", "👍");
     expect(invoke).toHaveBeenCalledWith("react_account", {
       account: "a1",
@@ -123,6 +126,19 @@ describe("toggleReaction", () => {
       target: "t1",
       emoji: "🎉",
       remove: false,
+    });
+  });
+  it("matches the DEVICE id for channel conversations", async () => {
+    useChat.setState({
+      active: { kind: "channel", id: "c1", name: "C" },
+      reactions: { "channel:c1": [{ target: "t1", emoji: "👍", who: ["me"] }] },
+    });
+    await useChat.getState().toggleReaction("t1", "👍");
+    expect(invoke).toHaveBeenCalledWith("react_channel", {
+      channelId: "c1",
+      target: "t1",
+      emoji: "👍",
+      remove: true,
     });
   });
 });

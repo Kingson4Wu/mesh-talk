@@ -215,15 +215,32 @@ impl ChannelBook {
             match event.kind {
                 EventKind::MembershipChange => {
                     if let Some(meta) = ChannelMeta::decode(&event.ciphertext) {
-                        if !meta.is_member(&me.public().user_id()) {
-                            continue;
-                        }
+                        let author_uid = event.author.user_id();
                         match self.states.get_mut(&channel_id) {
-                            Some(state) => state.apply_meta(meta),
+                            Some(state) => {
+                                // Authorization: only a CURRENT member may change an existing
+                                // channel's membership — a non-member (or a removed member) who
+                                // merely knows the channel id must not be able to rewrite it.
+                                // We apply the change even if it removes US, so a node excluded
+                                // by the deterministically-chosen winning snapshot still
+                                // converges instead of keeping a stale membership view.
+                                let author_is_member =
+                                    state.members().iter().any(|m| m.user_id() == author_uid);
+                                if author_is_member {
+                                    state.apply_meta(meta);
+                                }
+                            }
                             None => {
-                                let mut state = ChannelState::from_meta(channel_id, meta);
-                                state.set_identity(me.public().user_id());
-                                self.states.insert(channel_id, state);
+                                // First time we hear of this channel: an invite. Trust-on-first-
+                                // use — accept only if it includes US and the inviter (author)
+                                // is in the membership it proposes.
+                                if meta.is_member(&me.public().user_id())
+                                    && meta.is_member(&author_uid)
+                                {
+                                    let mut state = ChannelState::from_meta(channel_id, meta);
+                                    state.set_identity(me.public().user_id());
+                                    self.states.insert(channel_id, state);
+                                }
                             }
                         }
                     }
@@ -701,5 +718,126 @@ mod tests {
         // the emitted set + consumed chain key both prevent a second surface).
         let second = book.process(&bob, channel, &collect(&alice_log, &channel));
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn a_non_member_cannot_change_channel_membership() {
+        // Alice + Bob in a channel. Mallory is NOT a member but knows the channel id; she
+        // forges a higher-epoch MembershipChange adding herself. A current member (Bob) must
+        // REJECT it — only a current member may change an established channel's membership.
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let mallory = DeviceIdentity::generate();
+        let channel = new_channel_id();
+
+        let mut log = EventLog::default();
+        append(
+            &mut log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            ChannelMeta {
+                name: "general".into(),
+                members: vec![alice.public(), bob.public()],
+                epoch: 0,
+            }
+            .encode(),
+        );
+        // Mallory forges {Alice, Bob, Mallory} at a higher epoch, signed by HERSELF.
+        append(
+            &mut log,
+            &mallory,
+            channel,
+            EventKind::MembershipChange,
+            ChannelMeta {
+                name: "general".into(),
+                members: vec![alice.public(), bob.public(), mallory.public()],
+                epoch: 1,
+            }
+            .encode(),
+        );
+
+        let mut bob_book = ChannelBook::new();
+        bob_book.process(&bob, channel, &collect(&log, &channel));
+        let state = bob_book.state(&channel).unwrap();
+        assert_eq!(
+            state.epoch(),
+            0,
+            "forged change by a non-member must be ignored"
+        );
+        assert!(
+            !state
+                .members()
+                .iter()
+                .any(|m| m.user_id() == mallory.public().user_id()),
+            "a non-member cannot add themselves to the channel"
+        );
+    }
+
+    #[test]
+    fn a_node_excluded_by_the_winning_membership_change_still_converges() {
+        // epoch 0: {alice, bob, carol}. Two same-epoch-1 changes by current members — alice's
+        // {alice, carol} (drops bob) and carol's {alice, bob} (drops carol). The deterministic
+        // tie-break picks one winner; BOTH bob and carol must converge to it, even the one the
+        // winner excludes (the regression: an excluded node used to skip + keep a stale view).
+        let alice = DeviceIdentity::generate();
+        let bob = DeviceIdentity::generate();
+        let carol = DeviceIdentity::generate();
+        let channel = new_channel_id();
+
+        let mut log = EventLog::default();
+        append(
+            &mut log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            ChannelMeta {
+                name: "g".into(),
+                members: vec![alice.public(), bob.public(), carol.public()],
+                epoch: 0,
+            }
+            .encode(),
+        );
+        append(
+            &mut log,
+            &alice,
+            channel,
+            EventKind::MembershipChange,
+            ChannelMeta {
+                name: "g".into(),
+                members: vec![alice.public(), carol.public()],
+                epoch: 1,
+            }
+            .encode(),
+        );
+        append(
+            &mut log,
+            &carol,
+            channel,
+            EventKind::MembershipChange,
+            ChannelMeta {
+                name: "g".into(),
+                members: vec![alice.public(), bob.public()],
+                epoch: 1,
+            }
+            .encode(),
+        );
+
+        let members_seen_by = |who: &DeviceIdentity| -> Vec<String> {
+            let mut book = ChannelBook::new();
+            book.process(who, channel, &collect(&log, &channel));
+            let mut m: Vec<String> = book
+                .state(&channel)
+                .unwrap()
+                .members()
+                .iter()
+                .map(|p| p.user_id())
+                .collect();
+            m.sort();
+            m
+        };
+        // Every node — including whichever one the winner excludes — agrees on the membership.
+        assert_eq!(members_seen_by(&bob), members_seen_by(&carol));
+        assert_eq!(members_seen_by(&bob), members_seen_by(&alice));
     }
 }

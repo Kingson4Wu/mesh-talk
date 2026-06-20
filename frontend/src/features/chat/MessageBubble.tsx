@@ -13,7 +13,7 @@ export function MessageBubble({
   parent,
   showAuthor,
   reactions,
-  myId,
+  selfReactionId,
   myName,
   onReply,
   onReact,
@@ -22,7 +22,9 @@ export function MessageBubble({
   parent: ChatMessage | null;
   showAuthor: boolean;
   reactions: ReactionInfo[];
-  myId: string;
+  // The id that represents "me" in a reaction's `who`: the ACCOUNT id for account
+  // conversations (who is account-keyed there), the device user-id for channels.
+  selfReactionId: string;
   myName: string;
   onReply: (m: ChatMessage) => void;
   onReact: (target: string, emoji: string) => void;
@@ -104,7 +106,7 @@ export function MessageBubble({
         {reactions.length > 0 && (
           <div className={cn("mt-1 flex flex-wrap gap-1", mine && "justify-end")}>
             {reactions.map((r) => {
-              const me = r.who.includes(myId);
+              const me = r.who.includes(selfReactionId);
               return (
                 <button
                   key={r.emoji}

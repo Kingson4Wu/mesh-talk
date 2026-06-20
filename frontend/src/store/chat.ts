@@ -258,8 +258,12 @@ export const useChat = create<ChatState>((set, get) => ({
     const c = get().active;
     if (!c) return;
     const key = convKey(c);
+    // Reaction `who` is keyed by account id for account conversations, device user-id for
+    // channels — so "did I already react?" must compare against the matching id, or an
+    // account-conversation reaction can never be detected as ours (never toggles off).
+    const selfId = c.kind === "account" ? get().myAccountId : get().myId;
     const mine = (get().reactions[key] ?? []).find(
-      (r) => r.target === target && r.emoji === emoji && r.who.includes(get().myId),
+      (r) => r.target === target && r.emoji === emoji && r.who.includes(selfId),
     );
     try {
       await reactFor(c, target, emoji, Boolean(mine));
