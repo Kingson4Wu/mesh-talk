@@ -169,18 +169,26 @@ pub fn handle_request(store: &impl SyncStore, request: &SyncRequest) -> SyncResp
     handle_request_bounded(store, request, usize::MAX)
 }
 
+/// Cap on rejected-event DETAILS recorded per batch. `rejected` is diagnostics only and
+/// never drives control flow, so a peer flooding invalid events cannot grow it without
+/// bound — rejections past the cap still occur, they're just not individually itemised.
+pub(crate) const MAX_REJECTED_DETAIL: usize = 64;
+
 /// Ingest a batch of received events through the store's validation gate,
 /// tallying outcomes. An invalid event is rejected and recorded, not fatal —
-/// the rest of the batch still applies.
-/// Phase-1 TODO: a malicious peer can inflate `rejected` with many bad events;
-/// cap batch size at the transport boundary before calling this.
+/// the rest of the batch still applies. The recorded detail is capped
+/// ([`MAX_REJECTED_DETAIL`]) so a malicious batch can't inflate the report's memory.
 fn ingest_all(store: &mut impl SyncStore, events: &[Event]) -> ApplyReport {
     let mut report = ApplyReport::default();
     for event in events {
         match store.ingest(event.clone()) {
             Ok(AppendOutcome::Appended) => report.applied += 1,
             Ok(AppendOutcome::Duplicate) => report.duplicates += 1,
-            Err(e) => report.rejected.push((event.id, e.to_string())),
+            Err(e) => {
+                if report.rejected.len() < MAX_REJECTED_DETAIL {
+                    report.rejected.push((event.id, e.to_string()));
+                }
+            }
         }
     }
     report

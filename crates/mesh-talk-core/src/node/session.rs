@@ -11,7 +11,7 @@
 use crate::eventlog::event::{ConversationId, EventId};
 use crate::eventlog::sync::{
     build_request, handle_followup, handle_request_bounded, handle_response_bounded, ApplyReport,
-    SyncFollowup, SyncRequest, SyncResponse, SyncStore,
+    SyncFollowup, SyncRequest, SyncResponse, SyncStore, MAX_REJECTED_DETAIL,
 };
 use crate::transport::{SecureChannel, TransportError, MAX_PLAINTEXT};
 use bincode::Options;
@@ -202,7 +202,11 @@ where
 
         total.applied += report.applied;
         total.duplicates += report.duplicates;
-        total.rejected.extend(report.rejected);
+        // Bound accumulated reject detail across rounds (diagnostics only) so a peer that
+        // keeps a multi-round sync alive while interleaving bad events can't grow it.
+        if total.rejected.len() < MAX_REJECTED_DETAIL {
+            total.rejected.extend(report.rejected);
+        }
 
         if !made_progress && !more_to_push {
             break;
