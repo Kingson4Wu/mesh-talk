@@ -26,6 +26,9 @@ jobs:
           - os: windows
             runner: windows-latest
             target: x86_64-pc-windows-msvc
+          - os: linux
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -55,6 +58,19 @@ jobs:
       - name: Install protoc (Windows)
         if: runner.os == 'Windows'
         run: choco install protoc
+
+      # Linux needs the Tauri GTK/WebKit stack (+ protoc) to build the AppImage/deb/rpm.
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            protobuf-compiler
 
       # 4️⃣ Cache Cargo
       - name: Cache Cargo
