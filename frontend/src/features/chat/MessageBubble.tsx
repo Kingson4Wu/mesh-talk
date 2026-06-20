@@ -129,6 +129,9 @@ export function MessageBubble({
         <span className="mt-0.5 px-1 text-[10px] text-muted-foreground">
           {formatTime(m.wallClock)}
           {m.pending && " · sending…"}
+          {m.failed && (
+            <span className="text-destructive"> · failed to send</span>
+          )}
         </span>
       </div>
     </div>

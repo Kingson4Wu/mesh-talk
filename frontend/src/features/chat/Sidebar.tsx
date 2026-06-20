@@ -77,6 +77,7 @@ export function Sidebar() {
   const channels = useChat((s) => s.channels);
   const myId = useChat((s) => s.myId);
   const ready = useChat((s) => s.ready);
+  const bootFailed = useChat((s) => s.bootFailed);
   const username = useAuth((s) => s.user?.username ?? "");
   const logout = useAuth((s) => s.logout);
 
@@ -91,7 +92,11 @@ export function Sidebar() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold">{username}</div>
             <div className="truncate font-mono text-xs text-muted-foreground">
-              {ready ? `you · ${shortId(myId)}` : "starting…"}
+              {ready
+                ? `you · ${shortId(myId)}`
+                : bootFailed
+                  ? "node unavailable"
+                  : "starting…"}
             </div>
           </div>
         </div>

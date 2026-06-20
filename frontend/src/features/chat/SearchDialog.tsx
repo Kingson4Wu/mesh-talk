@@ -31,16 +31,23 @@ export function SearchDialog() {
     }
     setSearching(true);
     clearTimeout(timer.current);
+    // `active` guards against a stale resolution: if the query changes (or the dialog
+    // closes) while a search is in flight, its result must not overwrite the newer one.
+    let active = true;
     timer.current = setTimeout(async () => {
       try {
-        setHits(await chat.search(query.trim()));
+        const results = await chat.search(query.trim());
+        if (active) setHits(results);
       } catch {
-        setHits([]);
+        if (active) setHits([]);
       } finally {
-        setSearching(false);
+        if (active) setSearching(false);
       }
     }, 250);
-    return () => clearTimeout(timer.current);
+    return () => {
+      active = false;
+      clearTimeout(timer.current);
+    };
   }, [query, dialogOpen]);
 
   const go = (h: SearchHitInfo) => {

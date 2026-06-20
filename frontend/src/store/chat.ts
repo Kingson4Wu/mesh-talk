@@ -31,6 +31,7 @@ export interface ChatMessage {
   wallClock: number;
   replyTo: string | null;
   pending?: boolean;
+  failed?: boolean; // a send that errored — kept visible (not silently dropped)
   file?: { name: string; size: number; fileConv: string } | null;
 }
 
@@ -96,9 +97,12 @@ interface ChatState {
   members: ChannelMemberInfo[];
   incomingFiles: IncomingFile[];
   loading: boolean;
+  error: string | null; // transient action error (file/reaction send), surfaced to the user
+  bootFailed: boolean; // the node never came up within the boot window
 
   start: () => () => void;
   dismissFile: (fileConv: string) => void;
+  clearError: () => void;
   refreshRoster: () => Promise<void>;
   open: (c: Conversation) => Promise<void>;
   reload: () => Promise<void>;
@@ -124,6 +128,10 @@ export const useChat = create<ChatState>((set, get) => ({
   members: [],
   incomingFiles: [],
   loading: false,
+  error: null,
+  bootFailed: false,
+
+  clearError: () => set({ error: null }),
 
   dismissFile: (fileConv) =>
     set((s) => ({
@@ -134,6 +142,8 @@ export const useChat = create<ChatState>((set, get) => ({
     // Fresh slate per login (the store survives logout/login of a different account).
     set({
       ready: false,
+      error: null,
+      bootFailed: false,
       myId: "",
       myAccountId: "",
       peers: [],
@@ -160,6 +170,9 @@ export const useChat = create<ChatState>((set, get) => ({
           await new Promise((r) => setTimeout(r, 500));
         }
       }
+      // Exhausted the boot window without the node coming up — surface it so the UI can
+      // offer a retry instead of sitting on "starting…" forever.
+      if (!cancelled) set({ bootFailed: true });
     };
     void boot();
 
@@ -241,16 +254,31 @@ export const useChat = create<ChatState>((set, get) => ({
     }));
     try {
       await sendTextFor(c, text, replyTo);
-    } finally {
-      // Re-sync from the log so the message gets its real id (needed for reactions).
-      if (get().active && convKey(get().active!) === key) await get().reload();
+    } catch {
+      // Keep the bubble (marked failed) instead of silently dropping it on reload.
+      set((s) => ({
+        messages: {
+          ...s.messages,
+          [key]: (s.messages[key] ?? []).map((m) =>
+            m === optimistic ? { ...m, pending: false, failed: true } : m,
+          ),
+        },
+      }));
+      return;
     }
+    // Success: re-sync from the log so the message gets its real id (needed for reactions).
+    if (get().active && convKey(get().active!) === key) await get().reload();
   },
 
   sendFile: async (path) => {
     const c = get().active;
     if (!c) return;
-    await sendFileFor(c, path);
+    try {
+      await sendFileFor(c, path);
+    } catch (e) {
+      set({ error: `Couldn't send file: ${String(e)}` });
+      return;
+    }
     if (get().active && convKey(get().active!) === convKey(c)) await get().reload();
   },
 
@@ -268,8 +296,8 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await reactFor(c, target, emoji, Boolean(mine));
       await get().reload();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      set({ error: `Couldn't update reaction: ${String(e)}` });
     }
   },
 
@@ -309,12 +337,21 @@ function bump(set: Set, key: string, active: boolean) {
   }
 }
 
+let lastUnknownSenderRefresh = 0;
+
 function get_handleDm(set: Set, get: Get, e: DmReceivedEvent) {
   // Route to the sender's account conversation (multi-device aware).
   const peer = get().peers.find((p) => p.user_id === e.from);
   const accountId = peer?.account_id;
   if (!accountId) {
-    void get().refreshRoster();
+    // Unknown sender (not yet discovered). Throttle: a burst from an undiscovered account
+    // would otherwise fire one roster refresh (3 invokes) per message. The 4s interval
+    // poll also covers this.
+    const now = Date.now();
+    if (now - lastUnknownSenderRefresh > 2000) {
+      lastUnknownSenderRefresh = now;
+      void get().refreshRoster();
+    }
     return;
   }
   const conv: Conversation = {
