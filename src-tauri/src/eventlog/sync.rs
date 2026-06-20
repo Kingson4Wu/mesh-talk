@@ -132,12 +132,6 @@ fn cap_events(events: Vec<Event>, budget: usize) -> Vec<Event> {
     out
 }
 
-/// Approximate encoded size of a `have` id-set (`Vec<EventId>`): 8-byte length
-/// prefix + 32 bytes per id (fixint). Used to leave room for `have` in a Response.
-fn have_set_size(have: &[EventId]) -> usize {
-    8 + 32 * have.len()
-}
-
 /// Build the opening request: the ids this store holds for `conversation`.
 pub fn build_request(store: &impl SyncStore, conversation: ConversationId) -> SyncRequest {
     SyncRequest {
@@ -158,7 +152,9 @@ pub fn handle_request_bounded(
     let requester_have: HashSet<EventId> = request.have.iter().copied().collect();
     let all_missing = store.events_excluding(&request.conversation, &requester_have);
     let responder_have = store.event_ids(&request.conversation);
-    let event_budget = frame_budget.saturating_sub(have_set_size(&responder_have) + SYNC_MARGIN);
+    // The responder's `have` is streamed in its own frames (node::session), so it no
+    // longer competes with events for this frame's budget — events get the whole frame.
+    let event_budget = frame_budget.saturating_sub(SYNC_MARGIN);
     let events = cap_events(all_missing, event_budget);
     SyncResponse {
         conversation: request.conversation,

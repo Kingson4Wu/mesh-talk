@@ -8,7 +8,7 @@
 //! The store is shared as a `&Mutex<S>` and locked only for the synchronous
 //! handler calls — never across an `.await` — so a `std::sync::Mutex` is correct.
 
-use crate::eventlog::event::ConversationId;
+use crate::eventlog::event::{ConversationId, EventId};
 use crate::eventlog::sync::{
     build_request, handle_followup, handle_request_bounded, handle_response_bounded, ApplyReport,
     SyncFollowup, SyncRequest, SyncResponse, SyncStore,
@@ -24,12 +24,36 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// transfers up to ~one frame, so this bounds a single conversation's transfer.
 const MAX_SYNC_ROUNDS: usize = 10_000;
 
+/// Event-ids per `have` chunk frame. 32 B/id; this keeps a chunk well under
+/// `MAX_PLAINTEXT` (65519) with room for the wrappers.
+const HAVE_IDS_PER_CHUNK: usize = 1500;
+/// Backstop on the number of `have` chunk frames accepted for one conversation
+/// (a peer can't stream unbounded chunks). 1500 × this ≫ any real conversation.
+const MAX_HAVE_CHUNKS: usize = 1000;
+
 /// One framed sync message on the wire.
+///
+/// The requester's and responder's `have` id-sets are streamed as a sequence of
+/// `ReqHave`/`RespHave` chunk frames (terminated by `more == false`) rather than
+/// inlined into `Request`/`Response`, so a conversation with more event-ids than
+/// fit one frame (~2040) still reconciles. `Request`/`Response` therefore carry an
+/// empty `have` on this networked path (the in-process `reconcile` keeps inlining it).
 #[derive(Debug, Serialize, Deserialize)]
 enum SyncWire {
     Request(SyncRequest),
     Response(SyncResponse),
     Followup(SyncFollowup),
+    ReqHave(HaveChunk),
+    RespHave(HaveChunk),
+}
+
+/// One chunk of a streamed `have` id-set.
+#[derive(Debug, Serialize, Deserialize)]
+struct HaveChunk {
+    conversation: ConversationId,
+    ids: Vec<EventId>,
+    /// `true` if more chunks of this id-set follow.
+    more: bool,
 }
 
 /// Errors from a sync session.
@@ -77,10 +101,63 @@ fn decode(bytes: &[u8]) -> Result<SyncWire, SessionError> {
         .map_err(|e| SessionError::Serialization(e.to_string()))
 }
 
+/// Stream a `have` id-set as chunk frames (always ≥1 frame, so the receiver gets an
+/// explicit terminator even for an empty set). `wrap` selects `ReqHave` vs `RespHave`.
+async fn send_have<IO>(
+    channel: &mut SecureChannel<IO>,
+    conversation: ConversationId,
+    have: &[EventId],
+    wrap: fn(HaveChunk) -> SyncWire,
+) -> Result<(), SessionError>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let chunks: Vec<&[EventId]> = if have.is_empty() {
+        vec![&[][..]]
+    } else {
+        have.chunks(HAVE_IDS_PER_CHUNK).collect()
+    };
+    let last = chunks.len() - 1;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let wire = wrap(HaveChunk {
+            conversation,
+            ids: chunk.to_vec(),
+            more: i < last,
+        });
+        channel.send(&encode(&wire)?).await?;
+    }
+    Ok(())
+}
+
+/// Receive a streamed `have` id-set (chunk frames until `more == false`), accepting
+/// only the expected variant (`want_req` → `ReqHave`, else `RespHave`). Bounded by
+/// `MAX_HAVE_CHUNKS` so a peer can't stream forever.
+async fn recv_have<IO>(
+    channel: &mut SecureChannel<IO>,
+    want_req: bool,
+) -> Result<Vec<EventId>, SessionError>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut have = Vec::new();
+    for _ in 0..MAX_HAVE_CHUNKS {
+        let chunk = match decode(&channel.recv().await?)? {
+            SyncWire::ReqHave(c) if want_req => c,
+            SyncWire::RespHave(c) if !want_req => c,
+            _ => return Err(SessionError::UnexpectedMessage),
+        };
+        have.extend(chunk.ids);
+        if !chunk.more {
+            return Ok(have);
+        }
+    }
+    Err(SessionError::UnexpectedMessage)
+}
+
 /// Run one reconciliation round as the REQUESTER over `channel`, for
-/// `conversation`: send a Request built from the local store, receive the
-/// Response (ingesting its events), then send the Followup. Converges the
-/// conversation in both directions. Returns what this side applied.
+/// `conversation`: send a Request (+ our streamed have), receive the Response
+/// (ingesting its events) + the responder's streamed have, then send the Followup.
+/// Converges the conversation in both directions. Returns what this side applied.
 pub async fn request_round<S, IO>(
     channel: &mut SecureChannel<IO>,
     store: &Mutex<S>,
@@ -92,16 +169,25 @@ where
 {
     let mut total = ApplyReport::default();
     for _ in 0..MAX_SYNC_ROUNDS {
-        let request = {
+        let have = {
             let store = store.lock().expect("store mutex not poisoned");
-            build_request(&*store, conversation)
+            build_request(&*store, conversation).have
         };
-        channel.send(&encode(&SyncWire::Request(request))?).await?;
+        // Opening Request carries an empty inline have; the real set is streamed.
+        channel
+            .send(&encode(&SyncWire::Request(SyncRequest {
+                conversation,
+                have: Vec::new(),
+            }))?)
+            .await?;
+        send_have(channel, conversation, &have, SyncWire::ReqHave).await?;
 
-        let response = match decode(&channel.recv().await?)? {
+        // Response carries the (bounded) events; the responder's have is streamed after.
+        let mut response = match decode(&channel.recv().await?)? {
             SyncWire::Response(r) => r,
             _ => return Err(SessionError::UnexpectedMessage),
         };
+        response.have = recv_have(channel, false).await?;
 
         let (report, followup) = {
             let mut store = store.lock().expect("store mutex not poisoned");
@@ -168,13 +254,23 @@ where
     match decode(bytes)? {
         SyncWire::Request(request) => {
             let conversation = request.conversation;
+            // The Request's inline have is empty on the networked path; read the
+            // requester's streamed have, then answer.
+            let have = recv_have(channel, true).await?;
+            let full = SyncRequest { conversation, have };
             let response = {
                 let store = store.lock().expect("store mutex not poisoned");
-                handle_request_bounded(&*store, &request, MAX_PLAINTEXT)
+                handle_request_bounded(&*store, &full, MAX_PLAINTEXT)
             };
+            let responder_have = response.have;
             channel
-                .send(&encode(&SyncWire::Response(response))?)
+                .send(&encode(&SyncWire::Response(SyncResponse {
+                    conversation,
+                    events: response.events,
+                    have: Vec::new(),
+                }))?)
                 .await?;
+            send_have(channel, conversation, &responder_have, SyncWire::RespHave).await?;
             Ok(Served::Handled(conversation))
         }
         SyncWire::Followup(followup) => {
@@ -185,7 +281,10 @@ where
             }
             Ok(Served::Handled(conversation))
         }
-        SyncWire::Response(_) => Err(SessionError::UnexpectedMessage),
+        // A Response, or a stray have-chunk outside its stream, is out of protocol order.
+        SyncWire::Response(_) | SyncWire::ReqHave(_) | SyncWire::RespHave(_) => {
+            Err(SessionError::UnexpectedMessage)
+        }
     }
 }
 
@@ -387,5 +486,43 @@ mod tests {
         );
         // Responder also still has all events.
         assert_eq!(b_final.event_ids(&conv_id).len(), responder_event_count);
+    }
+
+    #[tokio::test]
+    async fn request_round_syncs_a_conversation_with_more_ids_than_fit_one_frame() {
+        // 2500 tiny events: the have id-set alone (2500 × 32 B ≈ 80 KB) exceeds
+        // MAX_PLAINTEXT (65519). Before have-streaming this overflowed the frame and the
+        // conversation could no longer sync; now the have set is chunked, so it converges.
+        let a_id = DeviceIdentity::generate();
+        let b_id = DeviceIdentity::generate();
+        let (a_io, b_io) = tokio::io::duplex(1024 * 1024);
+        let conv_id = ConversationId::new([3u8; 32]);
+        const NUM_EVENTS: usize = 2500;
+
+        let b_log = build_large_responder_store(&b_id, conv_id, NUM_EVENTS, 8);
+        assert_eq!(b_log.event_ids(&conv_id).len(), NUM_EVENTS);
+
+        let server = tokio::spawn(async move {
+            let mut b_ch = SecureChannel::accept(b_io, &b_id).await.unwrap();
+            let b_store = Mutex::new(b_log);
+            loop {
+                match serve_one(&mut b_ch, &b_store).await.unwrap() {
+                    Served::Closed => break,
+                    Served::Handled(_) => {}
+                }
+            }
+        });
+
+        let a_store = Mutex::new(EventLog::default());
+        let mut a_ch = SecureChannel::connect(a_io, &a_id, None).await.unwrap();
+        request_round(&mut a_ch, &a_store, conv_id).await.unwrap();
+        drop(a_ch);
+        server.await.unwrap();
+
+        assert_eq!(
+            a_store.lock().unwrap().event_ids(&conv_id).len(),
+            NUM_EVENTS,
+            "requester pulled all events despite a >1-frame have id-set",
+        );
     }
 }
