@@ -34,11 +34,11 @@ jobs:
 
     steps:
       # 1️⃣ Checkout
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 2️⃣ Setup Node.js
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -75,7 +75,7 @@ jobs:
 
       # 4️⃣ Cache Cargo
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -155,7 +155,7 @@ jobs:
 
       # 9️⃣ Install cosign
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3.6.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       # 🔟 Package and sign artifacts
       - name: Package and sign artifacts
@@ -214,7 +214,7 @@ jobs:
       # 1️⃣1️⃣ Always expose the signed zips as workflow artifacts — lets a manual
       # `workflow_dispatch` run be downloaded + verified without cutting a real release.
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mesh-talk-${{ matrix.os }}-${{ matrix.target }}
           path: release_zips/*
@@ -223,7 +223,7 @@ jobs:
       # 1️⃣2️⃣ On a version tag only, also publish them to the GitHub Release.
       - name: Upload zipped artifacts and signature bundle to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: release_zips/*
