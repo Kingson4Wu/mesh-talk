@@ -14,9 +14,9 @@ Argument: `$ARGUMENTS` — `quick` (default) or `full`.
 
 ## quick (default)
 
-- `cd src-tauri && nice -n 10 cargo fmt --all -- --check` — formatting.
-- `cd src-tauri && nice -n 10 cargo clippy --all-targets -- -D warnings` — lints.
-- `cd src-tauri && nice -n 10 cargo test -- --test-threads=2` — tests.
+- `nice -n 10 cargo fmt --all -- --check` — formatting (whole workspace).
+- `nice -n 10 cargo clippy --workspace --all-targets -- -D warnings` — lints (both crates).
+- `nice -n 10 cargo test --workspace -- --test-threads=2` — tests (both crates).
 
 ## full
 
