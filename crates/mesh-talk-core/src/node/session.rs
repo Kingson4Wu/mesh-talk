@@ -146,6 +146,12 @@ where
             SyncWire::RespHave(c) if !want_req => c,
             _ => return Err(SessionError::UnexpectedMessage),
         };
+        // A well-behaved sender chunks at HAVE_IDS_PER_CHUNK; reject an over-stuffed chunk so
+        // a peer can't pack a frame full of ids to amplify the accumulated `have` (bounds the
+        // total at HAVE_IDS_PER_CHUNK * MAX_HAVE_CHUNKS).
+        if chunk.ids.len() > HAVE_IDS_PER_CHUNK {
+            return Err(SessionError::UnexpectedMessage);
+        }
         have.extend(chunk.ids);
         if !chunk.more {
             return Ok(have);

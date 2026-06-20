@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// The post office this node should use: the lowest-fingerprint peer among those
 /// advertising the post-office role, or `None` if no post office is known.
@@ -54,22 +55,40 @@ pub async fn serve_relay_connection<IO>(
 const MAX_RELAY_ROUNDS: usize = 10_000;
 /// Drop a relay connection that sends nothing for this long.
 const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ceiling on concurrently-served relay connections, so a flood of TCP + Noise handshakes
+/// can't spawn unbounded tasks on the always-on relay. Generous for a LAN; further
+/// connections wait for a slot (back-pressure) rather than piling up as tasks.
+const MAX_CONCURRENT_RELAY_CONNS: usize = 256;
 
 /// Accept inbound connections on `listener` and serve each as a relay connection
 /// on its own task, sharing the one durable store. A failed handshake backs off
 /// briefly (so a persistent accept error can't busy-spin) and keeps accepting.
+/// Concurrent connections are capped (see `MAX_CONCURRENT_RELAY_CONNS`).
 pub async fn run_relay_accept_loop(
     identity: DeviceIdentity,
     listener: TcpListener,
     store: Arc<Mutex<PostOffice>>,
 ) {
+    let conns = Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY_CONNS));
     loop {
+        // Reserve a connection slot BEFORE accepting, so we never serve more than the cap;
+        // excess inbound connections wait in the OS accept queue until a slot frees.
+        let permit = match Arc::clone(&conns).acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return, // semaphore closed — shouldn't happen, but stop cleanly
+        };
         match accept(&listener, &identity).await {
             Ok(channel) => {
                 let store = Arc::clone(&store);
-                tokio::spawn(async move { serve_relay_connection(channel, store).await });
+                tokio::spawn(async move {
+                    let _permit = permit; // held for the connection's lifetime, freed on drop
+                    serve_relay_connection(channel, store).await
+                });
             }
-            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(_) => {
+                drop(permit);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         }
     }
 }

@@ -92,6 +92,14 @@ impl Node {
         self.import_account_backfill(&backfill);
 
         let account = Account::from_secret_bytes(resp.account_secret);
+        // Defense-in-depth: the cert binds `account_ed25519_pub`; make sure the secret we were
+        // handed actually derives that same key, so a buggy/malicious linker can't pair us onto
+        // a cert for one account while seeding a secret for another.
+        if account.public().ed25519_pub != resp.account_ed25519_pub {
+            return Err(NodeError::Channel(
+                "pairing account secret does not match the certified account key".into(),
+            ));
+        }
         Ok(LinkedAccount {
             secret: resp.account_secret,
             account_id: account.account_id(),

@@ -142,6 +142,12 @@ impl RatchetState {
 
     /// Decrypt a message. Handles a DH-ratchet step (new `ratchet_pub`) and
     /// out-of-order delivery (skipped keys), then advances the receiving chain.
+    ///
+    /// NOTE: this mutates `self` (DH ratchet / skipped keys / chain advance) BEFORE the final
+    /// AEAD authentication, so a forged message can leave `self` in an advanced state on `Err`.
+    /// Callers must therefore decrypt on a COPY and persist it only on `Ok` — the node does
+    /// (`node::dm_ratchet` operates on a fresh `RatchetSessions::get` clone, `put`-ing only on
+    /// success), so a forged/replayed message cannot corrupt the durable session.
     pub fn ratchet_decrypt(
         &mut self,
         header: &Header,

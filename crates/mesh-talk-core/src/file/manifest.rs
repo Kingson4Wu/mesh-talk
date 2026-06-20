@@ -52,7 +52,10 @@ pub fn reassemble_and_verify(
     chunks: &[Vec<u8>],
 ) -> Result<Vec<u8>, FileError> {
     let key = manifest.key();
-    let mut out: Vec<u8> = Vec::with_capacity(manifest.size as usize);
+    // Pre-size from the chunks we actually hold, NOT the manifest's attacker-controlled `size`
+    // u64 (which could request a huge allocation). Each chunk decrypts to <= CHUNK_SIZE.
+    let cap = chunks.len().saturating_mul(crate::file::crypto::CHUNK_SIZE);
+    let mut out: Vec<u8> = Vec::with_capacity(cap);
     for chunk in chunks {
         out.extend_from_slice(&open_chunk(&key, chunk)?);
     }
