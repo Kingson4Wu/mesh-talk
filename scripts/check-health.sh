@@ -63,7 +63,7 @@ make frontend-install >/dev/null 2>&1 || true
 
 # Check code formatting (Rust)
 print_status "success" "Checking Rust code formatting..."
-if ! cd src-tauri && cargo fmt -- --check; then
+if ! cd src-tauri && cargo fmt --all -- --check; then
     print_status "error" "Rust code formatting issues found. Run 'cargo fmt' to fix."
     exit 1
 fi
@@ -71,7 +71,7 @@ cd ..
 
 # Apply automatic code formatting fixes (Rust)
 print_status "success" "Applying automatic Rust code formatting fixes..."
-if ! cd src-tauri && cargo fmt; then
+if ! cd src-tauri && cargo fmt --all; then
     print_status "warning" "Failed to apply some Rust code formatting fixes automatically."
 fi
 cd ..
@@ -94,7 +94,7 @@ cd ..
 # Run Clippy (Rust linter). MUST mirror CI: --all-targets covers tests/benches/bins'
 # test modules — without it, lints in test code only surface on CI (and break it).
 print_status "success" "Running Rust linter (Clippy)..."
-if ! cd src-tauri && cargo clippy --all-targets -- -D warnings; then
+if ! cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings; then
     print_status "error" "Rust linting issues found. Please fix Clippy warnings."
     exit 1
 fi
@@ -102,7 +102,7 @@ cd ..
 
 # Apply automatic Clippy fixes
 print_status "success" "Applying automatic Clippy fixes..."
-if ! cd src-tauri && cargo clippy --all-targets --fix --allow-dirty --allow-staged; then
+if ! cd src-tauri && cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged; then
     print_status "warning" "Failed to apply some Clippy fixes automatically."
 fi
 cd ..
@@ -133,11 +133,11 @@ fi
 # Unused dependencies (cargo-machete) — mirrors CI. Warn-skip if not installed.
 print_status "success" "Checking for unused dependencies (cargo-machete)..."
 if command_exists cargo-machete; then
-    if ! cd src-tauri && cargo machete; then
+    # Run from the workspace root so BOTH crates (core + app) are scanned.
+    if ! cargo machete; then
         print_status "error" "cargo-machete found unused dependencies."
         exit 1
     fi
-    cd ..
 else
     print_status "warning" "cargo-machete not installed — skipping; CI will still check."
 fi
@@ -183,7 +183,7 @@ cd ..
 
 # Run tests
 print_status "success" "Running tests..."
-if ! cd src-tauri && cargo test; then
+if ! cd src-tauri && cargo test --workspace; then
     print_status "error" "Tests failed. Please fix test issues."
     exit 1
 fi
@@ -225,7 +225,7 @@ cd .. || true
 
 # Build the project
 print_status "success" "Building the project..."
-if ! cd src-tauri && cargo build --verbose; then
+if ! cd src-tauri && cargo build --workspace --verbose; then
     print_status "error" "Build failed. Please fix build issues."
     exit 1
 fi

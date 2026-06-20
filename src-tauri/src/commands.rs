@@ -256,12 +256,12 @@ pub(crate) fn spawn_node_runtime(
     let app_handle_for_file = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let base_dir = node_data_dir();
-        match crate::node::runtime::NodeRuntime::start(
+        match mesh_talk_core::node::runtime::NodeRuntime::start(
             &base_dir,
             &account_id,
             &display_name,
             &password,
-            crate::node::net::DEFAULT_DISCOVERY_PORT,
+            mesh_talk_core::node::net::DEFAULT_DISCOVERY_PORT,
             move |dm| {
                 crate::events::emit_dm_received(
                     &app_handle_for_dm,
@@ -271,7 +271,7 @@ pub(crate) fn spawn_node_runtime(
                     dm.reply_to,
                 );
             },
-            move |msg: crate::node::channel::ReceivedChannelMessage| {
+            move |msg: mesh_talk_core::node::channel::ReceivedChannelMessage| {
                 crate::events::emit_channel_message(
                     &app_handle_for_channel,
                     hex::encode(msg.channel_id.as_bytes()),
@@ -281,7 +281,7 @@ pub(crate) fn spawn_node_runtime(
                     msg.reply_to,
                 );
             },
-            move |f: crate::node::filebook::ReceivedFile| {
+            move |f: mesh_talk_core::node::filebook::ReceivedFile| {
                 crate::events::emit_file_received(
                     &app_handle_for_file,
                     hex::encode(f.conv.as_bytes()),

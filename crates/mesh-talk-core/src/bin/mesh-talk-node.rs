@@ -4,13 +4,13 @@
 //! `/quit`), printing inbound DMs as they arrive.
 
 use clap::Parser;
-use mesh_talk::discovery::service::{run_broadcast, run_listen};
-use mesh_talk::discovery::{Announce, PeerRecord, Roster, UserId};
-use mesh_talk::identity::device::DeviceIdentity;
-use mesh_talk::node::net::{discovery_socket, DEFAULT_DISCOVERY_PORT};
-use mesh_talk::node::postbox::run_relay_accept_loop;
-use mesh_talk::node::{Node, ReceivedDm};
-use mesh_talk::postoffice::PostOffice;
+use mesh_talk_core::discovery::service::{run_broadcast, run_listen};
+use mesh_talk_core::discovery::{Announce, PeerRecord, Roster, UserId};
+use mesh_talk_core::identity::device::DeviceIdentity;
+use mesh_talk_core::node::net::{discovery_socket, DEFAULT_DISCOVERY_PORT};
+use mesh_talk_core::node::postbox::run_relay_accept_loop;
+use mesh_talk_core::node::{Node, ReceivedDm};
+use mesh_talk_core::postoffice::PostOffice;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Persistent identity (created on first run).
-    let identity = mesh_talk::identity::keystore::load_or_create(
+    let identity = mesh_talk_core::identity::keystore::load_or_create(
         std::path::Path::new(&args.keystore),
         &args.password,
     )?;
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("account.keystore");
     let account =
-        mesh_talk::identity::account_keystore::load_or_create(&account_path, &args.password)?;
+        mesh_talk_core::identity::account_keystore::load_or_create(&account_path, &args.password)?;
 
     // TCP listener for peer connections; resolve the actual (possibly OS-assigned) port.
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
@@ -115,8 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
     let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
     let (channel_tx, _channel_rx) =
-        mpsc::unbounded_channel::<mesh_talk::node::channel::ReceivedChannelMessage>();
-    let (file_tx, _file_rx) = mpsc::unbounded_channel::<mesh_talk::node::filebook::ReceivedFile>();
+        mpsc::unbounded_channel::<mesh_talk_core::node::channel::ReceivedChannelMessage>();
+    let (file_tx, _file_rx) = mpsc::unbounded_channel::<mesh_talk_core::node::filebook::ReceivedFile>();
     // Derive log paths from the keystore path (sibling files, same directory).
     let keystore_path = std::path::Path::new(&args.keystore);
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
@@ -220,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// line can take ~15s to appear on first run. Tooling that waits for a relay to
 /// come up should poll for the startup line, not fixed-sleep.
 async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let identity = mesh_talk::identity::keystore::load_or_create(
+    let identity = mesh_talk_core::identity::keystore::load_or_create(
         std::path::Path::new(&args.keystore),
         &args.password,
     )?;
@@ -232,7 +232,7 @@ async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("account.keystore");
     let account =
-        mesh_talk::identity::account_keystore::load_or_create(&account_path, &args.password)?;
+        mesh_talk_core::identity::account_keystore::load_or_create(&account_path, &args.password)?;
 
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
     let tcp_port = listener.local_addr()?.port();
@@ -355,7 +355,7 @@ fn handle_history(node: &Arc<Node>, roster: &Arc<Mutex<Roster>>, rest: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_talk::identity::device::DeviceIdentity;
+    use mesh_talk_core::identity::device::DeviceIdentity;
     use std::net::SocketAddr;
     use std::time::Instant;
 

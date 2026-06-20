@@ -142,8 +142,8 @@ mod tests {
     /// chunk0 = all 0s, chunk1 = all 1s, chunk2 = a short all-2s tail.
     fn distinct_three_chunk() -> Vec<u8> {
         let mut data = vec![0u8; CHUNK_SIZE];
-        data.extend(std::iter::repeat(1u8).take(CHUNK_SIZE));
-        data.extend(std::iter::repeat(2u8).take(5));
+        data.resize(2 * CHUNK_SIZE, 1u8); // chunk1: all 1s
+        data.resize(2 * CHUNK_SIZE + 5, 2u8); // chunk2: short all-2s tail
         data
     }
 

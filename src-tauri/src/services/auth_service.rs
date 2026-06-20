@@ -1,7 +1,7 @@
-use crate::identity::manager::IdentityManager;
+use mesh_talk_core::identity::manager::IdentityManager;
 use crate::services::common::{Service, ServiceDependencies, ServiceHealth};
 use crate::services::user::User;
-use crate::storage::file_manager::FileManager;
+use mesh_talk_core::storage::file_manager::FileManager;
 
 use base64::engine::general_purpose;
 use base64::Engine as _;
@@ -201,10 +201,10 @@ impl AuthService {
                 // A user can already exist under a different password, in which
                 // case the authenticate_user pre-check above does not catch it.
                 // register_user is the authoritative existence check.
-                crate::identity::errors::IdentityError::UserAlreadyExists(_) => {
+                mesh_talk_core::identity::errors::IdentityError::UserAlreadyExists(_) => {
                     AuthError::UserAlreadyExists
                 }
-                crate::identity::errors::IdentityError::InvalidUsername => {
+                mesh_talk_core::identity::errors::IdentityError::InvalidUsername => {
                     AuthError::InvalidInput("Invalid username".to_string())
                 }
                 other => AuthError::StorageError(format!("Failed to register user: {}", other)),
@@ -243,8 +243,8 @@ impl AuthService {
             .identity_manager
             .authenticate_user(normalized_name, &password)
             .map_err(|e| match e {
-                crate::identity::errors::IdentityError::UserNotFound(_) => AuthError::UserNotFound,
-                crate::identity::errors::IdentityError::InvalidPassword => {
+                mesh_talk_core::identity::errors::IdentityError::UserNotFound(_) => AuthError::UserNotFound,
+                mesh_talk_core::identity::errors::IdentityError::InvalidPassword => {
                     AuthError::InvalidCredentials
                 }
                 _ => AuthError::StorageError(format!("Failed to authenticate user: {}", e)),
@@ -391,12 +391,12 @@ impl Default for AuthService {
         // This will panic if the global instance is not initialized
         // In a real application, you would want to handle this more gracefully
         // For now, we'll create a new instance with a temporary file manager
-        use crate::storage::file_manager::FileManager;
+        use mesh_talk_core::storage::file_manager::FileManager;
         use std::path::PathBuf;
 
         let file_manager = FileManager::new(PathBuf::from("./data"));
         let identity_manager =
-            Arc::new(crate::identity::manager::IdentityManager::new(file_manager));
+            Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(file_manager));
         Self::new(identity_manager)
     }
 }
@@ -404,17 +404,17 @@ impl Default for AuthService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::file_manager::FileManager;
+    use mesh_talk_core::storage::file_manager::FileManager;
     use std::sync::Arc;
 
-    fn setup_test_context() -> (AuthService, Arc<crate::identity::manager::IdentityManager>) {
+    fn setup_test_context() -> (AuthService, Arc<mesh_talk_core::identity::manager::IdentityManager>) {
         // Create a temporary directory for test data
         let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
         let data_path = temp_dir.path().to_path_buf();
 
         let file_manager = FileManager::new(data_path);
         let identity_manager =
-            Arc::new(crate::identity::manager::IdentityManager::new(file_manager));
+            Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(file_manager));
         (
             AuthService::new(Arc::clone(&identity_manager)),
             identity_manager,

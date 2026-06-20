@@ -12,25 +12,16 @@
     clippy::manual_flatten
 )]
 
-pub mod channel;
-pub mod commands;
-pub mod discovery;
-pub mod dm;
-pub mod error;
-pub mod eventlog;
-pub mod events;
-pub mod file;
-pub mod identity;
-pub mod logger;
-pub mod node;
-pub mod perf;
-pub mod postoffice;
-pub mod ratchet;
+// Protocol/core modules live in the `mesh_talk_core` crate; this crate is the
+// Tauri desktop shell over it.
 pub mod chat_commands;
+pub mod commands;
+pub mod error;
+pub mod events;
+pub mod logger;
+pub mod perf;
 pub mod services;
 pub mod state;
-pub mod storage;
-pub mod transport;
 pub mod tray;
 
 use crate::state::AppState;
@@ -45,11 +36,11 @@ pub fn run_tauri() {
 
     // Data directory + file manager (~/.mesh-talk), shared by the auth keystore.
     lazy_static::lazy_static! {
-        static ref FILE_MANAGER: Arc<crate::storage::file_manager::FileManager> = {
+        static ref FILE_MANAGER: Arc<mesh_talk_core::storage::file_manager::FileManager> = {
             let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             let data_path = std::path::PathBuf::from(home_dir).join(".mesh-talk");
             log::info!("Data path: {}", data_path.to_str().unwrap_or(".mesh-talk"));
-            Arc::new(crate::storage::file_manager::FileManager::new(data_path))
+            Arc::new(mesh_talk_core::storage::file_manager::FileManager::new(data_path))
         };
     }
     let _file_manager = FILE_MANAGER.clone();

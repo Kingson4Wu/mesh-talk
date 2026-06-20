@@ -233,7 +233,8 @@ impl NodeRuntime {
 
     /// The session password held for re-encrypting the keystore — used only to
     /// re-spawn the runtime when adopting a freshly-linked account (no re-login).
-    pub(crate) fn restart_password(&self) -> &str {
+    /// `pub` so the desktop shell can re-spawn after linking (it lives in another crate).
+    pub fn restart_password(&self) -> &str {
         &self.password
     }
 

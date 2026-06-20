@@ -1,7 +1,7 @@
 //! Tauri events emitted to the frontend by the node. (Legacy
 //! message/contact/network/file-transfer events were retired with the legacy stack.)
 
-use crate::eventlog::event::EventId;
+use mesh_talk_core::eventlog::event::EventId;
 use tauri::{Emitter, Runtime};
 
 /// A received DM, surfaced to the `/` UI.

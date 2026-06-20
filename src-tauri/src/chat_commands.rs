@@ -2,8 +2,8 @@
 //! per-session [`NodeRuntime`] held in managed [`NodeState`] (populated on
 //! login, cleared on logout). All are thin pass-throughs over the node API.
 
-use crate::eventlog::event::{ConversationId, EventId};
-use crate::node::runtime::NodeRuntime;
+use mesh_talk_core::eventlog::event::{ConversationId, EventId};
+use mesh_talk_core::node::runtime::NodeRuntime;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -72,9 +72,7 @@ pub async fn my_id(state: tauri::State<'_, NodeState>) -> Result<String, String>
 }
 
 #[tauri::command]
-pub async fn list_peers(
-    state: tauri::State<'_, NodeState>,
-) -> Result<Vec<PeerInfo>, String> {
+pub async fn list_peers(state: tauri::State<'_, NodeState>) -> Result<Vec<PeerInfo>, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     Ok(rt
@@ -193,9 +191,7 @@ pub async fn account_history(
 }
 
 #[tauri::command]
-pub async fn start_linking(
-    state: tauri::State<'_, NodeState>,
-) -> Result<String, String> {
+pub async fn start_linking(state: tauri::State<'_, NodeState>) -> Result<String, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     Ok(rt.start_linking())
@@ -223,9 +219,7 @@ pub async fn link_device(
 }
 
 #[tauri::command]
-pub async fn rekey_account(
-    state: tauri::State<'_, NodeState>,
-) -> Result<String, String> {
+pub async fn rekey_account(state: tauri::State<'_, NodeState>) -> Result<String, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     rt.rekey_account().map_err(|e| e.to_string())
@@ -240,9 +234,7 @@ pub struct AccountInfo {
 }
 
 #[tauri::command]
-pub async fn list_accounts(
-    state: tauri::State<'_, NodeState>,
-) -> Result<Vec<AccountInfo>, String> {
+pub async fn list_accounts(state: tauri::State<'_, NodeState>) -> Result<Vec<AccountInfo>, String> {
     use std::collections::BTreeMap;
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
@@ -286,7 +278,7 @@ fn parse_event_id(hex_id: &str) -> Result<EventId, String> {
     Ok(EventId::new(arr))
 }
 
-fn to_reaction_infos(views: Vec<crate::node::reaction::ReactionView>) -> Vec<ReactionInfo> {
+fn to_reaction_infos(views: Vec<mesh_talk_core::node::reaction::ReactionView>) -> Vec<ReactionInfo> {
     views
         .into_iter()
         .map(|v| ReactionInfo {
@@ -298,9 +290,7 @@ fn to_reaction_infos(views: Vec<crate::node::reaction::ReactionView>) -> Vec<Rea
 }
 
 #[tauri::command]
-pub async fn list_channels(
-    state: tauri::State<'_, NodeState>,
-) -> Result<Vec<ChannelInfo>, String> {
+pub async fn list_channels(state: tauri::State<'_, NodeState>) -> Result<Vec<ChannelInfo>, String> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
     Ok(rt
