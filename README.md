@@ -35,23 +35,29 @@ A local network chat tool written in Rust that enables users to communicate dire
 
 ```
 mesh-talk/
-├── src-tauri/              # Rust backend (Tauri shell + the serverless node)
+├── crates/mesh-talk-core/  # UI-free protocol core / SDK foundation (no Tauri dep)
+│   ├── src/
+│   │   ├── lib.rs          # crate root (lib `mesh_talk_core`)
+│   │   ├── node/           # the serverless node: orchestration
+│   │   ├── identity/ transport/ discovery/ eventlog/ ratchet/ channel/ dm.rs file/ postoffice/
+│   │   ├── storage/        # at-rest encryption (PBKDF2 + AES-GCM)
+│   │   └── bin/mesh-talk-node.rs  # headless node CLI (--post-office relay mode)
+│   ├── tests/              # cross-process integration tests
+│   └── Cargo.toml
+├── src-tauri/              # Tauri desktop shell — a thin layer over mesh-talk-core
 │   ├── src/
 │   │   ├── main.rs         # `mesh-talk` desktop binary
 │   │   ├── lib.rs          # Tauri setup + IPC registration
 │   │   ├── commands.rs     # auth IPC (chat_commands.rs = messaging IPC)
-│   │   ├── node/           # the serverless node: orchestration
-│   │   ├── identity/ transport/ discovery/ eventlog/ ratchet/ channel/ dm.rs file/ postoffice/
-│   │   ├── storage/        # at-rest encryption (PBKDF2 + AES-GCM)
-│   │   ├── services/       # auth only
-│   │   └── bin/mesh-talk-node.rs  # headless node CLI (--post-office relay mode)
+│   │   ├── events.rs tray.rs state.rs perf.rs
+│   │   └── services/       # auth only
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 ├── frontend/               # React + TS + Tailwind frontend
 ├── docs/ARCHITECTURE.md    # architecture reference
 ├── specifications/         # overview + process/convention docs
 ├── Makefile
-└── Cargo.toml              # workspace configuration
+└── Cargo.toml              # workspace config + shared [workspace.dependencies]
 ```
 
 ## Prerequisites
@@ -107,11 +113,12 @@ cargo run -- --name YourName --port 8000
 
 ## Development
 
-This project follows a professional Rust project structure:
-- Node orchestration in `src-tauri/src/node/`
-- Crypto in `identity/`, `transport/` (Noise), `ratchet/`, `channel/`, `dm.rs`
-- Event log + sync in `src-tauri/src/eventlog/`; signed discovery in `discovery/`
-- At-rest encryption in `src-tauri/src/storage/`; auth in `services/`
+This project follows a professional Rust project structure — a layered workspace where the
+protocol core is its own crate (`mesh-talk-core`) and the desktop app is a thin shell over it:
+- Node orchestration in `crates/mesh-talk-core/src/node/`
+- Crypto in `identity/`, `transport/` (Noise), `ratchet/`, `channel/`, `dm.rs` (all in the core crate)
+- Event log + sync in `crates/mesh-talk-core/src/eventlog/`; signed discovery in `discovery/`
+- At-rest encryption in `crates/mesh-talk-core/src/storage/`; auth (app-only) in `src-tauri/src/services/`
 - Full architecture reference: `docs/ARCHITECTURE.md`
 
 ## Automation and Code Quality

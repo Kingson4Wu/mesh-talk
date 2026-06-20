@@ -111,11 +111,15 @@ and device linking; `features/auth/LoginScreen.tsx` is the only other screen.
 
 ## 7. Build, test, CI
 
-- **Workspace**: root `Cargo.toml` (`members = ["src-tauri"]`); Rust code in `src-tauri/`.
+- **Workspace** (two layered crates): `crates/mesh-talk-core/` — the UI-free protocol
+  core / SDK foundation (lib `mesh_talk_core` + the `mesh-talk-node` CLI bin) — and
+  `src-tauri/` — the Tauri desktop shell, a thin layer that depends on the core. Shared
+  dependency versions live in the root `[workspace.dependencies]`. The app references the
+  core as `mesh_talk_core::…`; a third party can depend on `mesh-talk-core` alone (no Tauri).
 - **Local gate** (`scripts/check-health.sh`, run by the `hooks/pre-commit` hook): fmt,
-  `clippy --all-targets -D warnings`, ESLint, full `cargo test`, typos, cargo-deny,
-  cargo-machete, gitleaks, shellcheck, audits, both builds — **mirrors CI** so failures
-  surface locally, not on CI.
+  `clippy --workspace --all-targets -D warnings`, ESLint, frontend tests (Vitest), full
+  `cargo test --workspace`, typos, cargo-deny, cargo-machete, gitleaks, shellcheck, audits,
+  both builds — **mirrors CI** so failures surface locally, not on CI.
 - **CI** (`.github/workflows/`): `ci.yml` (ubuntu+macOS matrix → the `verify` aggregate
   check, required by branch protection), `check-health.yml`, `gitleaks.yml`,
   `dependabot-auto-merge.yml` (patch-only), `glib-0.20-watch.yml` (monthly dep watcher).
