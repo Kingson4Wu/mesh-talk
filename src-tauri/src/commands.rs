@@ -234,8 +234,9 @@ fn require_session(state: &AppState) -> CommandResult<crate::state::SessionInfo>
 
 /// The base directory for node per-account data (mirrors the app's `~/.mesh-talk`).
 fn node_data_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home).join(".mesh-talk")
+    crate::user_home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".mesh-talk")
 }
 
 /// Spawn the node runtime in the background, wiring its inbound callbacks to the

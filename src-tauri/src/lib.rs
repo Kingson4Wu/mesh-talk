@@ -27,6 +27,14 @@ use crate::state::AppState;
 use std::sync::Arc;
 use tauri::Manager;
 
+/// The user's home directory, cross-platform: `HOME` on Unix/macOS, `USERPROFILE` on
+/// Windows (where `HOME` is normally unset). Anchors the app's data + logs at `~/.mesh-talk`.
+pub(crate) fn user_home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
 /// Tauri application entry point. The serverless node is the whole product now;
 /// it starts per-session on login (see `commands::login` → `spawn_node_runtime`).
 pub fn run_tauri() {
@@ -36,8 +44,9 @@ pub fn run_tauri() {
     // Data directory + file manager (~/.mesh-talk), shared by the auth keystore.
     lazy_static::lazy_static! {
         static ref FILE_MANAGER: Arc<mesh_talk_core::storage::file_manager::FileManager> = {
-            let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let data_path = std::path::PathBuf::from(home_dir).join(".mesh-talk");
+            let data_path = user_home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".mesh-talk");
             log::info!("Data path: {}", data_path.to_str().unwrap_or(".mesh-talk"));
             Arc::new(mesh_talk_core::storage::file_manager::FileManager::new(data_path))
         };
