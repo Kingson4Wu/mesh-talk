@@ -63,18 +63,18 @@ make frontend-install >/dev/null 2>&1 || true
 
 # Check code formatting (Rust)
 print_status "success" "Checking Rust code formatting..."
-if ! cd src-tauri && cargo fmt --all -- --check; then
-    print_status "error" "Rust code formatting issues found. Run 'cargo fmt' to fix."
+# Run from the workspace root: `cargo fmt --all` invoked inside a member crate does NOT
+# format the sibling crate, so it must run here to cover BOTH crates (mirrors CI).
+if ! cargo fmt --all -- --check; then
+    print_status "error" "Rust code formatting issues found. Run 'cargo fmt --all' to fix."
     exit 1
 fi
-cd ..
 
 # Apply automatic code formatting fixes (Rust)
 print_status "success" "Applying automatic Rust code formatting fixes..."
-if ! cd src-tauri && cargo fmt --all; then
+if ! cargo fmt --all; then
     print_status "warning" "Failed to apply some Rust code formatting fixes automatically."
 fi
-cd ..
 
 # Check code formatting (Frontend)
 print_status "success" "Checking frontend code formatting..."
