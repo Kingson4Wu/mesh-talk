@@ -1,5 +1,6 @@
 //! Message reactions: react to DM/account/channel messages and aggregate views. Split out of node.rs (one `impl Node` block per domain).
 
+use super::node::now_millis;
 use super::*;
 use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{ConversationId, Event, EventId, EventKind};
@@ -42,7 +43,7 @@ impl Node {
         self.my_dm_reactions
             .lock()
             .expect("my_dm_reactions mutex not poisoned")
-            .push((conv, payload));
+            .push((conv, now_millis(), payload));
         self.deliver_direct(&peer, conv).await.ok();
         self.replicate_to_post_office(conv).await.ok();
         Ok(())
@@ -100,6 +101,7 @@ impl Node {
             .expect("my_dm_reactions mutex not poisoned")
             .push((
                 acct_conv,
+                now_millis(),
                 ReactionPayload {
                     target,
                     emoji: emoji.to_string(),
@@ -137,7 +139,7 @@ impl Node {
                 })
                 .collect()
         };
-        let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
+        let mut decoded: Vec<(String, u64, ReactionPayload)> = Vec::new();
         for (conv, author_x, peer_account) in convs {
             let react_events: Vec<Event> = {
                 let log = self.log.lock().expect("log mutex not poisoned");
@@ -159,6 +161,7 @@ impl Node {
                     }
                     decoded.push((
                         env.route.sender_account,
+                        event.wall_clock,
                         ReactionPayload {
                             target: EventId::new(env.target),
                             emoji: env.emoji,
@@ -170,14 +173,14 @@ impl Node {
         }
         // Merge our own account reactions (sealed to peers; not openable from our log).
         let acct_conv = account_conversation_id(&my_account, peer_account_id);
-        for (c, p) in self
+        for (c, w, p) in self
             .my_dm_reactions
             .lock()
             .expect("my_dm_reactions mutex not poisoned")
             .iter()
         {
             if *c == acct_conv {
-                decoded.push((my_account.clone(), p.clone()));
+                decoded.push((my_account.clone(), *w, p.clone()));
             }
         }
         aggregate(&decoded)
@@ -231,7 +234,7 @@ impl Node {
             let book = self.channels.lock().expect("channels mutex not poisoned");
             book.state(&conv).is_some()
         };
-        let mut decoded: Vec<(String, ReactionPayload)> = Vec::new();
+        let mut decoded: Vec<(String, u64, ReactionPayload)> = Vec::new();
         for event in &react_events {
             let plaintext = if is_channel {
                 let Some(sealed) = crate::node::channel::SealedPayload::decode(&event.ciphertext)
@@ -258,19 +261,19 @@ impl Node {
                     .and_then(|x| crate::dm::open(&self.identity, &x, &event.ciphertext).ok())
             };
             if let Some(p) = plaintext.and_then(|b| ReactionPayload::decode(&b)) {
-                decoded.push((event.author.user_id(), p));
+                decoded.push((event.author.user_id(), event.wall_clock, p));
             }
         }
         // Merge our own DM reactions for this conversation (not in the openable log).
         if !is_channel {
-            for (c, p) in self
+            for (c, w, p) in self
                 .my_dm_reactions
                 .lock()
                 .expect("my_dm_reactions mutex not poisoned")
                 .iter()
             {
                 if *c == conv {
-                    decoded.push((self_uid.clone(), p.clone()));
+                    decoded.push((self_uid.clone(), *w, p.clone()));
                 }
             }
         }

@@ -151,9 +151,11 @@ pub struct Node {
     pub(in crate::node) dm_ratchet: Mutex<DmRatchet>,
     /// Decrypted received-message plaintext, for serving history after the wire key is gone.
     pub(in crate::node) received: Mutex<ReceivedLog>,
-    /// Own DM reactions: sealed to the peer so un-openable from our own log.
-    /// Stored in memory so `reactions` can merge them. Lost on restart (MVP limitation).
-    pub(in crate::node) my_dm_reactions: Mutex<Vec<(ConversationId, ReactionPayload)>>,
+    /// Own DM reactions: sealed to the peer so un-openable from our own log. Stored in
+    /// memory (with the wall-clock we made each at) so `reactions` can merge them and
+    /// resolve toggles by recency independent of merge order. `(conv, wall_clock_ms,
+    /// payload)`. Lost on restart (MVP limitation).
+    pub(in crate::node) my_dm_reactions: Mutex<Vec<(ConversationId, u64, ReactionPayload)>>,
 }
 
 impl Node {
