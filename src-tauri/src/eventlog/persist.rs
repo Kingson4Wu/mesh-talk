@@ -28,14 +28,18 @@ use crate::storage::encryption::{
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 6] = b"MTLOG1";
 
 /// An append-only encrypted log file plus the derived key for writing records.
+/// `salt` + `path` are retained so the file can be compacted (rewritten with a
+/// subset of events) in place — see [`LogFile::rewrite`].
 pub struct LogFile {
     file: File,
     key: EncryptionKey,
+    salt: [u8; SALT_SIZE],
+    path: PathBuf,
 }
 
 impl LogFile {
@@ -59,7 +63,15 @@ impl LogFile {
                 file.write_all(MAGIC)?;
                 file.write_all(&salt)?;
                 file.flush()?;
-                Ok((Self { file, key }, Vec::new()))
+                Ok((
+                    Self {
+                        file,
+                        key,
+                        salt,
+                        path: path.to_path_buf(),
+                    },
+                    Vec::new(),
+                ))
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Self::load(path, password),
             Err(e) => Err(e.into()),
@@ -83,7 +95,15 @@ impl LogFile {
         let mut rest = Vec::new();
         file.read_to_end(&mut rest)?;
         let events = Self::parse_records(&rest, &key)?;
-        Ok((Self { file, key }, events))
+        Ok((
+            Self {
+                file,
+                key,
+                salt,
+                path: path.to_path_buf(),
+            },
+            events,
+        ))
     }
 
     /// Parse the record region. A torn trailing record (crash mid-write) is
@@ -118,20 +138,55 @@ impl LogFile {
         Ok(events)
     }
 
-    /// Append one event as an encrypted, length-prefixed record.
-    pub fn append_record(&mut self, event: &Event) -> Result<(), LogError> {
+    /// Encrypt one event into its `[u32 len][nonce][ciphertext]` wire record.
+    fn encode_record(&self, event: &Event) -> Result<Vec<u8>, LogError> {
         let plaintext =
             bincode::serialize(event).map_err(|e| LogError::Serialization(e.to_string()))?;
         let (ciphertext, nonce) = encrypt_data(&plaintext, &self.key)?;
         let record_len = u32::try_from(NONCE_SIZE + ciphertext.len())
             .map_err(|_| LogError::Serialization("event record exceeds u32 length".into()))?;
-
         let mut buf = Vec::with_capacity(4 + NONCE_SIZE + ciphertext.len());
         buf.extend_from_slice(&record_len.to_be_bytes());
         buf.extend_from_slice(&nonce);
         buf.extend_from_slice(&ciphertext);
+        Ok(buf)
+    }
+
+    /// Append one event as an encrypted, length-prefixed record.
+    pub fn append_record(&mut self, event: &Event) -> Result<(), LogError> {
+        let buf = self.encode_record(event)?;
         self.file.write_all(&buf)?;
         self.file.flush()?;
+        Ok(())
+    }
+
+    /// Compact the file in place to exactly `events` (same header salt/key, fresh
+    /// per-record nonces). Written to a temp file and atomically renamed over the
+    /// original, so an interrupted compaction leaves the old file intact. The caller
+    /// must pass a causally-closed event set (every kept event's parents also kept) —
+    /// the post office only ever drops WHOLE conversations, which satisfies this.
+    pub fn rewrite(&mut self, events: &[Event]) -> Result<(), LogError> {
+        let tmp = self.path.with_extension("compact-tmp");
+        {
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)?;
+            f.write_all(MAGIC)?;
+            f.write_all(&self.salt)?;
+            for event in events {
+                f.write_all(&self.encode_record(event)?)?;
+            }
+            f.flush()?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, &self.path)?;
+        // Reopen the live append handle on the freshly-written file.
+        self.file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.path)?;
         Ok(())
     }
 }
@@ -203,6 +258,40 @@ impl PersistentEventLog {
     /// All conversation ids this log holds events for (used to rebuild channel state).
     pub fn conversations(&self) -> Vec<ConversationId> {
         self.log.conversations()
+    }
+
+    /// Number of events held for `conversation`.
+    pub fn conversation_len(&self, conversation: &ConversationId) -> usize {
+        self.log.events(conversation).len()
+    }
+
+    /// Drop every event whose conversation is NOT in `keep`, compacting the on-disk
+    /// log to match. Only WHOLE conversations are dropped, so the kept set stays
+    /// causally closed (no kept event references a dropped parent — partial eviction
+    /// would orphan children and make them un-ingestable). Returns events dropped.
+    pub fn retain_conversations(
+        &mut self,
+        keep: &HashSet<ConversationId>,
+    ) -> Result<usize, LogError> {
+        let before = self.log.all_event_ids().len();
+        let mut kept: Vec<Event> = Vec::new();
+        for conv in self.log.conversations() {
+            if keep.contains(&conv) {
+                // (lamport, id) order is causal within a conversation.
+                kept.extend(self.log.events(&conv).into_iter().cloned());
+            }
+        }
+        let dropped = before - kept.len();
+        if dropped == 0 {
+            return Ok(0);
+        }
+        self.file.rewrite(&kept)?;
+        let mut log = EventLog::default();
+        for event in kept {
+            log.index_trusted(event);
+        }
+        self.log = log;
+        Ok(dropped)
     }
 }
 

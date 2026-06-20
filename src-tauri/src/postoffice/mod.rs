@@ -15,29 +15,106 @@ use crate::eventlog::store::AppendOutcome;
 use crate::eventlog::sync::SyncStore;
 use crate::eventlog::LogError;
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub mod election;
 
 pub use election::{elect, is_post_office};
 
+/// Soft cap on total stored events before the relay starts evicting. The relay is a
+/// store-and-forward BUFFER, not the source of truth — evicted events still live with
+/// their authors + online peers and re-serve via sync.
+const MAX_RELAY_EVENTS: usize = 100_000;
+/// Only run a (file-rewriting) compaction once the total exceeds the cap by this much,
+/// so compaction runs at most once per `RETENTION_SLACK` appends rather than every one.
+const RETENTION_SLACK: usize = 5_000;
+
 /// A post office: a durable replica plus a store-and-forward relay. It accepts
 /// validly-signed events (it cannot forge or alter them) and serves them to
 /// peers via reconciliation, but it never decrypts a DM — it has no key and no
-/// API to do so.
+/// API to do so. Storage is bounded by evicting least-recently-touched WHOLE
+/// conversations once it grows past a cap.
 pub struct PostOffice {
     log: PersistentEventLog,
     identity: DeviceIdentity,
+    /// Per-conversation last-touch tick, for least-recently-used eviction.
+    touch: HashMap<ConversationId, u64>,
+    tick: u64,
+    /// Cached total event count (kept in step with the log).
+    total: usize,
+    max_events: usize,
+    slack: usize,
 }
 
 impl PostOffice {
     /// Open (or create) the post office's replica at `path`, under `identity`.
     pub fn open(path: &Path, password: &str, identity: DeviceIdentity) -> Result<Self, LogError> {
+        let log = PersistentEventLog::open(path, password)?;
+        // Seed LRU order from the existing conversations (file order ≈ recency); live
+        // accepts refine it. Distinct ticks so eviction has a deterministic order.
+        let mut touch = HashMap::new();
+        let mut tick = 0u64;
+        for conv in log.conversations() {
+            tick += 1;
+            touch.insert(conv, tick);
+        }
+        let total = log.all_event_ids().len();
         Ok(Self {
-            log: PersistentEventLog::open(path, password)?,
+            log,
             identity,
+            touch,
+            tick,
+            total,
+            max_events: MAX_RELAY_EVENTS,
+            slack: RETENTION_SLACK,
         })
+    }
+
+    /// Append + track recency + enforce the storage bound. Shared by `accept` and the
+    /// `SyncStore::ingest` relay path so retention applies however an event arrives.
+    fn record(&mut self, event: Event) -> Result<AppendOutcome, LogError> {
+        let conv = event.conversation_id;
+        let outcome = self.log.append(event)?;
+        if matches!(outcome, AppendOutcome::Appended) {
+            self.total += 1;
+            self.tick += 1;
+            self.touch.insert(conv, self.tick);
+            self.enforce_retention()?;
+        }
+        Ok(outcome)
+    }
+
+    /// Evict least-recently-touched WHOLE conversations until total ≤ `max_events`.
+    /// Whole-conversation eviction keeps the kept set causally closed (dropping part of
+    /// a conversation would orphan kept children → un-ingestable).
+    fn enforce_retention(&mut self) -> Result<(), LogError> {
+        if self.total <= self.max_events + self.slack {
+            return Ok(());
+        }
+        let mut convs: Vec<(ConversationId, u64)> = self
+            .log
+            .conversations()
+            .into_iter()
+            .map(|c| {
+                let t = *self.touch.get(&c).unwrap_or(&0);
+                (c, t)
+            })
+            .collect();
+        convs.sort_by_key(|&(_, t)| t); // least-recently-touched first
+        let mut keep: HashSet<ConversationId> = convs.iter().map(|(c, _)| *c).collect();
+        let mut running = self.total;
+        for (conv, _) in &convs {
+            if running <= self.max_events {
+                break;
+            }
+            running -= self.log.conversation_len(conv);
+            keep.remove(conv);
+            self.touch.remove(conv);
+        }
+        let dropped = self.log.retain_conversations(&keep)?;
+        self.total -= dropped;
+        Ok(())
     }
 
     /// This post office's public identity (used by the election).
@@ -45,10 +122,18 @@ impl PostOffice {
         self.identity.public()
     }
 
-    /// Accept an event for relay: validate (signature, integrity, parents, …) and
-    /// persist it. A forged or malformed event is rejected.
+    /// Accept an event for relay: validate (signature, integrity, parents, …),
+    /// persist it, and enforce the storage bound. A forged or malformed event is rejected.
     pub fn accept(&mut self, event: Event) -> Result<AppendOutcome, LogError> {
-        self.log.append(event)
+        self.record(event)
+    }
+
+    /// Test-only: shrink the retention thresholds so eviction is exercisable without
+    /// authoring 100k events.
+    #[cfg(test)]
+    pub fn set_retention_cap(&mut self, max_events: usize, slack: usize) {
+        self.max_events = max_events;
+        self.slack = slack;
     }
 
     /// Whether this post office holds the event with the given id.
@@ -76,7 +161,8 @@ impl SyncStore for PostOffice {
         SyncStore::events_excluding(&self.log, conversation, have)
     }
     fn ingest(&mut self, event: Event) -> Result<AppendOutcome, LogError> {
-        SyncStore::ingest(&mut self.log, event)
+        // Route through `record` so the relay-receive path is also retention-bounded.
+        self.record(event)
     }
 }
 
@@ -257,5 +343,59 @@ mod tests {
         assert_eq!(po1.held_ids(&conv()), po2.held_ids(&conv()));
         assert!(po1.has(&x.id) && po1.has(&y.id));
         assert!(po2.has(&x.id) && po2.has(&y.id));
+    }
+
+    #[test]
+    fn retention_evicts_least_recently_touched_whole_conversations() {
+        let dir = tempfile::tempdir().unwrap();
+        let alice = DeviceIdentity::generate();
+        let mut po =
+            PostOffice::open(&dir.path().join("po.log"), "pw", DeviceIdentity::generate()).unwrap();
+        po.set_retention_cap(2, 0); // evict once total > 2
+
+        let conv_n = |n: u8| ConversationId::new([n; 32]);
+        let ev = |c: ConversationId| {
+            Event::new(
+                &alice,
+                c,
+                1,
+                vec![],
+                1,
+                0,
+                EventKind::Message,
+                b"m".to_vec(),
+            )
+        };
+        let (a, b, c) = (ev(conv_n(1)), ev(conv_n(2)), ev(conv_n(3)));
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
+
+        po.accept(a).unwrap(); // touch conv 1
+        po.accept(b).unwrap(); // touch conv 2
+        po.accept(c).unwrap(); // touch conv 3 → total 3 > 2 → evict LRU (conv 1)
+        assert!(
+            !po.has(&a_id),
+            "least-recently-touched conversation is evicted whole"
+        );
+        assert!(po.has(&b_id) && po.has(&c_id));
+
+        // A new event in conv 2 refreshes its recency, making conv 3 the LRU.
+        let b2 = Event::new(
+            &alice,
+            conv_n(2),
+            2,
+            vec![b_id],
+            2,
+            0,
+            EventKind::Message,
+            b"m2".to_vec(),
+        );
+        let b2_id = b2.id;
+        po.accept(b2).unwrap(); // total 3 → evict LRU (conv 3)
+        assert!(
+            !po.has(&c_id),
+            "conv 3 now least-recently-touched → evicted"
+        );
+        // conv 2 kept whole — and its child still has its parent (causally closed).
+        assert!(po.has(&b_id) && po.has(&b2_id));
     }
 }
