@@ -109,7 +109,9 @@ export function MessageBubble({
               const me = r.who.includes(selfReactionId);
               return (
                 <button
-                  key={r.emoji}
+                  key={`${r.target}:${r.emoji}`}
+                  type="button"
+                  aria-label={`${me ? "Remove your" : "Add"} ${r.emoji} reaction`}
                   onClick={() => m.id && onReact(m.id, r.emoji)}
                   className={cn(
                     "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors",
