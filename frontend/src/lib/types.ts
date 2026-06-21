@@ -126,3 +126,10 @@ export interface FileReceivedEvent {
   size: number;
   file_conv: string;
 }
+
+export interface FileProgressEvent {
+  file_conv: string; // hex per-file conv, OR the send target label until the id resolves
+  direction: "send" | "save";
+  done: number;
+  total: number;
+}

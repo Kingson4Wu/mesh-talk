@@ -4,7 +4,7 @@
 //! group key for a channel), so the `Node` opens it and calls [`FileBook::record`].
 
 use crate::eventlog::event::{ConversationId, EventId};
-use crate::file::FileManifest;
+use crate::file::AnyManifest;
 use std::collections::{HashMap, HashSet};
 
 /// A received file announcement, surfaced to the application.
@@ -23,7 +23,7 @@ pub struct ReceivedFile {
 
 #[derive(Default)]
 pub struct FileBook {
-    manifests: HashMap<ConversationId, FileManifest>, // keyed by file_conv
+    manifests: HashMap<ConversationId, AnyManifest>, // keyed by file_conv
     emitted: HashSet<EventId>,
 }
 
@@ -33,14 +33,14 @@ impl FileBook {
     }
 
     /// The manifest for a per-file conversation, if received.
-    pub fn manifest(&self, file_conv: &ConversationId) -> Option<&FileManifest> {
+    pub fn manifest(&self, file_conv: &ConversationId) -> Option<&AnyManifest> {
         self.manifests.get(file_conv)
     }
 
     /// Record an opened manifest (idempotent — same file_conv overwrites with the
     /// same manifest).
-    pub fn record(&mut self, manifest: FileManifest) {
-        self.manifests.insert(manifest.file_conv, manifest);
+    pub fn record(&mut self, manifest: AnyManifest) {
+        self.manifests.insert(manifest.file_conv(), manifest);
     }
 
     /// Whether a FileManifest event id was already surfaced (or seeded on open).
@@ -72,7 +72,7 @@ mod tests {
     fn records_and_dedups() {
         let mut book = FileBook::new();
         assert!(book.manifest(&conv(1)).is_none());
-        let m = FileManifest {
+        let m = crate::file::FileManifest {
             name: "a.txt".into(),
             size: 3,
             mime: "text/plain".into(),
@@ -81,8 +81,11 @@ mod tests {
             file_conv: conv(1),
             chunk_count: 1,
         };
-        book.record(m.clone());
-        assert_eq!(book.manifest(&conv(1)), Some(&m));
+        book.record(AnyManifest::V1(m.clone()));
+        assert_eq!(
+            book.manifest(&conv(1)).map(|a| a.file_conv()),
+            Some(conv(1))
+        );
 
         let id = crate::eventlog::event::EventId::new([9u8; 32]);
         assert!(!book.is_emitted(&id));

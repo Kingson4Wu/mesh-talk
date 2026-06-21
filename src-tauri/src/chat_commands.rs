@@ -433,6 +433,7 @@ pub async fn send_channel_message(
 
 #[tauri::command]
 pub async fn send_file_dm(
+    app: tauri::AppHandle,
     state: tauri::State<'_, NodeState>,
     recipient: String,
     path: String,
@@ -442,8 +443,14 @@ pub async fn send_file_dm(
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
+    // The per-file conv id isn't known until staging completes, but progress events key
+    // on it — so the UI keys outgoing progress by the recipient until the id is returned
+    // (it relabels on the resolved promise). Use the path-derived label up front.
+    let mut prog = crate::events::ProgressThrottle::new(app, recipient.clone(), "send");
     let id = node
-        .send_file_dm(&recipient, std::path::Path::new(&path))
+        .send_file_dm_progress(&recipient, std::path::Path::new(&path), |p| {
+            prog.emit(p.done, p.total)
+        })
         .await
         .map_err(CommandError::from)?;
     Ok(hex::encode(id.as_bytes()))
@@ -451,6 +458,7 @@ pub async fn send_file_dm(
 
 #[tauri::command]
 pub async fn send_file_to_account(
+    app: tauri::AppHandle,
     state: tauri::State<'_, NodeState>,
     account: String,
     path: String,
@@ -460,8 +468,11 @@ pub async fn send_file_to_account(
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
+    let mut prog = crate::events::ProgressThrottle::new(app, account.clone(), "send");
     let id = node
-        .send_file_to_account(&account, std::path::Path::new(&path))
+        .send_file_to_account_progress(&account, std::path::Path::new(&path), |p| {
+            prog.emit(p.done, p.total)
+        })
         .await
         .map_err(CommandError::from)?;
     Ok(hex::encode(id.as_bytes()))
@@ -469,6 +480,7 @@ pub async fn send_file_to_account(
 
 #[tauri::command]
 pub async fn send_file_channel(
+    app: tauri::AppHandle,
     state: tauri::State<'_, NodeState>,
     channel_id: String,
     path: String,
@@ -479,8 +491,11 @@ pub async fn send_file_channel(
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
+    let mut prog = crate::events::ProgressThrottle::new(app, channel_id.clone(), "send");
     let file_conv = node
-        .send_file_channel(id, std::path::Path::new(&path))
+        .send_file_channel_progress(id, std::path::Path::new(&path), |p| {
+            prog.emit(p.done, p.total)
+        })
         .await
         .map_err(CommandError::from)?;
     Ok(hex::encode(file_conv.as_bytes()))
@@ -488,6 +503,7 @@ pub async fn send_file_channel(
 
 #[tauri::command]
 pub async fn save_file(
+    app: tauri::AppHandle,
     state: tauri::State<'_, NodeState>,
     file_conv: String,
     dest: String,
@@ -498,12 +514,17 @@ pub async fn save_file(
         let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
         rt.handle()
     };
-    // save_file is synchronous (reads chunk events, decrypts, writes) — run it on a
-    // blocking thread so it doesn't stall the async runtime on a large file.
-    tokio::task::spawn_blocking(move || node.save_file(id, std::path::Path::new(&dest)))
-        .await
-        .map_err(|e| format!("join error: {e}"))?
-        .map_err(CommandError::from)
+    let mut prog = crate::events::ProgressThrottle::new(app, file_conv.clone(), "save");
+    // save_file is synchronous (reads chunk events, decrypts, streams to disk) — run it
+    // on a blocking thread so it doesn't stall the async runtime on a large file.
+    tokio::task::spawn_blocking(move || {
+        node.save_file_progress(id, std::path::Path::new(&dest), |p| {
+            prog.emit(p.done, p.total)
+        })
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+    .map_err(CommandError::from)
 }
 
 /// Return a received file's decrypted bytes (for inline preview, e.g. images). Returned as a

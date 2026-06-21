@@ -59,6 +59,8 @@ pub const EVENT_DM_RECEIVED: &str = "dm-received";
 pub const EVENT_CHANNEL_MESSAGE: &str = "channel-message";
 /// A received file (DM or channel).
 pub const EVENT_FILE_RECEIVED: &str = "file-received";
+/// Progress of an in-flight file send or save (throttled).
+pub const EVENT_FILE_PROGRESS: &str = "file-progress";
 
 #[derive(serde::Serialize, Clone)]
 pub struct DmReceivedEvent {
@@ -75,6 +77,60 @@ pub struct ChannelMessageEvent {
     pub from: String,
     pub text: String,
     pub reply_to: Option<String>, // hex EventId of the parent message, if any
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct FileProgressEvent {
+    pub file_conv: String,       // hex — the per-file conversation handle
+    pub direction: &'static str, // "send" | "save"
+    pub done: u32,
+    pub total: u32,
+}
+
+/// A throttled emitter for file-transfer progress: coalesces to ~10 emits/s but
+/// ALWAYS emits the terminal `done == total`. Construct one per transfer; call
+/// [`ProgressThrottle::emit`] on each chunk callback.
+pub struct ProgressThrottle<R: Runtime> {
+    app_handle: tauri::AppHandle<R>,
+    file_conv: String,
+    direction: &'static str,
+    last: std::time::Instant,
+}
+
+impl<R: Runtime> ProgressThrottle<R> {
+    /// ~10 emits/s.
+    const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+    pub fn new(
+        app_handle: tauri::AppHandle<R>,
+        file_conv: String,
+        direction: &'static str,
+    ) -> Self {
+        // Back-date so the first progress tick always emits.
+        Self {
+            app_handle,
+            file_conv,
+            direction,
+            last: std::time::Instant::now() - Self::MIN_INTERVAL,
+        }
+    }
+
+    pub fn emit(&mut self, done: u32, total: u32) {
+        let terminal = done >= total;
+        if !terminal && self.last.elapsed() < Self::MIN_INTERVAL {
+            return;
+        }
+        self.last = std::time::Instant::now();
+        let event = FileProgressEvent {
+            file_conv: self.file_conv.clone(),
+            direction: self.direction,
+            done,
+            total,
+        };
+        if let Err(e) = self.app_handle.emit(EVENT_FILE_PROGRESS, event) {
+            log::error!("Failed to emit file-progress event: {e}");
+        }
+    }
 }
 
 #[derive(serde::Serialize, Clone)]

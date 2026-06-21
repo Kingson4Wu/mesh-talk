@@ -1,16 +1,31 @@
-//! File transfer: chunked send (DM/account/channel) and save. Split out of node.rs (one `impl Node` block per domain).
+//! File transfer: chunked send (DM/account/channel) and save, streamed to/from disk
+//! so neither side ever buffers the whole file. Files become a v2 (`MFM2`) manifest
+//! plus one chunk event per `CHUNK_SIZE` piece in a dedicated per-file conversation;
+//! the chunk events ride the normal bounded sync, which already re-requests only the
+//! events a peer is missing — so transfer RESUMES across reconnects for free.
 
 use super::node::MAX_FILE_SIZE;
 use super::*;
 use crate::eventlog::event::{ConversationId, EventKind};
 use crate::file::{
-    file_checksum, reassemble_and_verify, seal_chunk, split_chunks, FileKey, FileManifest,
+    chunk_count_for, chunk_hash, file_checksum, generate_file_nonce, open_chunk_for,
+    reassemble_and_verify, seal_chunk_indexed, AnyManifest, FileKey, FileManifestV2, CHUNK_SIZE,
 };
 use crate::node::conversation::dm_conversation_id;
+use sha2::{Digest, Sha256};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 
+/// Progress of a file transfer: `done`/`total` chunks. The terminal callback always
+/// has `done == total`.
+#[derive(Debug, Clone, Copy)]
+pub struct FileProgress {
+    pub done: u32,
+    pub total: u32,
+}
+
 impl Node {
-    /// Send the file at `path` to a DM peer. Chunks + seals it into a fresh per-file
+    /// Send the file at `path` to a DM peer. Streams + seals it into a fresh per-file
     /// conversation, seals the manifest to the recipient, posts a `FileManifest`
     /// event into the DM conversation, and distributes both. Returns the per-file
     /// conversation id (the handle for the recipient to save).
@@ -18,6 +33,16 @@ impl Node {
         &self,
         recipient: &str,
         path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        self.send_file_dm_progress(recipient, path, |_| {}).await
+    }
+
+    /// [`Node::send_file_dm`] with a progress callback invoked as chunks are sealed.
+    pub async fn send_file_dm_progress(
+        &self,
+        recipient: &str,
+        path: &Path,
+        on_progress: impl FnMut(FileProgress),
     ) -> Result<ConversationId, NodeError> {
         let peer = self
             .roster
@@ -27,7 +52,7 @@ impl Node {
             .cloned()
             .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
 
-        let (manifest, file_conv) = self.stage_file(path)?;
+        let (manifest, file_conv) = self.stage_file(path, on_progress)?;
         let sealed = crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest.encode())
             .map_err(NodeError::Seal)?;
         let dm_conv = dm_conversation_id(&self.identity.public(), &peer.public);
@@ -42,13 +67,22 @@ impl Node {
 
     /// Send a file to an ACCOUNT: stage it once (shared symmetric chunks), then seal
     /// the manifest to every known device of `target_account_id` AND our own other
-    /// devices (self-sync), delivering the file + manifest to each. Mirrors
-    /// [`Node::send_to_account`] for files. Errors only if no device of the target
-    /// account is known.
+    /// devices (self-sync), delivering the file + manifest to each.
     pub async fn send_file_to_account(
         &self,
         target_account_id: &str,
         path: &Path,
+    ) -> Result<ConversationId, NodeError> {
+        self.send_file_to_account_progress(target_account_id, path, |_| {})
+            .await
+    }
+
+    /// [`Node::send_file_to_account`] with a progress callback.
+    pub async fn send_file_to_account_progress(
+        &self,
+        target_account_id: &str,
+        path: &Path,
+        on_progress: impl FnMut(FileProgress),
     ) -> Result<ConversationId, NodeError> {
         let dests = self.account_fanout_targets(target_account_id);
         if !dests
@@ -58,7 +92,7 @@ impl Node {
             return Err(NodeError::UnknownPeer(target_account_id.to_string()));
         }
 
-        let (manifest, file_conv) = self.stage_file(path)?;
+        let (manifest, file_conv) = self.stage_file(path, on_progress)?;
         let manifest_bytes = manifest.encode();
         for peer in &dests {
             let sealed =
@@ -87,7 +121,17 @@ impl Node {
         channel: ConversationId,
         path: &Path,
     ) -> Result<ConversationId, NodeError> {
-        let (manifest, file_conv) = self.stage_file(path)?;
+        self.send_file_channel_progress(channel, path, |_| {}).await
+    }
+
+    /// [`Node::send_file_channel`] with a progress callback.
+    pub async fn send_file_channel_progress(
+        &self,
+        channel: ConversationId,
+        path: &Path,
+        on_progress: impl FnMut(FileProgress),
+    ) -> Result<ConversationId, NodeError> {
+        let (manifest, file_conv) = self.stage_file(path, on_progress)?;
         // Publish our sender-key distribution before the first seal (see
         // `send_channel_message_reply`).
         let (members, already_distributed) = {
@@ -118,52 +162,95 @@ impl Node {
         Ok(file_conv)
     }
 
-    /// Read `path`, chunk + seal it into a fresh per-file conversation (appending a
-    /// chunk event per piece), and build the (unsealed) manifest. Shared by both
-    /// send paths. The caller seals + posts the manifest into the original conv.
+    /// Stream `path` from disk, sealing each `CHUNK_SIZE` piece (deterministic-nonce v2
+    /// AEAD) into a fresh per-file conversation as one chunk event, hashing each chunk
+    /// (and the whole file) as we go. Never holds more than one chunk in memory.
+    /// Returns the (unsealed) v2 manifest; the caller seals + posts it into the conv.
     pub(in crate::node) fn stage_file(
         &self,
         path: &Path,
-    ) -> Result<(FileManifest, ConversationId), NodeError> {
-        let data = std::fs::read(path).map_err(|e| NodeError::File(format!("read file: {e}")))?;
-        // Bounded multi-round sync now transfers chunk events across frames, so files
-        // up to MAX_FILE_SIZE (8 MB) are supported. The practical limit is the have
-        // id-set fitting one frame; files over the cap are rejected up front.
-        if data.len() > MAX_FILE_SIZE {
+        mut on_progress: impl FnMut(FileProgress),
+    ) -> Result<(FileManifestV2, ConversationId), NodeError> {
+        let size = std::fs::metadata(path)
+            .map_err(|e| NodeError::File(format!("stat file: {e}")))?
+            .len();
+        if size > MAX_FILE_SIZE {
             return Err(NodeError::File(format!(
-                "file too large: {} bytes (max {MAX_FILE_SIZE})",
-                data.len()
+                "file too large: {size} bytes (max {MAX_FILE_SIZE})"
             )));
         }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
+
         let key = FileKey::generate();
-        let checksum = file_checksum(&data);
+        let file_nonce = generate_file_nonce();
         let file_conv = crate::channel::new_channel_id();
-        let chunks = split_chunks(&data);
-        let chunk_count = chunks.len() as u32;
-        for chunk in &chunks {
-            let sealed =
-                seal_chunk(&key, chunk).map_err(|e| NodeError::File(format!("chunk seal: {e}")))?;
+        let chunk_count = chunk_count_for(size);
+
+        let file = std::fs::File::open(path).map_err(|e| NodeError::File(format!("open: {e}")))?;
+        let mut reader = BufReader::new(file);
+        let mut whole = Sha256::new();
+        let mut chunk_hashes: Vec<[u8; 32]> = Vec::with_capacity(chunk_count as usize);
+        let mut buf = vec![0u8; CHUNK_SIZE];
+
+        for index in 0..chunk_count {
+            let n = read_full(&mut reader, &mut buf)
+                .map_err(|e| NodeError::File(format!("read: {e}")))?;
+            let plain = &buf[..n];
+            whole.update(plain);
+            chunk_hashes.push(chunk_hash(plain));
+            let sealed = seal_chunk_indexed(&key, &file_nonce, index, plain)
+                .map_err(|e| NodeError::File(format!("chunk seal: {e}")))?;
             self.append_event(file_conv, EventKind::Message, sealed)?;
+            on_progress(FileProgress {
+                done: index + 1,
+                total: chunk_count,
+            });
         }
-        let manifest = FileManifest {
+
+        let manifest = FileManifestV2 {
             name,
-            size: data.len() as u64,
+            size,
             mime: "application/octet-stream".to_string(),
-            checksum,
+            checksum: whole.finalize().into(),
             file_key: *key.as_bytes(),
+            file_nonce,
             file_conv,
+            chunk_size: CHUNK_SIZE as u32,
             chunk_count,
+            chunk_hashes,
         };
         Ok((manifest, file_conv))
     }
 
-    /// Reassemble + verify a received file (identified by its per-file conversation id) into
-    /// its decrypted bytes. Errors if the manifest is unknown, not all chunks have synced yet,
-    /// or verification fails. Shared by `save_file` (write to disk) and the inline-preview path.
+    /// How many chunks of `file_conv` we hold vs. how many the manifest expects.
+    /// `None` if the manifest hasn't synced yet. Drives resume + progress in the UI.
+    pub fn file_progress(&self, file_conv: ConversationId) -> Option<FileProgress> {
+        let total = self
+            .files
+            .lock()
+            .expect("files mutex not poisoned")
+            .manifest(&file_conv)?
+            .chunk_count();
+        let have = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&file_conv)
+                .into_iter()
+                .filter(|e| e.kind == EventKind::Message)
+                .count() as u32
+        };
+        Some(FileProgress {
+            done: have.min(total),
+            total,
+        })
+    }
+
+    /// Reassemble + verify a received file into its decrypted bytes (whole, in memory
+    /// — used for inline image preview). Errors if the manifest is unknown, not all
+    /// chunks have synced, or verification fails. For large files prefer
+    /// [`Node::save_file`], which streams to disk.
     pub fn read_file(&self, file_conv: ConversationId) -> Result<Vec<u8>, NodeError> {
         let manifest = self
             .files
@@ -172,29 +259,142 @@ impl Node {
             .manifest(&file_conv)
             .cloned()
             .ok_or_else(|| NodeError::File("unknown file".into()))?;
-        let chunks: Vec<Vec<u8>> = {
-            let log = self.log.lock().expect("log mutex not poisoned");
-            log.events(&file_conv)
-                .into_iter()
-                .filter(|e| e.kind == EventKind::Message)
-                .map(|e| e.ciphertext.clone())
-                .collect()
-        };
-        if chunks.len() as u32 != manifest.chunk_count {
+        let chunks: Vec<Vec<u8>> = self.collect_chunks(file_conv);
+        if chunks.len() as u32 != manifest.chunk_count() {
             return Err(NodeError::File(format!(
                 "file incomplete: {}/{} chunks",
                 chunks.len(),
-                manifest.chunk_count
+                manifest.chunk_count()
             )));
         }
-        reassemble_and_verify(&manifest, &chunks)
-            .map_err(|e| NodeError::File(format!("reassemble: {e}")))
+        match &manifest {
+            AnyManifest::V1(m) => reassemble_and_verify(m, &chunks)
+                .map_err(|e| NodeError::File(format!("reassemble: {e}"))),
+            AnyManifest::V2(m) => {
+                let mut out = Vec::new();
+                for (i, ct) in chunks.iter().enumerate() {
+                    out.extend_from_slice(
+                        &open_chunk_for(&manifest, i as u32, ct)
+                            .map_err(|e| NodeError::File(format!("open chunk {i}: {e}")))?,
+                    );
+                }
+                if file_checksum(&out) != m.checksum {
+                    return Err(NodeError::File("checksum mismatch".into()));
+                }
+                Ok(out)
+            }
+        }
     }
 
-    /// Save a received file to `dest`: reassemble + verify (see [`Node::read_file`]) then write.
+    /// Save a received file to `dest`, streaming chunk-by-chunk so the whole file is
+    /// never buffered. Writes to `dest.part`, verifying each chunk's hash + AEAD on the
+    /// way and the whole-file checksum at the end, then atomically renames into place.
+    /// A v1 (legacy) file falls back to the in-memory reassemble path.
     pub fn save_file(&self, file_conv: ConversationId, dest: &Path) -> Result<(), NodeError> {
-        let data = self.read_file(file_conv)?;
-        std::fs::write(dest, data).map_err(|e| NodeError::File(format!("write file: {e}")))?;
+        self.save_file_progress(file_conv, dest, |_| {})
+    }
+
+    /// [`Node::save_file`] with a progress callback (one call per written chunk, plus a
+    /// terminal `done == total`).
+    pub fn save_file_progress(
+        &self,
+        file_conv: ConversationId,
+        dest: &Path,
+        mut on_progress: impl FnMut(FileProgress),
+    ) -> Result<(), NodeError> {
+        let manifest = self
+            .files
+            .lock()
+            .expect("files mutex not poisoned")
+            .manifest(&file_conv)
+            .cloned()
+            .ok_or_else(|| NodeError::File("unknown file".into()))?;
+        let total = manifest.chunk_count();
+        let chunks = self.collect_chunks(file_conv);
+        if chunks.len() as u32 != total {
+            return Err(NodeError::File(format!(
+                "file incomplete: {}/{} chunks",
+                chunks.len(),
+                total
+            )));
+        }
+
+        // v1 has no per-chunk hash / deterministic nonce: reassemble in memory (these
+        // are the old <=8 MB single-blob-era files) and write.
+        if let AnyManifest::V1(m) = &manifest {
+            let data = reassemble_and_verify(m, &chunks)
+                .map_err(|e| NodeError::File(format!("reassemble: {e}")))?;
+            std::fs::write(dest, data).map_err(|e| NodeError::File(format!("write: {e}")))?;
+            on_progress(FileProgress { done: total, total });
+            return Ok(());
+        }
+
+        // v2: stream each verified chunk straight to a temp .part file.
+        let part = part_path(dest);
+        let mut whole = Sha256::new();
+        {
+            let f = std::fs::File::create(&part)
+                .map_err(|e| NodeError::File(format!("create part: {e}")))?;
+            let mut writer = std::io::BufWriter::new(f);
+            for (i, ct) in chunks.iter().enumerate() {
+                let plain = open_chunk_for(&manifest, i as u32, ct)
+                    .map_err(|e| NodeError::File(format!("open chunk {i}: {e}")))?;
+                whole.update(&plain);
+                writer
+                    .write_all(&plain)
+                    .map_err(|e| NodeError::File(format!("write chunk {i}: {e}")))?;
+                on_progress(FileProgress {
+                    done: i as u32 + 1,
+                    total,
+                });
+            }
+            writer
+                .flush()
+                .map_err(|e| NodeError::File(format!("flush: {e}")))?;
+        }
+        let expected = match &manifest {
+            AnyManifest::V2(m) => m.checksum,
+            _ => unreachable!(),
+        };
+        let actual: [u8; 32] = whole.finalize().into();
+        if actual != expected {
+            let _ = std::fs::remove_file(&part);
+            return Err(NodeError::File("whole-file checksum mismatch".into()));
+        }
+        std::fs::rename(&part, dest)
+            .map_err(|e| NodeError::File(format!("finalize rename: {e}")))?;
         Ok(())
     }
+
+    /// The chunk-event ciphertexts of a per-file conversation, in log order.
+    fn collect_chunks(&self, file_conv: ConversationId) -> Vec<Vec<u8>> {
+        let log = self.log.lock().expect("log mutex not poisoned");
+        log.events(&file_conv)
+            .into_iter()
+            .filter(|e| e.kind == EventKind::Message)
+            .map(|e| e.ciphertext.clone())
+            .collect()
+    }
+}
+
+/// Read exactly `buf.len()` bytes, or fewer only at EOF (the final chunk). `BufReader`
+/// can return short reads mid-stream, so loop until full or EOF.
+fn read_full<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
+/// The temp path a save streams into before its atomic rename: `dest` + `.part`.
+fn part_path(dest: &Path) -> std::path::PathBuf {
+    let mut s = dest.as_os_str().to_os_string();
+    s.push(".part");
+    std::path::PathBuf::from(s)
 }

@@ -3,7 +3,7 @@
 use super::*;
 use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{Author, ConversationId, Event, EventKind};
-use crate::file::FileManifest;
+use crate::file::decode_manifest;
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
 use crate::node::session::{request_round, serve_one, serve_wire_bytes, Served, SessionError};
 use crate::node::transport::{dial, secure_accept};
@@ -195,16 +195,16 @@ impl Node {
                     Err(_) => continue,
                 }
             };
-            let Some(manifest) = FileManifest::decode(&plaintext) else {
+            let Some(manifest) = decode_manifest(&plaintext) else {
                 continue;
             };
             let received = ReceivedFile {
                 conv,
                 from: event.author.user_id(),
-                name: manifest.name.clone(),
-                size: manifest.size,
-                mime: manifest.mime.clone(),
-                file_conv: manifest.file_conv,
+                name: manifest.name().to_string(),
+                size: manifest.size(),
+                mime: manifest.mime().to_string(),
+                file_conv: manifest.file_conv(),
             };
             // Persist the surfaced manifest durably so the file book's emitted set + this
             // manifest survive a restart — WITHOUT the old bug of marking never-opened
@@ -215,10 +215,10 @@ impl Node {
                 .lock()
                 .expect("received_files mutex not poisoned")
                 .record(
-                    manifest.file_conv,
+                    manifest.file_conv(),
                     event.author.user_id(),
                     event.wall_clock,
-                    &manifest.encode(),
+                    &plaintext,
                     event.id,
                 );
             {

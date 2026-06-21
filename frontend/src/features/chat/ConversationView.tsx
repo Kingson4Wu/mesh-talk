@@ -5,6 +5,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
+import { TransferBar } from "./TransferBar";
 import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
 import { useAuth } from "@/store/auth";
@@ -151,6 +152,8 @@ export function ConversationView() {
           );
         })}
       </div>
+
+      <TransferBar transferKey={active.id} label="file" />
 
       <Composer
         placeholder={

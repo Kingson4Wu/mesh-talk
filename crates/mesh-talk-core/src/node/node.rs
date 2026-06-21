@@ -28,12 +28,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-/// Maximum raw file size for `send_file_*`. Bounded multi-round sync transfers a
-/// file's chunk events across frames now, so the practical limit is the `have`
-/// id-set size (a conversation's full id-set still travels in one frame): ~8 MB of
-/// 48 KiB chunks ≈ 180 ids ≈ 7 KB, comfortably within a frame. Lifting further
-/// needs id-set compaction (a separate slice).
-pub(in crate::node) const MAX_FILE_SIZE: usize = 8 * 1024 * 1024;
+/// Maximum raw file size for `send_file_*`. The `have` id-set is now STREAMED across
+/// multiple `ReqHave`/`RespHave` frames (see `node::session`), so the old one-frame
+/// id-set limit is gone; the real constraints are now (a) bounded memory — both sides
+/// stream chunk-by-chunk to/from disk (see `stage_file` / `assemble_file`), and (b)
+/// the relay's `MAX_HAVE_IDS_TOTAL` (200 000 ids). At 48 KiB/chunk that ceiling is
+/// ~9 GB; we cap at a conservative 4 GiB and reject only absurd sizes up front.
+pub(in crate::node) const MAX_FILE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
 /// A received direct message, surfaced to the application.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,7 +287,7 @@ impl Node {
         let mut files = FileBook::new();
         for c in received_files.conversations() {
             for entry in received_files.entries(&c) {
-                if let Some(manifest) = crate::file::FileManifest::decode(&entry.plaintext) {
+                if let Some(manifest) = crate::file::decode_manifest(&entry.plaintext) {
                     files.record(manifest);
                 }
                 files.mark_emitted(entry.event_id);

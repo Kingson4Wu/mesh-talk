@@ -12,6 +12,7 @@ import { chat } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { humanSize } from "@/lib/format";
 import { useChat } from "@/store/chat";
+import { TransferBar } from "./TransferBar";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const isImage = (name: string) => IMAGE_EXT.test(name);
@@ -119,6 +120,7 @@ export function FilesTray() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
+                <TransferBar transferKey={f.fileConv} />
               </div>
             ))}
           </div>

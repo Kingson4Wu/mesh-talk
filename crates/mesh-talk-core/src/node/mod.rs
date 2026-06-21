@@ -37,6 +37,7 @@ pub use channel::ReceivedChannelMessage;
 pub use dm_envelope::{DmEnvelope, DmRoute, ReactionEnvelope};
 pub use dm_ratchet::DmRatchet;
 pub use filebook::{FileBook, ReceivedFile};
+pub use files::FileProgress;
 pub use message::MessageBody;
 pub use net::{
     discovery_socket, ipv4_interface_addrs, DEFAULT_DISCOVERY_PORT, DISCOVERY_MULTICAST_GROUP,

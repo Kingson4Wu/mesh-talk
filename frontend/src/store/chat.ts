@@ -3,6 +3,7 @@ import { chat } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
 import { notifyInbound } from "@/lib/notify";
+import { useTransfers } from "@/store/transfers";
 import type {
   AccountInfo,
   ChannelInfo,
@@ -189,6 +190,7 @@ export const useChat = create<ChatState>((set, get) => ({
   start: () => {
     // Fresh slate per login (the store survives logout/login of a different account).
     lastUnknownSenderRefresh = 0;
+    useTransfers.getState().reset();
     set({
       ready: false,
       error: null,
@@ -233,6 +235,7 @@ export const useChat = create<ChatState>((set, get) => ({
       onDm: (e) => get_handleDm(set, get, e),
       onChannelMessage: (e) => get_handleChannel(set, get, e),
       onFile: (e) => get_handleFile(set, get, e),
+      onFileProgress: (e) => useTransfers.getState().applyProgress(e),
     });
 
     return () => {

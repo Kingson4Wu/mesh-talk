@@ -6,6 +6,11 @@ pub mod crypto;
 pub mod manifest;
 
 pub use crypto::{
-    file_checksum, open_chunk, seal_chunk, split_chunks, FileError, FileKey, CHUNK_SIZE,
+    chunk_count_for, chunk_hash, file_checksum, generate_file_nonce, open_chunk,
+    open_chunk_indexed, seal_chunk, seal_chunk_indexed, split_chunks, FileError, FileKey,
+    CHUNK_SIZE,
 };
-pub use manifest::{reassemble_and_verify, FileManifest};
+pub use manifest::{
+    decode_manifest, open_chunk_for, reassemble_and_verify, AnyManifest, FileManifest,
+    FileManifestV2,
+};
