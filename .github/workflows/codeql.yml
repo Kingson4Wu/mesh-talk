@@ -2,7 +2,9 @@ name: CodeQL
 
 # Advanced CodeQL setup (replaces default setup) so we can apply .github/codeql/codeql-config.yml
 # — excluding test files + the noisy rust/hard-coded-cryptographic-value query, and using the
-# security-extended suite.
+# security-extended suite. NOTE: default setup must stay DISABLED (Settings > Code security >
+# Code scanning > leave on "Advanced"); enabling it makes these runs fail with "advanced
+# configurations cannot be processed when the default setup is enabled".
 on:
   push:
     branches: ["main"]
@@ -24,41 +26,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - language: actions
-            build-mode: none
-          - language: javascript-typescript
-            build-mode: none
-          - language: rust
-            build-mode: autobuild
+        # All three use build-mode: none (Rust's CodeQL extractor is source-based and does
+        # NOT support autobuild — and none means no Tauri/GTK build deps are needed).
+        language: [actions, javascript-typescript, rust]
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      # The Rust workspace includes the Tauri app (src-tauri), which needs the GTK/WebKit stack
-      # (+ protoc) to build — required for CodeQL's autobuild of the Rust language.
-      - name: Install Tauri system dependencies (Rust)
-        if: matrix.language == 'rust'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            protobuf-compiler
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Autobuild
-        if: matrix.build-mode == 'autobuild'
-        uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
