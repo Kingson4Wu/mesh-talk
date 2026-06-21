@@ -41,10 +41,16 @@ impl From<String> for CommandError {
     }
 }
 
-/// A node operation failure surfaces as a service error.
+/// A node operation failure surfaces as a service error — except naming an unknown peer,
+/// which is a validation error (matching the commands that resolve the peer up front), so
+/// the frontend sees one consistent `kind` for that condition regardless of the code path.
 impl From<mesh_talk_core::node::NodeError> for CommandError {
     fn from(e: mesh_talk_core::node::NodeError) -> Self {
-        CommandError::Service(e.to_string())
+        let msg = e.to_string();
+        match e {
+            mesh_talk_core::node::NodeError::UnknownPeer(_) => CommandError::Validation(msg),
+            _ => CommandError::Service(msg),
+        }
     }
 }
 
@@ -328,18 +334,18 @@ pub async fn adopt_linked_account(
     app_handle: tauri::AppHandle,
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let pw = {
         let guard = node_state.0.lock().await;
         guard
             .as_ref()
             .map(|rt| rt.restart_password().to_string())
-            .ok_or_else(|| "node not started".to_string())?
+            .ok_or_else(|| CommandError::Service("node not started".into()))?
     };
     let session = app_state
         .session()
         .get()
-        .ok_or_else(|| "not logged in".to_string())?;
+        .ok_or_else(|| CommandError::Authentication("not logged in".into()))?;
     let account_id = session.user.user_id.clone();
     let display_name = session.user.name.clone();
     node_state.0.lock().await.take();
@@ -351,4 +357,34 @@ pub async fn adopt_linked_account(
         node_state.inner().clone(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The frontend (frontend/src/lib/error.ts) hard-depends on this exact shape:
+    // `{ "kind": <snake_case>, "message": <string> }`. Pin it so a stray serde attr change
+    // breaks the build here rather than silently breaking the UI's error branching.
+    #[test]
+    fn command_error_serializes_as_tagged_kind_message() {
+        let cases = [
+            (CommandError::Validation("bad".into()), "validation"),
+            (
+                CommandError::Authentication("nope".into()),
+                "authentication",
+            ),
+            (
+                CommandError::Authorization("denied".into()),
+                "authorization",
+            ),
+            (CommandError::Service("down".into()), "service"),
+            (CommandError::Network("lost".into()), "network"),
+        ];
+        for (err, kind) in cases {
+            let v = serde_json::to_value(&err).unwrap();
+            assert_eq!(v["kind"], kind, "kind tag for {err:?}");
+            assert!(v["message"].is_string(), "message is a string for {err:?}");
+        }
+    }
 }

@@ -2456,6 +2456,7 @@ dependencies = [
  "mesh-talk-core",
  "rand 0.8.6",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

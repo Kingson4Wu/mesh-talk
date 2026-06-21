@@ -1,7 +1,9 @@
-//! Establishing authenticated, encrypted channels over TCP. `dial` connects to a
-//! peer and runs the Noise handshake as initiator (optionally pinning the
-//! expected peer); `accept` takes one inbound connection and authenticates it.
-//! Both return a [`SecureChannel`] keyed by the cryptographically-verified peer.
+//! Establishing authenticated, encrypted channels over TCP. `dial` connects to a peer and
+//! runs the Noise handshake as initiator (optionally pinning the expected peer);
+//! `secure_accept` authenticates one already-accepted inbound stream, bounded by
+//! [`HANDSHAKE_TIMEOUT`] (accept loops run it in a per-connection task so a stalled
+//! handshake can't wedge the loop). Both return a [`SecureChannel`] keyed by the
+//! cryptographically-verified peer.
 
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::transport::{SecureChannel, TransportError};
