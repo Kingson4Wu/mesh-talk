@@ -203,17 +203,18 @@ pub fn seal_message(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, SenderKeyError> {
-    let (key, nonce) = message_keys(mk);
+    let (mut key, mut nonce) = message_keys(mk);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| SenderKeyError::Encrypt)?;
-    cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        .map_err(|_| SenderKeyError::Encrypt)
+    let result = cipher.encrypt(
+        Nonce::from_slice(&nonce),
+        Payload {
+            msg: plaintext,
+            aad,
+        },
+    );
+    key.zeroize();
+    nonce.zeroize();
+    result.map_err(|_| SenderKeyError::Encrypt)
 }
 
 pub fn open_message(
@@ -221,17 +222,18 @@ pub fn open_message(
     ciphertext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, SenderKeyError> {
-    let (key, nonce) = message_keys(mk);
+    let (mut key, mut nonce) = message_keys(mk);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| SenderKeyError::Decrypt)?;
-    cipher
-        .decrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: ciphertext,
-                aad,
-            },
-        )
-        .map_err(|_| SenderKeyError::Decrypt)
+    let result = cipher.decrypt(
+        Nonce::from_slice(&nonce),
+        Payload {
+            msg: ciphertext,
+            aad,
+        },
+    );
+    key.zeroize();
+    nonce.zeroize();
+    result.map_err(|_| SenderKeyError::Decrypt)
 }
 
 #[cfg(test)]

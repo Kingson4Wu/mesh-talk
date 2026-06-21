@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { CornerUpLeft, SmilePlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { formatTime, shortId } from "@/lib/format";
 import { EMOJIS, mentionsName, renderWithMentions } from "@/lib/mentions";
@@ -41,10 +45,17 @@ export function MessageBubble({
       )}
     >
       <div className="w-8 shrink-0">
-        {showAuthor && !mine && <Avatar name={m.who} id={m.who} className="h-8 w-8" />}
+        {showAuthor && !mine && (
+          <Avatar name={m.who} id={m.who} className="h-8 w-8" />
+        )}
       </div>
 
-      <div className={cn("flex max-w-[72%] flex-col", mine ? "items-end" : "items-start")}>
+      <div
+        className={cn(
+          "flex max-w-[72%] flex-col",
+          mine ? "items-end" : "items-start",
+        )}
+      >
         {showAuthor && !mine && (
           <span className="mb-1 px-1 text-xs font-medium text-muted-foreground">
             {m.who.length > 20 ? shortId(m.who, 10) : m.who}
@@ -83,7 +94,9 @@ export function MessageBubble({
                 )}
               >
                 <CornerUpLeft className="h-3 w-3 shrink-0 opacity-70" />
-                <span className="truncate opacity-80">{parent.text || "message"}</span>
+                <span className="truncate opacity-80">
+                  {parent.text || "message"}
+                </span>
               </div>
             )}
             <span className="whitespace-pre-wrap break-words">
@@ -104,12 +117,16 @@ export function MessageBubble({
 
         {/* reaction chips */}
         {reactions.length > 0 && (
-          <div className={cn("mt-1 flex flex-wrap gap-1", mine && "justify-end")}>
+          <div
+            className={cn("mt-1 flex flex-wrap gap-1", mine && "justify-end")}
+          >
             {reactions.map((r) => {
               const me = r.who.includes(selfReactionId);
               return (
                 <button
-                  key={r.emoji}
+                  key={`${r.target}:${r.emoji}`}
+                  type="button"
+                  aria-label={`${me ? "Remove your" : "Add"} ${r.emoji} reaction`}
                   onClick={() => m.id && onReact(m.id, r.emoji)}
                   className={cn(
                     "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors",
@@ -129,6 +146,9 @@ export function MessageBubble({
         <span className="mt-0.5 px-1 text-[10px] text-muted-foreground">
           {formatTime(m.wallClock)}
           {m.pending && " · sending…"}
+          {m.failed && (
+            <span className="text-destructive"> · failed to send</span>
+          )}
         </span>
       </div>
     </div>

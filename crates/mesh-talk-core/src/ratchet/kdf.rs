@@ -3,10 +3,11 @@
 
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroize;
 
 /// Root KDF: derive the next root key + a new chain key from the current root key
-/// and a fresh DH output. `salt = rk`, `ikm = dh_out`.
-#[allow(dead_code)]
+/// and a fresh DH output. `salt = rk`, `ikm = dh_out`. The HKDF output buffer is wiped
+/// before return (the returned keys are owned by the caller) — consistent with `dm.rs`.
 pub fn kdf_rk(rk: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(rk), dh_out);
     let mut okm = [0u8; 64];
@@ -16,12 +17,12 @@ pub fn kdf_rk(rk: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let mut ck = [0u8; 32];
     rk2.copy_from_slice(&okm[..32]);
     ck.copy_from_slice(&okm[32..]);
+    okm.zeroize();
     (rk2, ck)
 }
 
 /// Chain KDF: derive the next chain key + a single-use message key from a chain key.
 /// `salt = ck`, `ikm = empty`.
-#[allow(dead_code)]
 pub fn kdf_ck(ck: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(ck), &[]);
     let mut okm = [0u8; 64];
@@ -31,11 +32,11 @@ pub fn kdf_ck(ck: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let mut mk = [0u8; 32];
     ck2.copy_from_slice(&okm[..32]);
     mk.copy_from_slice(&okm[32..]);
+    okm.zeroize();
     (ck2, mk)
 }
 
 /// Derive the AES-256-GCM key + 96-bit nonce for one message from its message key.
-#[allow(dead_code)]
 pub fn message_keys(mk: &[u8; 32]) -> ([u8; 32], [u8; 12]) {
     let hk = Hkdf::<Sha256>::new(Some(mk), &[]);
     let mut okm = [0u8; 44];
@@ -45,6 +46,7 @@ pub fn message_keys(mk: &[u8; 32]) -> ([u8; 32], [u8; 12]) {
     let mut nonce = [0u8; 12];
     key.copy_from_slice(&okm[..32]);
     nonce.copy_from_slice(&okm[32..]);
+    okm.zeroize();
     (key, nonce)
 }
 

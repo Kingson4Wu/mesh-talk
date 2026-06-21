@@ -2102,6 +2102,61 @@ async fn send_to_account_self_syncs_to_own_other_device() {
     assert_eq!(b_hist.len(), 1);
     assert!(!b_hist[0].from_me);
     assert_eq!(b_hist[0].text, b"to bob");
+
+    // Note-to-self: A1 sends to its OWN account. The fan-out target set (account == alice)
+    // and own-device set fully overlap on the sibling A2, so `account_fanout_targets`' dedup
+    // must deliver exactly ONE copy — a regression dropping the HashSet dedup would deliver
+    // (and surface) it twice on A2.
+    a1_node
+        .send_to_account(&alice_acct.account_id(), b"note to self", None)
+        .await
+        .unwrap();
+    let mut a2_self = Vec::new();
+    for _ in 0..50 {
+        a2_self = a2_node.account_history(&alice_acct.account_id(), 10);
+        if !a2_self.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        a2_self.len(),
+        1,
+        "note-to-self must dedupe to exactly one copy on the sibling device"
+    );
+    assert_eq!(a2_self[0].text, b"note to self");
+}
+
+#[tokio::test]
+async fn start_linking_is_idempotent_until_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let me = DeviceIdentity::generate();
+    let roster = Arc::new(Mutex::new(Roster::default()));
+    let (tx, _r) = mpsc::unbounded_channel();
+    let (ch, _r2) = mpsc::unbounded_channel();
+    let (f, _r3) = mpsc::unbounded_channel();
+    let node = Node::open(
+        me,
+        roster,
+        tx,
+        ch,
+        f,
+        &dir.path().join("m.log"),
+        &dir.path().join("m-sent.log"),
+        "pw",
+    )
+    .unwrap();
+
+    // A double-fire returns the SAME unexpired code (so a UI double-tap doesn't invalidate
+    // the code the user is already reading aloud)...
+    let code1 = node.start_linking();
+    let code2 = node.start_linking();
+    assert_eq!(code1, code2);
+
+    // ...but after stop_linking a fresh code is minted.
+    node.stop_linking();
+    let code3 = node.start_linking();
+    assert_ne!(code1, code3);
 }
 
 #[tokio::test]

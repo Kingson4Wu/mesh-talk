@@ -4,7 +4,7 @@ This document outlines the development conventions, coding standards, and best p
 
 ## Code Organization
 
-1. **Module Structure**: Follow the module structure outlined in `project_structure.md`
+1. **Module Structure**: Follow the module structure described in [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)
 2. **Separation of Concerns**: Keep UI, business logic, and data access layers separate
 3. **Reusability**: Design components and functions to be reusable where appropriate
 4. **Single Responsibility**: Each module should have a single responsibility

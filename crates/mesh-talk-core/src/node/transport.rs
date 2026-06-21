@@ -1,13 +1,17 @@
-//! Establishing authenticated, encrypted channels over TCP. `dial` connects to a
-//! peer and runs the Noise handshake as initiator (optionally pinning the
-//! expected peer); `accept` takes one inbound connection and authenticates it.
-//! Both return a [`SecureChannel`] keyed by the cryptographically-verified peer.
+//! Establishing authenticated, encrypted channels over TCP. `dial` connects to a peer and
+//! runs the Noise handshake as initiator (optionally pinning the expected peer);
+//! `secure_accept` authenticates one already-accepted inbound stream, bounded by
+//! [`HANDSHAKE_TIMEOUT`] (accept loops run it in a per-connection task so a stalled
+//! handshake can't wedge the loop). Both return a [`SecureChannel`] keyed by the
+//! cryptographically-verified peer.
 
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::transport::{SecureChannel, TransportError};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::{TcpListener, TcpStream};
+#[cfg(test)]
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 /// Wall-clock bound on the server-side handshake. A peer that completes the TCP connect
 /// but stalls mid-handshake (sends nothing / a partial frame) must not tie up the caller —
@@ -42,11 +46,12 @@ pub async fn secure_accept(
     }
 }
 
-/// Accept one inbound connection on `listener` and authenticate the peer (handshake
-/// bounded by [`HANDSHAKE_TIMEOUT`]). NOTE: this awaits the handshake, so an accept LOOP
-/// should instead `listener.accept()` then run [`secure_accept`] in a spawned task — see
-/// `run_accept_loop` / `run_relay_accept_loop`.
-pub async fn accept(
+/// Test-only convenience: accept one inbound connection and authenticate the peer in a
+/// single await. Production accept loops instead `listener.accept()` then run
+/// [`secure_accept`] in a spawned task (so a stalled handshake can't wedge the loop) —
+/// see `run_accept_loop` / `run_relay_accept_loop`.
+#[cfg(test)]
+async fn accept(
     listener: &TcpListener,
     identity: &DeviceIdentity,
 ) -> Result<SecureChannel<TcpStream>, TransportError> {

@@ -108,9 +108,17 @@ impl FileManager {
             ));
         }
 
-        // Extract salt, nonce, and ciphertext
-        let salt: [u8; 16] = contents[0..16].try_into().unwrap();
-        let nonce: [u8; 12] = contents[16..28].try_into().unwrap();
+        // Extract salt, nonce, and ciphertext — parse fallibly (no panic) so a future
+        // change to the length check above can't turn a truncated/corrupt file into a
+        // slice-index panic.
+        let salt: [u8; 16] = contents
+            .get(0..16)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| StorageError::Deserialization("missing salt".to_string()))?;
+        let nonce: [u8; 12] = contents
+            .get(16..28)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| StorageError::Deserialization("missing nonce".to_string()))?;
         let ciphertext = &contents[28..];
 
         // Derive key from password and salt

@@ -9,15 +9,15 @@ import { SearchDialog } from "./SearchDialog";
 import { FilesTray } from "./FilesTray";
 import { LinkDeviceDialog } from "./LinkDeviceDialog";
 import { useAuth } from "@/store/auth";
-import {
-  convKey,
-  useChat,
-  type Conversation,
-} from "@/store/chat";
+import { convKey, useChat, type Conversation } from "@/store/chat";
 import type { AccountInfo, ChannelInfo } from "@/lib/types";
 
 function accountConv(a: AccountInfo): Conversation {
-  return { kind: "account", id: a.account_id, name: a.names[0] || shortId(a.account_id) };
+  return {
+    kind: "account",
+    id: a.account_id,
+    name: a.names[0] || shortId(a.account_id),
+  };
 }
 function channelConv(c: ChannelInfo): Conversation {
   return { kind: "channel", id: c.channel_id, name: c.name };
@@ -77,6 +77,8 @@ export function Sidebar() {
   const channels = useChat((s) => s.channels);
   const myId = useChat((s) => s.myId);
   const ready = useChat((s) => s.ready);
+  const bootFailed = useChat((s) => s.bootFailed);
+  const retryBoot = useChat((s) => s.retryBoot);
   const username = useAuth((s) => s.user?.username ?? "");
   const logout = useAuth((s) => s.logout);
 
@@ -91,7 +93,19 @@ export function Sidebar() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold">{username}</div>
             <div className="truncate font-mono text-xs text-muted-foreground">
-              {ready ? `you · ${shortId(myId)}` : "starting…"}
+              {ready ? (
+                `you · ${shortId(myId)}`
+              ) : bootFailed ? (
+                <button
+                  type="button"
+                  onClick={() => retryBoot()}
+                  className="text-destructive underline-offset-2 hover:underline"
+                >
+                  node unavailable — retry
+                </button>
+              ) : (
+                "starting…"
+              )}
             </div>
           </div>
         </div>
@@ -100,7 +114,12 @@ export function Sidebar() {
           <FilesTray />
           <LinkDeviceDialog />
           <div className="flex-1" />
-          <Button variant="ghost" size="icon" title="Sign out" onClick={() => logout()}>
+          <Button
+            variant="ghost"
+            size="icon"
+            title="Sign out"
+            onClick={() => logout()}
+          >
             <LogOut className="h-4 w-4" />
           </Button>
         </div>
@@ -118,14 +137,18 @@ export function Sidebar() {
             key={a.account_id}
             conv={accountConv(a)}
             subtitle={
-              a.device_count > 1 ? `${a.device_count} devices` : shortId(a.account_id, 12)
+              a.device_count > 1
+                ? `${a.device_count} devices`
+                : shortId(a.account_id, 12)
             }
           />
         ))}
 
         <SectionLabel action={<CreateChannelDialog />}>Channels</SectionLabel>
         {channels.length === 0 && (
-          <p className="px-2.5 py-2 text-xs text-muted-foreground">No channels yet.</p>
+          <p className="px-2.5 py-2 text-xs text-muted-foreground">
+            No channels yet.
+          </p>
         )}
         {channels.map((c) => (
           <Row

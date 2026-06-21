@@ -22,66 +22,10 @@ impl Node {
                 return Vec::new();
             }
         }
-        let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
-        // Map our own Message events' seq -> id, to give sent sidecar entries an id.
-        let mut my_msg_ids: std::collections::HashMap<u64, EventId> =
-            std::collections::HashMap::new();
-        {
-            let log = self.log.lock().expect("log mutex not poisoned");
-            for event in log.events(&channel) {
-                if event.kind == EventKind::Message && event.author == self_author {
-                    my_msg_ids.insert(event.seq, event.id);
-                }
-            }
-        }
-
-        let mut entries: Vec<HistoryEntry> = Vec::new();
-        for sent in self
-            .sentlog
-            .lock()
-            .expect("sentlog mutex not poisoned")
-            .entries(&channel)
-        {
-            let body = MessageBody::decode(&sent.plaintext);
-            entries.push(HistoryEntry {
-                id: my_msg_ids
-                    .get(&sent.seq)
-                    .copied()
-                    .unwrap_or(EventId::new([0u8; 32])),
-                from_me: true,
-                who: "you".to_string(),
-                text: body.text,
-                wall_clock: sent.wall_clock,
-                reply_to: body.reply_to,
-            });
-        }
-        for rcv in self
-            .received
-            .lock()
-            .expect("received mutex not poisoned")
-            .entries(&channel)
-        {
-            let body = MessageBody::decode(&rcv.plaintext);
-            entries.push(HistoryEntry {
-                id: rcv.event_id,
-                from_me: false,
-                who: rcv.from,
-                text: body.text,
-                wall_clock: rcv.wall_clock,
-                reply_to: body.reply_to,
-            });
-        }
-        // Tie-break equal wall-clocks by the (global, content-addressed) event id so
-        // both participants render the same order on a same-millisecond collision.
-        entries.sort_by(|a, b| {
-            a.wall_clock
-                .cmp(&b.wall_clock)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        if entries.len() > limit {
-            entries.drain(0..entries.len() - limit);
-        }
-        entries
+        // A channel conversation's history is built exactly like a DM's (sent sidecar +
+        // received store, seq->id mapped, wall-clock + id sorted) — so delegate to `history`
+        // rather than duplicate it.
+        self.history(channel, limit)
     }
 
     /// The last `limit` messages of the DM with `peer`, both directions, in time

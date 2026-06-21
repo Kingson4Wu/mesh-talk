@@ -36,8 +36,7 @@ CLI, Copilot, etc.). Conventions for agents live in [`AGENTS.md`](AGENTS.md).
 - Domain model: [`CONTEXT.md`](CONTEXT.md)
 - Design specs + implementation plans: `docs/superpowers/specs/`, `docs/superpowers/plans/`
 - Development conventions: [`specifications/development_conventions.md`](specifications/development_conventions.md)
-- Project structure: [`specifications/project_structure.md`](specifications/project_structure.md)
-- Tech stack: [`specifications/tech_stack.md`](specifications/tech_stack.md)
+- Project structure + tech stack: see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (and the Tech Stack section above)
 - Git standards: [`specifications/git_standards.md`](specifications/git_standards.md)
 - Task completion criteria: [`specifications/task_completion_criteria.md`](specifications/task_completion_criteria.md)
 - Status: [`specifications/TODO.md`](specifications/TODO.md)

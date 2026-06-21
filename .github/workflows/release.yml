@@ -7,8 +7,9 @@ on:
   workflow_dispatch: {}  # Manual run: builds all platforms + uploads artifacts (no GitHub Release)
 
 permissions:
-  contents: write  
-  id-token: write
+  contents: write
+  id-token: write       # OIDC for cosign keyless signing + SLSA attestation
+  attestations: write   # actions/attest-build-provenance writes signed provenance
 
 env:
   CARGO_TERM_COLOR: always
@@ -211,7 +212,25 @@ jobs:
           echo "✅ Bundle signature generated: $BUNDLE_FILE"
           ls -lh release_zips
 
-      # 1️⃣1️⃣ Always expose the signed zips as workflow artifacts — lets a manual
+      # 🔏 SLSA build provenance: a GitHub-native, signed attestation of exactly which
+      # repo/commit/workflow produced this artifact. Verified by `gh attestation verify`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "release_zips/*.zip"
+
+      # 📦 SBOM (CycloneDX): full dependency inventory for supply-chain auditing. Generated
+      # once on Linux (deps are platform-independent) and shipped with the release.
+      - name: Generate SBOM (CycloneDX)
+        if: runner.os == 'Linux'
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: release_zips/mesh-talk.cdx.json
+          upload-artifact: false
+
+      # 1️⃣1️⃣ Always expose the signed zips (+ SBOM) as workflow artifacts — lets a manual
       # `workflow_dispatch` run be downloaded + verified without cutting a real release.
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

@@ -1,11 +1,14 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Backend Rust workspace `src-tauri/`; entry `src-tauri/src/main.rs`, core `lib.rs`, IPC
-  glue in `commands.rs` (auth) + `chat_commands.rs` (messaging) + `events.rs`. Feature
-  modules: `node/`, `identity/`, `transport/`, `discovery/`, `eventlog/`, `ratchet/`,
-  `channel/`, `dm.rs`, `file/`, `postoffice/`, `storage/`, `services/` (auth only).
-- Integration/e2e suites live in `src-tauri/tests/`; keep unit tests inline via `mod tests`.
+- Two-crate Rust workspace. `crates/mesh-talk-core/` is the UI-free protocol core (lib
+  `mesh_talk_core` + the `mesh-talk-node` CLI bin in `src/bin/`): feature modules `node/`,
+  `identity/`, `transport/`, `discovery/`, `eventlog/`, `ratchet/`, `channel/`, `dm.rs`,
+  `file/`, `postoffice/`, `storage/`. `src-tauri/` is the Tauri desktop app: entry
+  `src/main.rs` → `lib.rs`, IPC glue in `commands.rs` (auth) + `chat_commands.rs` (messaging)
+  + `events.rs`, plus `state.rs`, `tray.rs`, `services/` (auth only).
+- Integration/e2e suites live in `crates/mesh-talk-core/tests/`; keep unit tests inline via
+  `mod tests` (e.g. `node/node_tests.rs`).
 - React client sits in `frontend/src`; Vite tooling in `frontend/package.json`.
 - Operational scripts in `scripts/` (`setup-hooks.sh`, `check-health.sh`); architecture in
   `docs/ARCHITECTURE.md`; conventions in `specifications/`.

@@ -9,7 +9,18 @@ use crate::node::session::{request_round, serve_one, serve_wire_bytes, Served, S
 use crate::node::transport::{dial, secure_accept};
 use crate::transport::SecureChannel;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+
+/// Per-connection round ceiling for an inbound serve loop (matches the requester-side
+/// `MAX_SYNC_ROUNDS`); a real reconciliation converges far below this.
+const MAX_SERVE_ROUNDS: usize = 10_000;
+/// Drop an inbound connection that sends nothing for this long.
+const SERVE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ceiling on concurrently-served inbound connections, so a flood of TCP + Noise handshakes
+/// can't spawn unbounded tasks. Generous for a LAN; excess connections wait for a slot.
+const MAX_CONCURRENT_CONNS: usize = 256;
 
 impl Node {
     /// Dial `peer` directly and run one sync round for `conv`. Best-effort: the
@@ -51,7 +62,14 @@ impl Node {
     /// Accept inbound connections on `listener` and serve each on its own task,
     /// until the listener errors. (The binary calls this; the test drives it too.)
     pub async fn run_accept_loop(self: Arc<Self>, listener: TcpListener) {
+        let conns = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS));
         loop {
+            // Reserve a connection slot BEFORE accepting, so we never serve more than the cap;
+            // excess inbound connections wait in the OS accept queue until a slot frees.
+            let permit = match Arc::clone(&conns).acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return, // semaphore closed — shouldn't happen, stop cleanly
+            };
             // Only the (fast) TCP accept runs on the loop; the Noise handshake runs in the
             // spawned task (bounded by HANDSHAKE_TIMEOUT), so a peer that connects then stalls
             // mid-handshake can't park the loop and block all other inbound connections.
@@ -60,12 +78,14 @@ impl Node {
                 Err(_) => {
                     // A listener-level error (e.g. fd exhaustion) shouldn't stop the loop;
                     // back off briefly so a persistent error can't become a busy-spin.
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    drop(permit);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
             };
             let node = Arc::clone(&self);
             tokio::spawn(async move {
+                let _permit = permit; // held for the connection's lifetime, freed on drop
                 if let Ok(channel) = secure_accept(stream, &node.identity).await {
                     node.serve_connection(channel).await;
                 }
@@ -78,26 +98,42 @@ impl Node {
     /// a device-pairing request gets the linking handler; anything else is a sync wire
     /// and is served normally (then the loop continues).
     pub async fn serve_connection(&self, mut channel: SecureChannel<TcpStream>) {
-        let first = match channel.recv().await {
-            Ok(b) => b,
-            Err(_) => return,
+        // Bound the connection so an authenticated peer can't pin a task forever: an idle
+        // timeout on every recv + a per-connection round ceiling (mirrors the relay).
+        let first = match tokio::time::timeout(SERVE_IDLE_TIMEOUT, channel.recv()).await {
+            Ok(Ok(b)) => b,
+            _ => return, // peer error or idle past the timeout
         };
         if let Some(req) = PairingRequest::decode(&first) {
             self.serve_pairing(&mut channel, req).await;
             return;
         }
-        match serve_wire_bytes(&mut channel, &self.log, &first).await {
-            Ok(Served::Handled(conv)) => {
+        // The first frame may be a Request, which makes serve_wire_bytes await the peer's
+        // streamed have-chunks — so it needs the same idle timeout as the loop, or a peer that
+        // sends one Request then stalls would pin this task (and its connection permit) forever.
+        match tokio::time::timeout(
+            SERVE_IDLE_TIMEOUT,
+            serve_wire_bytes(&mut channel, &self.log, &first),
+        )
+        .await
+        {
+            Ok(Ok(Served::Handled(conv))) => {
                 self.emit_new_messages(conv);
                 self.process_channel(conv);
                 self.process_file_events(conv);
             }
             _ => return,
         }
-        while let Ok(Served::Handled(conv)) = serve_one(&mut channel, &self.log).await {
-            self.emit_new_messages(conv);
-            self.process_channel(conv);
-            self.process_file_events(conv);
+        for _ in 0..MAX_SERVE_ROUNDS {
+            match tokio::time::timeout(SERVE_IDLE_TIMEOUT, serve_one(&mut channel, &self.log)).await
+            {
+                Ok(Ok(Served::Handled(conv))) => {
+                    self.emit_new_messages(conv);
+                    self.process_channel(conv);
+                    self.process_file_events(conv);
+                }
+                _ => break, // peer closed, error, or idle past the timeout
+            }
         }
     }
 

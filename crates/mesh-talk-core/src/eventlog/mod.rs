@@ -2,9 +2,9 @@
 //! data structure every DM and channel is built from. See
 //! `docs/superpowers/specs/2026-06-15-mesh-talk--design.md` §5.
 //!
-//! Layers: [`event`] (the content-addressed `Event`), `store` (the in-memory
-//! validating index), and `persist` (encrypted append-only file + the durable
-//! composition). `store`/`persist` are added in later tasks.
+//! Layers: [`event`] (the content-addressed `Event`), [`store`] (the in-memory
+//! validating index), [`persist`] (encrypted append-only file + the durable
+//! composition), and [`sync`] (the bounded 3-message reconciliation).
 
 pub mod event;
 pub mod persist;

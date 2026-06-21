@@ -15,8 +15,7 @@ const MAX_LOG_RETENTION_DAYS: u64 = 7;
 
 /// Get the logs directory path (~/.mesh-talk/logs/)
 fn get_mesh_talk_logs_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home_dir = crate::user_home_dir().ok_or("Failed to get home directory")?;
-    let logs_dir = home_dir.join(".mesh-talk").join("logs");
+    let logs_dir = crate::data_dir().join("logs");
     fs::create_dir_all(&logs_dir)?;
     Ok(logs_dir)
 }

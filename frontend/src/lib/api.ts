@@ -47,8 +47,11 @@ export const chat = {
     invoke<string>("send_file_dm", { recipient, path }),
 
   // Account-addressed (multi-device) messages
-  sendToAccount: (account: string, text: string, replyTo: string | null = null) =>
-    invoke<void>("send_to_account", { account, text, replyTo }),
+  sendToAccount: (
+    account: string,
+    text: string,
+    replyTo: string | null = null,
+  ) => invoke<void>("send_to_account", { account, text, replyTo }),
   accountHistory: (account: string, limit: number) =>
     invoke<HistoryItem[]>("account_history", { account, limit }),
   accountReactions: (account: string) =>

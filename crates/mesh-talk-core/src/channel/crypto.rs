@@ -10,6 +10,7 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use rand::rngs::OsRng;
 use rand::RngCore;
+use zeroize::Zeroize;
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
@@ -19,8 +20,16 @@ const TAG_SIZE: usize = 16;
 
 /// A per-channel symmetric group key (AES-256-GCM). Generated fresh, distributed to
 /// members via [`seal_group_key`], and rotated on membership change (by the caller).
+/// Zeroized on drop (and deliberately not `Debug`) so the long-lived key does not
+/// linger in freed memory — consistent with `SenderKey`/`RatchetState`.
 #[derive(Clone)]
 pub struct GroupKey([u8; KEY_SIZE]);
+
+impl Drop for GroupKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl GroupKey {
     /// A fresh random group key.

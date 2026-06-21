@@ -12,7 +12,10 @@ beforeEach(() => {
 
 describe("auth store", () => {
   it("login stores the user on success", async () => {
-    invoke.mockResolvedValueOnce({ success: true, user: { id: "u1", username: "alice" } });
+    invoke.mockResolvedValueOnce({
+      success: true,
+      user: { id: "u1", username: "alice" },
+    });
     const ok = await useAuth.getState().login("alice", "pw");
     expect(ok).toBe(true);
     expect(useAuth.getState().user).toEqual({ id: "u1", username: "alice" });

@@ -6,8 +6,12 @@ use crate::services::auth_service::AuthError;
 use crate::services::user::User;
 use crate::state::AppState;
 
-/// Represents possible errors that can occur in command execution.
-#[derive(Debug)]
+/// An IPC command error, serialized to the frontend as a tagged `{ kind, message }` object
+/// so the UI can branch on the kind (e.g. route an `authentication` failure to the login
+/// screen) instead of string-matching. The `kind` is snake_case: `validation`,
+/// `authentication`, `authorization`, `service`, `network`.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum CommandError {
     Validation(String),
     Authentication(String),
@@ -30,7 +34,27 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
-type CommandResult<T> = Result<T, CommandError>;
+/// A bare string error (e.g. "node not started") is an operational/service failure.
+impl From<String> for CommandError {
+    fn from(msg: String) -> Self {
+        CommandError::Service(msg)
+    }
+}
+
+/// A node operation failure surfaces as a service error — except naming an unknown peer,
+/// which is a validation error (matching the commands that resolve the peer up front), so
+/// the frontend sees one consistent `kind` for that condition regardless of the code path.
+impl From<mesh_talk_core::node::NodeError> for CommandError {
+    fn from(e: mesh_talk_core::node::NodeError) -> Self {
+        let msg = e.to_string();
+        match e {
+            mesh_talk_core::node::NodeError::UnknownPeer(_) => CommandError::Validation(msg),
+            _ => CommandError::Service(msg),
+        }
+    }
+}
+
+pub type CommandResult<T> = Result<T, CommandError>;
 
 #[derive(serde::Serialize)]
 pub struct UserInfo {
@@ -79,12 +103,16 @@ pub async fn login(
     password: String,
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
-) -> Result<LoginResult, String> {
-    let result =
-        login_impl(username, password.clone(), app_state.inner()).map_err(|e| e.to_string())?;
+) -> Result<LoginResult, CommandError> {
+    let result = login_impl(username, password.clone(), app_state.inner())?;
 
     if result.success {
         // Start the node: per-account stores under ~/.mesh-talk/accounts/<user_id>/.
+        // NOTE: the node keystore intentionally uses the RAW `password` here, while the auth
+        // keystore uses the trimmed form (auth_service::login trims). They are independent
+        // stores; the node's was first created with the raw value, so it must keep using the
+        // raw value. Do NOT "unify" these to the trimmed form without a keystore migration —
+        // that would break decryption for any user whose password has leading/trailing space.
         if let Some(session) = app_state.session().get() {
             spawn_node_runtime(
                 app_handle.clone(),
@@ -147,10 +175,13 @@ fn login_impl(
 pub async fn logout(
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
-) -> Result<LogoutResult, String> {
+) -> Result<LogoutResult, CommandError> {
+    // Clear the session FIRST; only stop the node once logout actually succeeded, so an
+    // error path (e.g. no session) can't leave the node torn down with the session intact.
+    let result = logout_impl(app_state.inner())?;
     // Stop and drop the node runtime (Drop aborts its background tasks).
     node_state.0.lock().await.take();
-    logout_impl(app_state.inner()).map_err(|e| e.to_string())
+    Ok(result)
 }
 
 fn logout_impl(app_state: &AppState) -> CommandResult<LogoutResult> {
@@ -168,8 +199,8 @@ pub async fn register(
     username: String,
     password: String,
     app_state: tauri::State<'_, AppState>,
-) -> Result<RegisterResult, String> {
-    register_impl(username, password, app_state.inner()).map_err(|e| e.to_string())
+) -> Result<RegisterResult, CommandError> {
+    register_impl(username, password, app_state.inner())
 }
 
 fn register_impl(
@@ -232,11 +263,9 @@ fn require_session(state: &AppState) -> CommandResult<crate::state::SessionInfo>
 // Node lifecycle bridge
 // ---------------------------------------------------------------------------
 
-/// The base directory for node per-account data (mirrors the app's `~/.mesh-talk`).
+/// The base directory for node per-account data (the app's `~/.mesh-talk`).
 fn node_data_dir() -> std::path::PathBuf {
-    crate::user_home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".mesh-talk")
+    crate::data_dir()
 }
 
 /// Spawn the node runtime in the background, wiring its inbound callbacks to the
@@ -257,12 +286,12 @@ pub(crate) fn spawn_node_runtime(
     let app_handle_for_file = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let base_dir = node_data_dir();
-        match mesh_talk_core::node::runtime::NodeRuntime::start(
+        match mesh_talk_core::node::NodeRuntime::start(
             &base_dir,
             &account_id,
             &display_name,
             &password,
-            mesh_talk_core::node::net::DEFAULT_DISCOVERY_PORT,
+            mesh_talk_core::node::DEFAULT_DISCOVERY_PORT,
             move |dm| {
                 crate::events::emit_dm_received(
                     &app_handle_for_dm,
@@ -272,7 +301,7 @@ pub(crate) fn spawn_node_runtime(
                     dm.reply_to,
                 );
             },
-            move |msg: mesh_talk_core::node::channel::ReceivedChannelMessage| {
+            move |msg: mesh_talk_core::node::ReceivedChannelMessage| {
                 crate::events::emit_channel_message(
                     &app_handle_for_channel,
                     hex::encode(msg.channel_id.as_bytes()),
@@ -282,7 +311,7 @@ pub(crate) fn spawn_node_runtime(
                     msg.reply_to,
                 );
             },
-            move |f: mesh_talk_core::node::filebook::ReceivedFile| {
+            move |f: mesh_talk_core::node::ReceivedFile| {
                 crate::events::emit_file_received(
                     &app_handle_for_file,
                     hex::encode(f.conv.as_bytes()),
@@ -313,18 +342,18 @@ pub async fn adopt_linked_account(
     app_handle: tauri::AppHandle,
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let pw = {
         let guard = node_state.0.lock().await;
         guard
             .as_ref()
             .map(|rt| rt.restart_password().to_string())
-            .ok_or_else(|| "node not started".to_string())?
+            .ok_or_else(|| CommandError::Service("node not started".into()))?
     };
     let session = app_state
         .session()
         .get()
-        .ok_or_else(|| "not logged in".to_string())?;
+        .ok_or_else(|| CommandError::Authentication("not logged in".into()))?;
     let account_id = session.user.user_id.clone();
     let display_name = session.user.name.clone();
     node_state.0.lock().await.take();
@@ -336,4 +365,34 @@ pub async fn adopt_linked_account(
         node_state.inner().clone(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The frontend (frontend/src/lib/error.ts) hard-depends on this exact shape:
+    // `{ "kind": <snake_case>, "message": <string> }`. Pin it so a stray serde attr change
+    // breaks the build here rather than silently breaking the UI's error branching.
+    #[test]
+    fn command_error_serializes_as_tagged_kind_message() {
+        let cases = [
+            (CommandError::Validation("bad".into()), "validation"),
+            (
+                CommandError::Authentication("nope".into()),
+                "authentication",
+            ),
+            (
+                CommandError::Authorization("denied".into()),
+                "authorization",
+            ),
+            (CommandError::Service("down".into()), "service"),
+            (CommandError::Network("lost".into()), "network"),
+        ];
+        for (err, kind) in cases {
+            let v = serde_json::to_value(&err).unwrap();
+            assert_eq!(v["kind"], kind, "kind tag for {err:?}");
+            assert!(v["message"].is_string(), "message is a string for {err:?}");
+        }
+    }
 }

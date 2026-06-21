@@ -1,10 +1,7 @@
-use crate::services::common::{Service, ServiceDependencies, ServiceHealth};
 use crate::services::user::User;
 use mesh_talk_core::identity::manager::IdentityManager;
 use mesh_talk_core::storage::file_manager::FileManager;
 
-use base64::engine::general_purpose;
-use base64::Engine as _;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,17 +31,6 @@ pub enum AuthError {
     StorageError(String),
     /// Internal error
     InternalError(String),
-}
-
-impl From<AuthError> for crate::services::common::ServiceError {
-    fn from(error: AuthError) -> Self {
-        crate::services::common::ServiceError {
-            service: "AuthService".to_string(),
-            operation: "unknown".to_string(),
-            message: format!("{:?}", error),
-            source: None,
-        }
-    }
 }
 
 /// Authentication result type
@@ -106,41 +92,6 @@ pub struct AuthService {
 }
 
 static INSTANCE: std::sync::OnceLock<AuthService> = std::sync::OnceLock::new();
-
-impl Service for AuthService {
-    type Error = AuthError;
-    type Result<T> = AuthResult<T>;
-
-    fn init(dependencies: ServiceDependencies) -> Self {
-        // Extract file manager from dependencies
-        let file_manager = dependencies
-            .file_manager
-            .and_then(|fm| fm.downcast_ref::<FileManager>().cloned())
-            .expect("File manager is required for AuthService");
-
-        let identity_manager = Arc::new(IdentityManager::new(file_manager));
-        Self::new(identity_manager)
-    }
-
-    fn service_name(&self) -> &'static str {
-        "AuthService"
-    }
-
-    fn health_check(&self) -> ServiceHealth {
-        ServiceHealth::Healthy
-    }
-
-    fn shutdown(&self) -> Self::Result<()> {
-        // Clear sessions on shutdown
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions.clear();
-
-        let mut current_user = self.current_user.lock().unwrap();
-        *current_user = None;
-
-        Ok(())
-    }
-}
 
 impl AuthService {
     /// Create a new authentication service
@@ -252,9 +203,6 @@ impl AuthService {
                 _ => AuthError::StorageError(format!("Failed to authenticate user: {}", e)),
             })?;
 
-        // Print key information during login
-        self.print_key_info(normalized_name, &password)?;
-
         let mut user = User {
             user_id: identity_user.user_id.clone(),
             name: identity_user.username,
@@ -288,39 +236,6 @@ impl AuthService {
         sessions.insert(token.clone(), session);
 
         Ok((user, token))
-    }
-
-    /// Print key information for the user
-    fn print_key_info(&self, username: &str, password: &str) -> AuthResult<()> {
-        // Get private key
-        let private_key_bytes = self
-            .identity_manager
-            .get_user_private_key(username, password)
-            .map_err(|e| AuthError::StorageError(format!("Failed to get private key: {}", e)))?;
-
-        // Print key information
-        println!("=== Account Key Information ===");
-        println!("Account: {}", username);
-        println!(
-            "Private Key File Location: data/users/{}/meta/private_key.enc",
-            username
-        );
-        println!("Private Key (bytes): {:?}", private_key_bytes);
-        println!(
-            "Private Key (base64): {}",
-            general_purpose::STANDARD.encode(&private_key_bytes)
-        );
-
-        // Try to get public key from user info as well
-        let identity_user = self
-            .identity_manager
-            .authenticate_user(username, password)
-            .map_err(|e| AuthError::StorageError(format!("Failed to authenticate user: {}", e)))?;
-        println!("Public Key: {}", identity_user.public_key);
-        println!("User ID: {}", identity_user.user_id);
-        println!("=============================");
-
-        Ok(())
     }
 
     /// Logout the current user
@@ -385,22 +300,6 @@ impl AuthService {
         };
 
         Ok(user)
-    }
-}
-
-impl Default for AuthService {
-    fn default() -> Self {
-        // This will panic if the global instance is not initialized
-        // In a real application, you would want to handle this more gracefully
-        // For now, we'll create a new instance with a temporary file manager
-        use mesh_talk_core::storage::file_manager::FileManager;
-        use std::path::PathBuf;
-
-        let file_manager = FileManager::new(PathBuf::from("./data"));
-        let identity_manager = Arc::new(mesh_talk_core::identity::manager::IdentityManager::new(
-            file_manager,
-        ));
-        Self::new(identity_manager)
     }
 }
 

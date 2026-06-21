@@ -26,6 +26,25 @@ use std::collections::HashSet;
 /// conversation id, bincode wrappers) on top of the event/id payload.
 const SYNC_MARGIN: usize = 256;
 
+/// `cap_events` guarantees progress by always emitting at least the first event — which is
+/// only safe if a single event fits one sync frame, else the responder emits an oversized
+/// `Response` the transport rejects and that conversation can never sync past it. The
+/// largest event is a file-chunk: `CHUNK_SIZE` ciphertext + AEAD tag + event metadata.
+///
+/// `MAX_EVENT_METADATA_OVERHEAD` covers the fixed header (~220 B) plus a generous parent
+/// allowance — it is NOT a hard cap on metadata: `parents` (the conversation frontier) is
+/// unbounded at 32 B each, so ~120 concurrent heads exceed 4096 and a chunk event would need
+/// ~375 to actually breach a frame — orders of magnitude beyond any realistic LAN frontier.
+/// The compile-time assert below pins the common-case relationship so a `CHUNK_SIZE` bump (or
+/// a new large event kind) breaks the build here; the test `single_large_event_fits_one_frame`
+/// pins it against a real encoded event. (A `MAX_PARENTS` reject is NOT the fix — capping the
+/// frontier would break the hash-linked causal merge.)
+const MAX_EVENT_METADATA_OVERHEAD: usize = 4096;
+const _: () = assert!(
+    crate::file::crypto::CHUNK_SIZE + 16 + MAX_EVENT_METADATA_OVERHEAD + SYNC_MARGIN
+        < crate::transport::MAX_PLAINTEXT
+);
+
 /// Sent by the peer initiating sync: "for this conversation, here are the ids I have."
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
@@ -284,6 +303,23 @@ mod tests {
         let ea: Vec<EventId> = a.events(&conv()).iter().map(|e| e.id).collect();
         let eb: Vec<EventId> = b.events(&conv()).iter().map(|e| e.id).collect();
         assert_eq!(ea, eb, "stores did not converge");
+    }
+
+    #[test]
+    fn single_large_event_fits_one_frame() {
+        // Pin the invariant the const assert documents against a REAL encoded event: a
+        // file-chunk-sized payload PLUS a generous (64-head) parent frontier must still fit
+        // one transport frame, or cap_events' always-emit-the-first guarantee would wedge sync.
+        let id = DeviceIdentity::generate();
+        let parents: Vec<EventId> = (0..64u8).map(|n| EventId::new([n; 32])).collect();
+        let payload = vec![0u8; crate::file::crypto::CHUNK_SIZE + 16]; // chunk ciphertext + tag
+        let e = ev(&id, 1, parents, 1, &payload);
+        let sz = encoded_event_size(&e);
+        assert!(
+            sz < crate::transport::MAX_PLAINTEXT,
+            "encoded event {sz} >= frame budget {}",
+            crate::transport::MAX_PLAINTEXT
+        );
     }
 
     #[test]

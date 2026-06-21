@@ -2,7 +2,6 @@
 
 use super::node::now_millis;
 use super::*;
-use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{ConversationId, Event, EventId, EventKind};
 use crate::identity::device::PublicIdentity;
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
@@ -60,19 +59,7 @@ impl Node {
         remove: bool,
     ) -> Result<(), NodeError> {
         let my_account = self.account.account_id();
-        let me = self.identity.public().user_id();
-        let dests: Vec<PeerRecord> = {
-            let roster = self.roster.lock().expect("roster mutex not poisoned");
-            roster
-                .peers()
-                .into_iter()
-                .filter(|p| {
-                    let a = p.account_id.as_deref();
-                    a == Some(target_account_id)
-                        || (a == Some(my_account.as_str()) && p.public.user_id() != me)
-                })
-                .collect()
-        };
+        let dests = self.account_fanout_targets(target_account_id);
         let envelope = ReactionEnvelope::new(
             my_account.clone(),
             target_account_id.to_string(),

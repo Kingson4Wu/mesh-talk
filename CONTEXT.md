@@ -8,14 +8,17 @@ server. The desktop app is a Tauri (Rust) backend + React frontend; a headless C
 
 ## Layers (frontend → IPC → node → crypto/sync/transport → storage)
 
-| Layer | Path (`src-tauri/src/`) | Responsibility |
-|-------|-------------------------|----------------|
+The protocol core lives in the `mesh-talk-core` crate (`crates/mesh-talk-core/src/`); the
+Tauri app (`src-tauri/src/`) is a thin shell over it.
+
+| Layer | Path | Responsibility |
+|-------|------|----------------|
 | **Frontend** | `frontend/src/` (React + TS) | UI; talks to the backend only via Tauri commands + events. |
-| **IPC** | `commands.rs`, `chat_commands.rs` | Auth (login/register/logout) + all messaging commands. |
-| **Node** | `node/` | Orchestrates identity + discovery + transport + event log + DM/channel/file crypto. |
-| **Crypto** | `identity/`, `transport/`, `ratchet/`, `dm.rs`, `channel/` | Keys, Noise channel, Double Ratchet, sender-key group ratchet. |
-| **Data/sync** | `eventlog/`, `discovery/`, `postoffice/`, `file/` | Event DAG + sync, signed discovery, store-and-forward relay, file chunks. |
-| **Storage** | `storage/` | At-rest encryption (PBKDF2 + AES-GCM) + the auth keystore. |
+| **IPC** | `src-tauri/src/{commands,chat_commands}.rs` | Auth (login/register/logout) + all messaging commands. |
+| **Node** | `crates/mesh-talk-core/src/node/` | Orchestrates identity + discovery + transport + event log + DM/channel/file crypto. |
+| **Crypto** | `crates/mesh-talk-core/src/{identity,transport,ratchet,channel}/`, `dm.rs` | Keys, Noise channel, Double Ratchet, sender-key group ratchet. |
+| **Data/sync** | `crates/mesh-talk-core/src/{eventlog,discovery,postoffice,file}/` | Event DAG + sync, signed discovery, store-and-forward relay, file chunks. |
+| **Storage** | `crates/mesh-talk-core/src/storage/` | At-rest encryption (PBKDF2 + AES-GCM) + the auth keystore. |
 
 ## Entities
 

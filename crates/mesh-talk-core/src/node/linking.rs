@@ -20,9 +20,18 @@ impl Node {
     /// Enter "link a device" mode: generate a one-time code to display. The next valid
     /// pairing request from a device proving this code is served the account secret.
     pub fn start_linking(&self) -> String {
+        let mut guard = self.pending_link.lock().expect("pending_link mutex");
+        // Idempotent: if an unexpired code is already pending (e.g. the UI double-fired
+        // the button), return it rather than invalidating the code the user may already
+        // be reading aloud. A fresh code requires stop_linking (or letting it expire).
+        if let Some(pl) = guard.as_ref() {
+            if now_millis().saturating_sub(pl.created_at_ms) <= PAIRING_TTL_MS {
+                return pl.code.as_hex();
+            }
+        }
         let code = PairingCode::generate();
         let hex = code.as_hex();
-        *self.pending_link.lock().expect("pending_link mutex") = Some(PendingLink {
+        *guard = Some(PendingLink {
             code,
             created_at_ms: now_millis(),
             attempts: 0,

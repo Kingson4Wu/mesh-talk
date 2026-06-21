@@ -15,11 +15,17 @@ beforeEach(() => {
 describe("auth command mapping", () => {
   it("login", async () => {
     await auth.login("u", "p");
-    expect(invoke).toHaveBeenCalledWith("login", { username: "u", password: "p" });
+    expect(invoke).toHaveBeenCalledWith("login", {
+      username: "u",
+      password: "p",
+    });
   });
   it("register", async () => {
     await auth.register("u", "p");
-    expect(invoke).toHaveBeenCalledWith("register", { username: "u", password: "p" });
+    expect(invoke).toHaveBeenCalledWith("register", {
+      username: "u",
+      password: "p",
+    });
   });
   it("logout / adopt take no args", async () => {
     await auth.logout();

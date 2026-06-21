@@ -336,31 +336,33 @@ impl Drop for RatchetState {
 }
 
 fn aead_encrypt(mk: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, RatchetError> {
-    let (key, nonce) = message_keys(mk);
+    let (mut key, mut nonce) = message_keys(mk);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| RatchetError::Decrypt)?;
-    cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        .map_err(|_| RatchetError::Decrypt)
+    let result = cipher.encrypt(
+        Nonce::from_slice(&nonce),
+        Payload {
+            msg: plaintext,
+            aad,
+        },
+    );
+    key.zeroize();
+    nonce.zeroize();
+    result.map_err(|_| RatchetError::Decrypt)
 }
 
 fn aead_decrypt(mk: &[u8; 32], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, RatchetError> {
-    let (key, nonce) = message_keys(mk);
+    let (mut key, mut nonce) = message_keys(mk);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| RatchetError::Decrypt)?;
-    cipher
-        .decrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: ciphertext,
-                aad,
-            },
-        )
-        .map_err(|_| RatchetError::Decrypt)
+    let result = cipher.decrypt(
+        Nonce::from_slice(&nonce),
+        Payload {
+            msg: ciphertext,
+            aad,
+        },
+    );
+    key.zeroize();
+    nonce.zeroize();
+    result.map_err(|_| RatchetError::Decrypt)
 }
 
 #[cfg(test)]
@@ -517,7 +519,12 @@ mod tests {
             n: 9,
         };
         assert_eq!(Header::decode(&h.encode()).unwrap().n, 9);
-        assert!(Header::decode(b"junk").is_none() || Header::decode(b"junk").is_some());
+        // Fail closed: too-short input decodes to None (no panic)...
+        assert!(Header::decode(b"junk").is_none());
+        // ...and trailing bytes after a valid header are rejected.
+        let mut trailing = h.encode();
+        trailing.push(0xff);
+        assert!(Header::decode(&trailing).is_none());
     }
 
     #[test]

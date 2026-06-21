@@ -10,10 +10,10 @@
 /// Run every untrusted-input decoder on `data`. A panic in any of them fails the test.
 fn run_all_decoders(data: &[u8]) {
     let _ = mesh_talk_core::discovery::announce::decode(data);
-    let _ = mesh_talk_core::node::message::MessageBody::decode(data);
-    let _ = mesh_talk_core::node::dm_envelope::DmEnvelope::decode(data);
-    let _ = mesh_talk_core::node::dm_envelope::ReactionEnvelope::decode(data);
-    let _ = mesh_talk_core::node::reaction::ReactionPayload::decode(data);
+    let _ = mesh_talk_core::node::MessageBody::decode(data);
+    let _ = mesh_talk_core::node::DmEnvelope::decode(data);
+    let _ = mesh_talk_core::node::ReactionEnvelope::decode(data);
+    let _ = mesh_talk_core::node::ReactionPayload::decode(data);
     let _ = mesh_talk_core::ratchet::Header::decode(data);
     let _ = mesh_talk_core::ratchet::RatchetState::deserialize(data);
     let _ = mesh_talk_core::channel::sender_key::SenderKey::deserialize(data);

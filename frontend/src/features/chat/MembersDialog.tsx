@@ -36,7 +36,10 @@ export function MembersDialog() {
 
         <div className="max-h-48 space-y-1 overflow-y-auto">
           {members.map((m) => (
-            <div key={m.user_id} className="flex items-center gap-3 rounded-md px-1 py-1.5">
+            <div
+              key={m.user_id}
+              className="flex items-center gap-3 rounded-md px-1 py-1.5"
+            >
               <Avatar name={m.name} id={m.user_id} className="h-7 w-7" />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm">{m.name}</div>
@@ -70,7 +73,9 @@ export function MembersDialog() {
                   className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-accent/50"
                 >
                   <Avatar name={p.name} id={p.user_id} className="h-7 w-7" />
-                  <span className="flex-1 truncate text-sm">{p.name || "(unnamed)"}</span>
+                  <span className="flex-1 truncate text-sm">
+                    {p.name || "(unnamed)"}
+                  </span>
                   <UserPlus className="h-4 w-4 text-muted-foreground" />
                 </button>
               ))}

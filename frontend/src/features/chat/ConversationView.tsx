@@ -5,6 +5,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
+import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
 import { useAuth } from "@/store/auth";
 import { convKey, useChat, type ChatMessage } from "@/store/chat";
@@ -30,6 +31,7 @@ export function ConversationView() {
   const active = useChat((s) => s.active);
   const send = useChat((s) => s.send);
   const sendFile = useChat((s) => s.sendFile);
+  const setError = useChat((s) => s.setError);
   const toggleReaction = useChat((s) => s.toggleReaction);
   const myId = useChat((s) => s.myId);
   const myAccountId = useChat((s) => s.myAccountId);
@@ -110,7 +112,9 @@ export function ConversationView() {
 
       <div ref={scrollRef} className="flex-1 space-y-0.5 overflow-y-auto py-4">
         {loading && messages.length === 0 && (
-          <p className="py-8 text-center text-sm text-muted-foreground">Loading…</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Loading…
+          </p>
         )}
         {!loading && messages.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
@@ -119,7 +123,8 @@ export function ConversationView() {
         )}
         {messages.map((m, i) => {
           const prev = messages[i - 1];
-          const showAuthor = !prev || prev.who !== m.who || prev.fromMe !== m.fromMe;
+          const showAuthor =
+            !prev || prev.who !== m.who || prev.fromMe !== m.fromMe;
           const parent = m.replyTo ? (byId.get(m.replyTo) ?? null) : null;
           return (
             <MessageBubble
@@ -138,13 +143,19 @@ export function ConversationView() {
       </div>
 
       <Composer
-        placeholder={isChannel ? `Message #${active.name}` : `Message ${active.name}`}
+        placeholder={
+          isChannel ? `Message #${active.name}` : `Message ${active.name}`
+        }
         mentionNames={mentionNames}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
         onAttach={async () => {
-          const path = await openFileDialog({ multiple: false });
-          if (typeof path === "string") await sendFile(path);
+          try {
+            const path = await openFileDialog({ multiple: false });
+            if (typeof path === "string") await sendFile(path);
+          } catch (e) {
+            setError(`Couldn't open file: ${errorMessage(e)}`);
+          }
         }}
         onSend={(t) => {
           send(t, replyTo?.id ?? null);

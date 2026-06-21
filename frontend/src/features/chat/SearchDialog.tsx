@@ -31,16 +31,23 @@ export function SearchDialog() {
     }
     setSearching(true);
     clearTimeout(timer.current);
+    // `active` guards against a stale resolution: if the query changes (or the dialog
+    // closes) while a search is in flight, its result must not overwrite the newer one.
+    let active = true;
     timer.current = setTimeout(async () => {
       try {
-        setHits(await chat.search(query.trim()));
+        const results = await chat.search(query.trim());
+        if (active) setHits(results);
       } catch {
-        setHits([]);
+        if (active) setHits([]);
       } finally {
-        setSearching(false);
+        if (active) setSearching(false);
       }
     }, 250);
-    return () => clearTimeout(timer.current);
+    return () => {
+      active = false;
+      clearTimeout(timer.current);
+    };
   }, [query, dialogOpen]);
 
   const go = (h: SearchHitInfo) => {
@@ -79,10 +86,14 @@ export function SearchDialog() {
         />
         <div className="max-h-80 space-y-1 overflow-y-auto">
           {searching && (
-            <p className="py-4 text-center text-sm text-muted-foreground">Searching…</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              Searching…
+            </p>
           )}
           {!searching && query.trim() && hits.length === 0 && (
-            <p className="py-4 text-center text-sm text-muted-foreground">No matches.</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              No matches.
+            </p>
           )}
           {hits.map((h, i) => (
             <button
@@ -100,7 +111,9 @@ export function SearchDialog() {
                 </span>
               </div>
               <div className="truncate text-sm text-muted-foreground">
-                <span className="text-foreground/70">{h.from_me ? "you" : h.who}:</span>{" "}
+                <span className="text-foreground/70">
+                  {h.from_me ? "you" : h.who}:
+                </span>{" "}
                 {h.text}
               </div>
             </button>

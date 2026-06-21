@@ -39,8 +39,12 @@ beforeEach(() => {
 
 describe("convKey", () => {
   it("namespaces by kind + id", () => {
-    expect(convKey({ kind: "account", id: "a1", name: "x" })).toBe("account:a1");
-    expect(convKey({ kind: "channel", id: "c1", name: "y" })).toBe("channel:c1");
+    expect(convKey({ kind: "account", id: "a1", name: "x" })).toBe(
+      "account:a1",
+    );
+    expect(convKey({ kind: "channel", id: "c1", name: "y" })).toBe(
+      "channel:c1",
+    );
   });
 });
 
@@ -49,7 +53,14 @@ describe("open", () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === "account_history")
         return Promise.resolve([
-          { id: "e1", from_me: false, who: "alice", text: "hello", wall_clock: 1000, reply_to: null },
+          {
+            id: "e1",
+            from_me: false,
+            who: "alice",
+            text: "hello",
+            wall_clock: 1000,
+            reply_to: null,
+          },
         ]);
       if (cmd === "account_reactions") return Promise.resolve([]);
       return Promise.resolve(undefined);
@@ -71,7 +82,16 @@ describe("send", () => {
     invoke.mockImplementation((cmd: string, args?: unknown) => {
       if (cmd === "send_to_account") {
         const a = args as { text: string };
-        history = [{ id: "e1", from_me: true, who: "me", text: a.text, wall_clock: 1, reply_to: null }];
+        history = [
+          {
+            id: "e1",
+            from_me: true,
+            who: "me",
+            text: a.text,
+            wall_clock: 1,
+            reply_to: null,
+          },
+        ];
         return Promise.resolve();
       }
       if (cmd === "account_history") return Promise.resolve(history);
@@ -107,7 +127,9 @@ describe("toggleReaction", () => {
     invoke.mockResolvedValue([]);
     useChat.setState({
       active: { kind: "account", id: "a1", name: "A" },
-      reactions: { "account:a1": [{ target: "t1", emoji: "👍", who: ["myacct"] }] },
+      reactions: {
+        "account:a1": [{ target: "t1", emoji: "👍", who: ["myacct"] }],
+      },
     });
   });
   it("removes my own account reaction (who keyed by account id)", async () => {
@@ -184,7 +206,12 @@ describe("incoming events", () => {
 
   it("does not bump unread for a DM from an undiscovered peer", async () => {
     const stop = await boot();
-    captured.current!.onDm({ from: "ghost", from_name: "?", text: "hi", reply_to: null });
+    captured.current!.onDm({
+      from: "ghost",
+      from_name: "?",
+      text: "hi",
+      reply_to: null,
+    });
     expect(useChat.getState().unread["account:ghost"]).toBeUndefined();
     stop();
   });
@@ -204,11 +231,59 @@ describe("incoming events", () => {
 
   it("de-dupes received files by file_conv", async () => {
     const stop = await boot();
-    const f = { conv: "x", from: "dev1", name: "a.pdf", size: 10, file_conv: "fc1" };
+    const f = {
+      conv: "x",
+      from: "dev1",
+      name: "a.pdf",
+      size: 10,
+      file_conv: "fc1",
+    };
     captured.current!.onFile(f);
     captured.current!.onFile(f);
     expect(useChat.getState().incomingFiles).toHaveLength(1);
     expect(useChat.getState().incomingFiles[0].fromName).toBe("Alice");
     stop();
+  });
+});
+
+describe("send/action failures", () => {
+  const acct = { kind: "account" as const, id: "a1", name: "A" };
+
+  it("keeps the optimistic bubble (marked failed) when the send rejects", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "send_to_account")
+        return Promise.reject({ kind: "service", message: "node down" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct });
+    await useChat.getState().send("hi", null);
+
+    const msgs = useChat.getState().messages[convKey(acct)] ?? [];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("hi");
+    expect(msgs[0].failed).toBe(true);
+    expect(msgs[0].pending).toBe(false);
+  });
+
+  it("sets a structured error message when sendFile rejects", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "send_file_to_account")
+        return Promise.reject({ kind: "service", message: "disk full" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct, error: null });
+    await useChat.getState().sendFile("/tmp/x");
+    expect(useChat.getState().error).toContain("disk full");
+  });
+
+  it("sets a structured error message when toggleReaction rejects", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "react_account")
+        return Promise.reject({ kind: "service", message: "no peer" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct, error: null });
+    await useChat.getState().toggleReaction("e1", "👍");
+    expect(useChat.getState().error).toContain("no peer");
   });
 });

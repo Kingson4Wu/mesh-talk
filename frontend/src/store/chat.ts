@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { chat } from "@/lib/api";
+import { errorMessage } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
 import type {
   AccountInfo,
@@ -31,6 +32,8 @@ export interface ChatMessage {
   wallClock: number;
   replyTo: string | null;
   pending?: boolean;
+  failed?: boolean; // a send that errored — kept visible (not silently dropped)
+  clientId?: string; // stable id for an optimistic bubble (survives a concurrent reload)
   file?: { name: string; size: number; fileConv: string } | null;
 }
 
@@ -42,6 +45,13 @@ export interface IncomingFile {
 }
 
 export const convKey = (c: Conversation) => `${c.kind}:${c.id}`;
+
+let clientIdCounter = 0;
+/** A process-unique id for an optimistic message bubble. */
+function nextClientId(): string {
+  clientIdCounter += 1;
+  return `c${clientIdCounter}`;
+}
 
 function fromHistory(h: HistoryItem): ChatMessage {
   return {
@@ -71,7 +81,12 @@ function sendTextFor(c: Conversation, text: string, replyTo: string | null) {
     ? chat.sendToAccount(c.id, text, replyTo)
     : chat.sendChannelMessage(c.id, text, replyTo);
 }
-function reactFor(c: Conversation, target: string, emoji: string, remove: boolean) {
+function reactFor(
+  c: Conversation,
+  target: string,
+  emoji: string,
+  remove: boolean,
+) {
   return c.kind === "account"
     ? chat.reactAccount(c.id, target, emoji, remove)
     : chat.reactChannel(c.id, target, emoji, remove);
@@ -96,14 +111,20 @@ interface ChatState {
   members: ChannelMemberInfo[];
   incomingFiles: IncomingFile[];
   loading: boolean;
+  error: string | null; // transient action error (file/reaction send), surfaced to the user
+  bootFailed: boolean; // the node never came up within the boot window
 
   start: () => () => void;
+  retryBoot: () => void;
   dismissFile: (fileConv: string) => void;
+  clearError: () => void;
+  setError: (msg: string) => void;
   refreshRoster: () => Promise<void>;
   open: (c: Conversation) => Promise<void>;
   reload: () => Promise<void>;
   send: (text: string, replyTo: string | null) => Promise<void>;
   sendFile: (path: string) => Promise<void>;
+  saveFile: (fileConv: string, dest: string) => Promise<void>;
   toggleReaction: (target: string, emoji: string) => Promise<void>;
   createChannel: (name: string, memberIds: string[]) => Promise<void>;
   addMember: (memberId: string) => Promise<void>;
@@ -124,6 +145,40 @@ export const useChat = create<ChatState>((set, get) => ({
   members: [],
   incomingFiles: [],
   loading: false,
+  error: null,
+  bootFailed: false,
+
+  clearError: () => set({ error: null }),
+  setError: (msg) => set({ error: msg }),
+
+  // Re-attempt the node-id poll after a boot failure (events + roster interval from the
+  // original start() are still live, so we only need to re-resolve my_id/account_id).
+  retryBoot: () => {
+    set({ bootFailed: false, ready: false });
+    void (async () => {
+      for (let i = 0; i < 60; i++) {
+        try {
+          const id = await chat.myId();
+          const acct = await chat.accountId();
+          set({ myId: id, myAccountId: acct, ready: true });
+          await get().refreshRoster();
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      set({ bootFailed: true });
+    })();
+  },
+
+  saveFile: async (fileConv, dest) => {
+    try {
+      await chat.saveFile(fileConv, dest);
+      get().dismissFile(fileConv);
+    } catch (e) {
+      set({ error: `Couldn't save file: ${errorMessage(e)}` });
+    }
+  },
 
   dismissFile: (fileConv) =>
     set((s) => ({
@@ -132,8 +187,11 @@ export const useChat = create<ChatState>((set, get) => ({
 
   start: () => {
     // Fresh slate per login (the store survives logout/login of a different account).
+    lastUnknownSenderRefresh = 0;
     set({
       ready: false,
+      error: null,
+      bootFailed: false,
       myId: "",
       myAccountId: "",
       peers: [],
@@ -160,6 +218,9 @@ export const useChat = create<ChatState>((set, get) => ({
           await new Promise((r) => setTimeout(r, 500));
         }
       }
+      // Exhausted the boot window without the node coming up — surface it so the UI can
+      // offer a retry instead of sitting on "starting…" forever.
+      if (!cancelled) set({ bootFailed: true });
     };
     void boot();
 
@@ -212,7 +273,10 @@ export const useChat = create<ChatState>((set, get) => ({
     const key = convKey(c);
     set({ loading: true });
     try {
-      const [items, reacts] = await Promise.all([historyFor(c), reactionsFor(c)]);
+      const [items, reacts] = await Promise.all([
+        historyFor(c),
+        reactionsFor(c),
+      ]);
       set((s) => ({
         messages: { ...s.messages, [key]: items.map(fromHistory) },
         reactions: { ...s.reactions, [key]: reacts },
@@ -227,6 +291,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const c = get().active;
     if (!c || !text.trim()) return;
     const key = convKey(c);
+    const clientId = nextClientId();
     const optimistic: ChatMessage = {
       id: null,
       fromMe: true,
@@ -235,23 +300,45 @@ export const useChat = create<ChatState>((set, get) => ({
       wallClock: Date.now(),
       replyTo,
       pending: true,
+      clientId,
     };
     set((s) => ({
-      messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), optimistic] },
+      messages: {
+        ...s.messages,
+        [key]: [...(s.messages[key] ?? []), optimistic],
+      },
     }));
     try {
       await sendTextFor(c, text, replyTo);
-    } finally {
-      // Re-sync from the log so the message gets its real id (needed for reactions).
-      if (get().active && convKey(get().active!) === key) await get().reload();
+    } catch {
+      // Keep the bubble visible, marked failed, instead of silently dropping it. Match by
+      // clientId (not object identity), and re-append if a concurrent reload() already
+      // replaced the array — so an inbound message mid-send can't make the failure vanish.
+      set((s) => {
+        const arr = s.messages[key] ?? [];
+        const failed = { ...optimistic, pending: false, failed: true };
+        const next = arr.some((m) => m.clientId === clientId)
+          ? arr.map((m) => (m.clientId === clientId ? failed : m))
+          : [...arr, failed];
+        return { messages: { ...s.messages, [key]: next } };
+      });
+      return;
     }
+    // Success: re-sync from the log so the message gets its real id (needed for reactions).
+    if (get().active && convKey(get().active!) === key) await get().reload();
   },
 
   sendFile: async (path) => {
     const c = get().active;
     if (!c) return;
-    await sendFileFor(c, path);
-    if (get().active && convKey(get().active!) === convKey(c)) await get().reload();
+    try {
+      await sendFileFor(c, path);
+    } catch (e) {
+      set({ error: `Couldn't send file: ${errorMessage(e)}` });
+      return;
+    }
+    if (get().active && convKey(get().active!) === convKey(c))
+      await get().reload();
   },
 
   toggleReaction: async (target, emoji) => {
@@ -267,32 +354,45 @@ export const useChat = create<ChatState>((set, get) => ({
     );
     try {
       await reactFor(c, target, emoji, Boolean(mine));
-      await get().reload();
-    } catch {
-      /* ignore */
+      // Only reload if still on this conversation (matches send/sendFile).
+      if (get().active && convKey(get().active!) === key) await get().reload();
+    } catch (e) {
+      set({ error: `Couldn't update reaction: ${errorMessage(e)}` });
     }
   },
 
   createChannel: async (name, memberIds) => {
-    const id = await chat.createChannel(name, memberIds);
-    await get().refreshRoster();
-    await get().open({ kind: "channel", id, name });
+    try {
+      const id = await chat.createChannel(name, memberIds);
+      await get().refreshRoster();
+      await get().open({ kind: "channel", id, name });
+    } catch (e) {
+      set({ error: `Couldn't create channel: ${errorMessage(e)}` });
+    }
   },
 
   addMember: async (memberId) => {
     const c = get().active;
     if (!c || c.kind !== "channel") return;
-    await chat.addChannelMember(c.id, memberId);
-    set({ members: await chat.channelMembers(c.id) });
-    void get().refreshRoster();
+    try {
+      await chat.addChannelMember(c.id, memberId);
+      set({ members: await chat.channelMembers(c.id) });
+      void get().refreshRoster();
+    } catch (e) {
+      set({ error: `Couldn't add member: ${errorMessage(e)}` });
+    }
   },
 
   removeMember: async (memberId) => {
     const c = get().active;
     if (!c || c.kind !== "channel") return;
-    await chat.removeChannelMember(c.id, memberId);
-    set({ members: await chat.channelMembers(c.id) });
-    void get().refreshRoster();
+    try {
+      await chat.removeChannelMember(c.id, memberId);
+      set({ members: await chat.channelMembers(c.id) });
+      void get().refreshRoster();
+    } catch (e) {
+      set({ error: `Couldn't remove member: ${errorMessage(e)}` });
+    }
   },
 }));
 
@@ -309,12 +409,21 @@ function bump(set: Set, key: string, active: boolean) {
   }
 }
 
+let lastUnknownSenderRefresh = 0;
+
 function get_handleDm(set: Set, get: Get, e: DmReceivedEvent) {
   // Route to the sender's account conversation (multi-device aware).
   const peer = get().peers.find((p) => p.user_id === e.from);
   const accountId = peer?.account_id;
   if (!accountId) {
-    void get().refreshRoster();
+    // Unknown sender (not yet discovered). Throttle: a burst from an undiscovered account
+    // would otherwise fire one roster refresh (3 invokes) per message. The 4s interval
+    // poll also covers this.
+    const now = Date.now();
+    if (now - lastUnknownSenderRefresh > 2000) {
+      lastUnknownSenderRefresh = now;
+      void get().refreshRoster();
+    }
     return;
   }
   const conv: Conversation = {

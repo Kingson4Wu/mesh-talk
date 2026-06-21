@@ -1,0 +1,24 @@
+name: Dependency Review
+
+# Blocks a PR that introduces a dependency with a known vulnerability (or a disallowed
+# license) before it ever lands on main. Complements cargo-deny / cargo-audit (which guard
+# the whole tree on every push) by reviewing exactly what a PR changes.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          # MIT-licensed project; flag copyleft/unknown licenses pulled in by a PR.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
+          comment-summary-in-pr: on-failure

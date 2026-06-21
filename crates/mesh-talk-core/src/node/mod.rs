@@ -1,43 +1,48 @@
-//! The node: the explicit App context that wires identity, discovery,
-//! transport, the event log, and DM crypto into a runnable peer. This plan adds
-//! only [`transport`] (authenticated channel dial/accept); the conversation
-//! layer, sync driver, and node API arrive in the next plan.
+//! The node: the explicit app context that wires identity, discovery, transport, the
+//! event log, and DM/group crypto into a runnable peer.
+//!
+//! The submodules are crate-internal implementation detail; the crate's public SDK
+//! surface is exactly the curated re-export block below. Keeping the modules
+//! `pub(crate)` (rather than `pub`) means an external consumer's semver contract is the
+//! re-exports, not every internal type.
 
-pub mod channel;
-pub mod channel_senders;
-pub mod channels;
-pub mod conversation;
-pub mod dm;
-pub mod dm_envelope;
-pub mod dm_ratchet;
-pub mod filebook;
-pub mod files;
-pub mod linking;
-pub mod message;
-pub mod net;
-pub mod node;
-pub mod pairing;
-pub mod postbox;
-pub mod queries;
-pub mod ratchet_sessions;
-pub mod reaction;
-pub mod reactions;
-pub mod received_log;
-pub mod runtime;
-pub mod sentlog;
-pub mod serving;
-pub mod session;
-pub mod transport;
+pub(crate) mod channel;
+pub(crate) mod channel_senders;
+pub(crate) mod channels;
+pub(crate) mod conversation;
+pub(crate) mod dm;
+pub(crate) mod dm_envelope;
+pub(crate) mod dm_ratchet;
+pub(crate) mod filebook;
+pub(crate) mod files;
+pub(crate) mod linking;
+pub(crate) mod message;
+pub(crate) mod net;
+pub(crate) mod node;
+pub(crate) mod pairing;
+pub(crate) mod postbox;
+pub(crate) mod queries;
+pub(crate) mod ratchet_sessions;
+pub(crate) mod reaction;
+pub(crate) mod reactions;
+pub(crate) mod received_log;
+pub(crate) mod runtime;
+pub(crate) mod sentlog;
+pub(crate) mod serving;
+pub(crate) mod session;
+pub(crate) mod transport;
 
+pub use channel::ReceivedChannelMessage;
 pub use dm_envelope::{DmEnvelope, DmRoute, ReactionEnvelope};
 pub use dm_ratchet::DmRatchet;
 pub use filebook::{FileBook, ReceivedFile};
 pub use message::MessageBody;
+pub use net::{discovery_socket, DEFAULT_DISCOVERY_PORT};
 pub use node::{
     ChannelSummary, HistoryEntry, LinkedAccount, Node, NodeError, ReceivedDm, SearchHit,
 };
 pub use pairing::{BackfillRecord, PairingCode, PairingRequest, PairingResponse};
-pub use postbox::elected_post_office;
+pub use postbox::{elected_post_office, run_relay_accept_loop};
 pub use ratchet_sessions::RatchetSessions;
 pub use reaction::{aggregate, ReactionPayload, ReactionView};
 pub use received_log::{ReceivedEntry, ReceivedLog};

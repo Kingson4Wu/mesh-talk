@@ -30,6 +30,11 @@ const HAVE_IDS_PER_CHUNK: usize = 1500;
 /// Backstop on the number of `have` chunk frames accepted for one conversation
 /// (a peer can't stream unbounded chunks). 1500 × this ≫ any real conversation.
 const MAX_HAVE_CHUNKS: usize = 1000;
+/// Hard cap on the TOTAL ids accumulated from a streamed `have`, independent of the
+/// per-chunk + chunk-count bounds. Without it a peer could pin `HAVE_IDS_PER_CHUNK *
+/// MAX_HAVE_CHUNKS` ids (~48 MB) per concurrent sync against the always-on relay; this
+/// caps it at ~6 MB while staying far above any realistic conversation's id-set.
+const MAX_HAVE_IDS_TOTAL: usize = 200_000;
 
 /// One framed sync message on the wire.
 ///
@@ -150,6 +155,10 @@ where
         // a peer can't pack a frame full of ids to amplify the accumulated `have` (bounds the
         // total at HAVE_IDS_PER_CHUNK * MAX_HAVE_CHUNKS).
         if chunk.ids.len() > HAVE_IDS_PER_CHUNK {
+            return Err(SessionError::UnexpectedMessage);
+        }
+        // Direct cap on accumulated ids (not just per-chunk × chunk-count), bounding relay memory.
+        if have.len() + chunk.ids.len() > MAX_HAVE_IDS_TOTAL {
             return Err(SessionError::UnexpectedMessage);
         }
         have.extend(chunk.ids);

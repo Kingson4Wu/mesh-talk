@@ -10,6 +10,18 @@ use crate::node::channel::seal_keys_for;
 use crate::node::session::request_round;
 use crate::node::transport::dial;
 
+/// Members in canonical order: sorted by `user_id` and de-duplicated. `ChannelMeta` encodes
+/// the membership Vec positionally, and the same-epoch convergence tie-break in
+/// `ChannelState::apply_meta` compares those encodings — so every node MUST order an
+/// identical member SET identically, or two concurrent same-epoch membership changes could
+/// encode differently and the tie-break would pick different winners on different nodes
+/// (divergence). Canonicalizing at every construction site keeps the wire form deterministic.
+fn canonical_members(mut members: Vec<PublicIdentity>) -> Vec<PublicIdentity> {
+    members.sort_by_key(|m| m.user_id());
+    members.dedup_by(|a, b| a.user_id() == b.user_id());
+    members
+}
+
 impl Node {
     /// Create a channel named `name` with `members` (the creator is added
     /// automatically). Mints a channel id, posts the membership event, builds our own
@@ -24,6 +36,7 @@ impl Node {
         if !members.iter().any(|m| m.user_id() == me.user_id()) {
             members.push(me);
         }
+        let members = canonical_members(members);
         let channel = crate::channel::new_channel_id();
         let meta = ChannelMeta {
             name: name.to_string(),
@@ -113,6 +126,7 @@ impl Node {
             return Ok(());
         }
         new_members.push(new_member);
+        let new_members = canonical_members(new_members);
         let meta = ChannelMeta {
             name,
             members: new_members.clone(),
@@ -156,6 +170,7 @@ impl Node {
             ));
         }
         new_members.retain(|m| m.user_id() != member_user_id);
+        let new_members = canonical_members(new_members);
         let meta = ChannelMeta {
             name,
             members: new_members.clone(),
