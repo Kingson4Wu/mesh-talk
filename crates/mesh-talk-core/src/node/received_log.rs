@@ -5,13 +5,13 @@
 //! [`crate::node::sentlog`] (magic + salt header, then length-prefixed
 //! AES-256-GCM records) but stores [`ReceivedEntry`] records.
 
-use crate::eventlog::event::ConversationId;
+use crate::eventlog::event::{ConversationId, EventId};
 use crate::eventlog::LogError;
 use crate::storage::encryption::{
     decrypt_data, encrypt_data, generate_salt, EncryptionKey, NONCE_SIZE, SALT_SIZE,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -34,6 +34,10 @@ pub struct ReceivedLog {
     file: File,
     key: EncryptionKey,
     by_conversation: HashMap<ConversationId, Vec<ReceivedEntry>>,
+    /// Event ids already stored, so `record` is idempotent — a re-imported backfill (e.g. a
+    /// second `link_device`) or any duplicate write is skipped instead of durably doubling
+    /// the conversation's history.
+    seen: HashSet<EventId>,
 }
 
 impl ReceivedLog {
@@ -58,6 +62,7 @@ impl ReceivedLog {
                     file,
                     key,
                     by_conversation: HashMap::new(),
+                    seen: HashSet::new(),
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Self::load(path, password),
@@ -81,7 +86,9 @@ impl ReceivedLog {
         file.read_to_end(&mut rest)?;
 
         let mut by_conversation: HashMap<ConversationId, Vec<ReceivedEntry>> = HashMap::new();
+        let mut seen: HashSet<EventId> = HashSet::new();
         for entry in Self::parse_records(&rest, &key)? {
+            seen.insert(entry.event_id);
             by_conversation
                 .entry(entry.conversation)
                 .or_default()
@@ -91,6 +98,7 @@ impl ReceivedLog {
             file,
             key,
             by_conversation,
+            seen,
         })
     }
 
@@ -134,6 +142,11 @@ impl ReceivedLog {
         plaintext: &[u8],
         event_id: crate::eventlog::event::EventId,
     ) -> Result<(), LogError> {
+        // Idempotent on event id: skip a duplicate (e.g. a re-imported account backfill) so it
+        // can't durably double the conversation's history.
+        if self.seen.contains(&event_id) {
+            return Ok(());
+        }
         let entry = ReceivedEntry {
             event_id,
             conversation,
@@ -152,6 +165,7 @@ impl ReceivedLog {
         buf.extend_from_slice(&ciphertext);
         self.file.write_all(&buf)?;
         self.file.flush()?;
+        self.seen.insert(event_id);
         self.by_conversation
             .entry(conversation)
             .or_default()
@@ -225,6 +239,35 @@ mod tests {
         assert_eq!(c1[1].plaintext, b"second");
         assert_eq!(r.entries(&conv(2)).len(), 1);
         assert!(r.entries(&conv(9)).is_empty());
+    }
+
+    #[test]
+    fn record_is_idempotent_on_event_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recv.log");
+        let id = EventId::new([7; 32]);
+        {
+            let mut r = ReceivedLog::open(&path, "pw").unwrap();
+            r.record(conv(1), "alice".into(), 1000, b"hello", id)
+                .unwrap();
+            r.record(conv(1), "alice".into(), 1000, b"hello", id)
+                .unwrap(); // duplicate id
+            assert_eq!(
+                r.entries(&conv(1)).len(),
+                1,
+                "a duplicate event id must not be re-recorded"
+            );
+        }
+        // The dedup survives reopen (the seen-set is rebuilt from disk), so a re-imported
+        // backfill after restart is still skipped.
+        let mut r = ReceivedLog::open(&path, "pw").unwrap();
+        r.record(conv(1), "alice".into(), 1000, b"hello", id)
+            .unwrap();
+        assert_eq!(
+            r.entries(&conv(1)).len(),
+            1,
+            "duplicate skipped after reopen too"
+        );
     }
 
     #[test]

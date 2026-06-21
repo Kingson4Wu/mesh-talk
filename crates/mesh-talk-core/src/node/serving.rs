@@ -108,8 +108,16 @@ impl Node {
             self.serve_pairing(&mut channel, req).await;
             return;
         }
-        match serve_wire_bytes(&mut channel, &self.log, &first).await {
-            Ok(Served::Handled(conv)) => {
+        // The first frame may be a Request, which makes serve_wire_bytes await the peer's
+        // streamed have-chunks — so it needs the same idle timeout as the loop, or a peer that
+        // sends one Request then stalls would pin this task (and its connection permit) forever.
+        match tokio::time::timeout(
+            SERVE_IDLE_TIMEOUT,
+            serve_wire_bytes(&mut channel, &self.log, &first),
+        )
+        .await
+        {
+            Ok(Ok(Served::Handled(conv))) => {
                 self.emit_new_messages(conv);
                 self.process_channel(conv);
                 self.process_file_events(conv);
