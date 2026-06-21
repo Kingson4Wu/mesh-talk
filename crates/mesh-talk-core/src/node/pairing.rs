@@ -36,8 +36,16 @@ impl PairingCode {
     }
 
     /// Parse a code from its hex form (case-insensitive). `None` if malformed.
+    ///
+    /// A valid code is exactly 16 bytes = 32 hex chars. We bound-check the length
+    /// BEFORE `hex::decode` so an implausibly long (attacker- or fat-finger-supplied)
+    /// string is rejected up front rather than allocating a decode buffer for it.
     pub fn from_hex(s: &str) -> Option<Self> {
-        let bytes = hex::decode(s.trim()).ok()?;
+        let s = s.trim();
+        if s.len() != 32 {
+            return None;
+        }
+        let bytes = hex::decode(s).ok()?;
         let arr: [u8; 16] = bytes.try_into().ok()?;
         Some(PairingCode(arr))
     }
@@ -147,7 +155,17 @@ fn frame<T: Serialize>(magic: &[u8], v: &T) -> Vec<u8> {
     out
 }
 
+/// Upper bound on a single pairing/backfill frame before we attempt to deserialize.
+/// Every pairing message is small (keys, a cert, one backfilled message body); a frame
+/// larger than the Noise transport's own `MAX_FRAME` (65535) cannot be legitimate, so
+/// reject it early rather than feeding it to bincode. Defense-in-depth: the transport
+/// already caps wire frames; this guards the in-process decode path too.
+const MAX_PAIRING_FRAME: usize = 65_535;
+
 fn unframe<T: for<'de> Deserialize<'de>>(magic: &[u8], bytes: &[u8]) -> Option<T> {
+    if bytes.len() > MAX_PAIRING_FRAME {
+        return None;
+    }
     let rest = bytes.strip_prefix(magic)?;
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
@@ -168,6 +186,9 @@ mod tests {
         assert_eq!(PairingCode::from_hex(&c.as_hex()).unwrap().0, c.0);
         assert!(PairingCode::from_hex("nothex").is_none());
         assert!(PairingCode::from_hex("ab").is_none()); // wrong length
+                                                        // An implausibly long input is rejected up front (length bound before decode).
+        assert!(PairingCode::from_hex(&"a".repeat(100_000)).is_none());
+        assert!(PairingCode::from_hex(&"ab".repeat(17)).is_none()); // 34 chars
     }
 
     #[test]

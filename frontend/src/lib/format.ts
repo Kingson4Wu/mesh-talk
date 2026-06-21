@@ -36,3 +36,13 @@ export function humanSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/**
+ * Format `host:port`, bracketing the host if it is a bare (unbracketed) IPv6 literal,
+ * so a v6 address doesn't render as the ambiguous `::1:80`. IPv4 and hostnames are
+ * left as-is. Mirrors the Rust `util::address::format_host_port`.
+ */
+export function formatHostPort(host: string, port: number): string {
+  const needsBrackets = host.includes(":") && !host.startsWith("[");
+  return needsBrackets ? `[${host}]:${port}` : `${host}:${port}`;
+}

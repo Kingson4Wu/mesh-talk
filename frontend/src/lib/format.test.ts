@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shortId, formatTime, humanSize } from "./format";
+import { shortId, formatTime, humanSize, formatHostPort } from "./format";
 
 describe("shortId", () => {
   it("truncates to the default 8 chars", () => {
@@ -17,6 +17,17 @@ describe("humanSize", () => {
   it("bytes", () => expect(humanSize(512)).toBe("512 B"));
   it("kilobytes (ceil)", () => expect(humanSize(2048)).toBe("2 KB"));
   it("megabytes (1 dp)", () => expect(humanSize(1_500_000)).toBe("1.4 MB"));
+});
+
+describe("formatHostPort", () => {
+  it("leaves IPv4 unbracketed", () =>
+    expect(formatHostPort("127.0.0.1", 80)).toBe("127.0.0.1:80"));
+  it("brackets a bare IPv6 literal", () =>
+    expect(formatHostPort("::1", 80)).toBe("[::1]:80"));
+  it("leaves an already-bracketed host alone", () =>
+    expect(formatHostPort("[::1]", 80)).toBe("[::1]:80"));
+  it("leaves a hostname unaffected", () =>
+    expect(formatHostPort("example.com", 443)).toBe("example.com:443"));
 });
 
 describe("formatTime", () => {

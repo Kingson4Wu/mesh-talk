@@ -102,6 +102,24 @@ export interface AppSettings {
   notifications: boolean;
 }
 
+// --- Contact trust / safety numbers (src-tauri/src/trust.rs + chat_commands.rs) ---
+
+export interface TrustInfo {
+  account_id: string;
+  /** The fingerprint pinned on first contact (the one to verify out-of-band). */
+  first_seen_fingerprint: string;
+  verified: boolean;
+  /** A known contact's fingerprint changed since first contact — warn loudly. */
+  fingerprint_changed: boolean;
+  /** False = brand-new contact with no record yet. */
+  known: boolean;
+}
+
+export interface SafetyNumber {
+  grouped: string;
+  words: string[];
+}
+
 // --- Tauri events (src-tauri/src/events.rs) ---
 
 export interface DmReceivedEvent {

@@ -286,6 +286,34 @@ impl Node {
         }
     }
 
+    /// Save a received file into `dir`, deriving the filename from the (remote-supplied)
+    /// manifest name. The name is sanitized — directory components stripped, traversal /
+    /// absolute / drive prefixes rejected, OS-illegal chars legalized — and the final
+    /// path is confirmed to stay within `dir`, de-duplicating with a `name (N).ext`
+    /// counter so two saves never clobber. Returns the actual path written.
+    ///
+    /// This is the safe entry point for a directory-based "save to Downloads" flow:
+    /// the caller supplies a TRUSTED directory and the file's own name is never trusted
+    /// to escape it.
+    pub fn save_file_into_dir(
+        &self,
+        file_conv: ConversationId,
+        dir: &Path,
+    ) -> Result<std::path::PathBuf, NodeError> {
+        let name = self
+            .files
+            .lock()
+            .expect("files mutex not poisoned")
+            .manifest(&file_conv)
+            .map(|m| m.name().to_string())
+            .ok_or_else(|| NodeError::File("unknown file".into()))?;
+        let dest = crate::util::savename::safe_save_path(dir, &name).ok_or_else(|| {
+            NodeError::File("could not place file safely within directory".into())
+        })?;
+        self.save_file_progress(file_conv, &dest, |_| {})?;
+        Ok(dest)
+    }
+
     /// Save a received file to `dest`, streaming chunk-by-chunk so the whole file is
     /// never buffered. Writes to `dest.part`, verifying each chunk's hash + AEAD on the
     /// way and the whole-file checksum at the end, then atomically renames into place.

@@ -527,6 +527,54 @@ pub async fn save_file(
     .map_err(CommandError::from)
 }
 
+/// Save a received file into a TRUSTED directory, deriving (and sanitizing) the
+/// filename from the remote-supplied manifest name. The core strips directory
+/// components, rejects traversal/absolute/drive prefixes, legalizes illegal chars, and
+/// keeps the result inside `dir`, de-duplicating with a `name (N).ext` counter.
+/// Returns the actual path written, so the UI can show where it landed.
+#[tauri::command]
+pub async fn save_file_to_dir(
+    state: tauri::State<'_, NodeState>,
+    file_conv: String,
+    dir: String,
+) -> Result<String, CommandError> {
+    let id = parse_channel_id(&file_conv)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let path = tokio::task::spawn_blocking(move || {
+        node.save_file_into_dir(id, std::path::Path::new(&dir))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+    .map_err(CommandError::from)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// A fingerprint rendered for human comparison: the same fingerprint grouped into
+/// readable blocks plus a short deterministic word sequence. Pure presentation of the
+/// EXISTING fingerprint (no crypto), so the UI can show a "safety number" the user
+/// compares out-of-band.
+#[derive(Serialize)]
+pub struct SafetyNumber {
+    pub grouped: String,
+    pub words: Vec<String>,
+}
+
+/// Compute the safety-number rendering of a fingerprint. Stateless + synchronous.
+#[tauri::command]
+pub fn safety_number(fingerprint: String) -> SafetyNumber {
+    SafetyNumber {
+        grouped: mesh_talk_core::util::safety_number::grouped(&fingerprint),
+        words: mesh_talk_core::util::safety_number::words(&fingerprint, 4)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
 /// Return a received file's decrypted bytes (for inline preview, e.g. images). Returned as a
 /// raw IPC response (ArrayBuffer in JS) to avoid the overhead of a JSON number array.
 #[tauri::command]

@@ -17,7 +17,9 @@ import type {
   PeerInfo,
   ReactionInfo,
   RegisterResult,
+  SafetyNumber,
   SearchHitInfo,
+  TrustInfo,
 } from "./types";
 
 // Tauri v2 maps camelCase JS arg keys to the Rust commands' snake_case params.
@@ -100,9 +102,19 @@ export const chat = {
   sendFileChannel: (channelId: string, path: string) =>
     invoke<string>("send_file_channel", { channelId, path }),
 
+  // Contact trust / safety numbers
+  getTrust: (accountId: string, currentFingerprint: string) =>
+    invoke<TrustInfo>("get_trust", { accountId, currentFingerprint }),
+  markVerified: (accountId: string, fingerprint: string) =>
+    invoke<void>("mark_verified", { accountId, fingerprint }),
+  safetyNumber: (fingerprint: string) =>
+    invoke<SafetyNumber>("safety_number", { fingerprint }),
+
   // Files + search + device linking
   saveFile: (fileConv: string, dest: string) =>
     invoke<void>("save_file", { fileConv, dest }),
+  saveFileToDir: (fileConv: string, dir: string) =>
+    invoke<string>("save_file_to_dir", { fileConv, dir }),
   readFile: (fileConv: string) =>
     invoke<ArrayBuffer>("read_file", { fileConv }),
   search: (query: string) => invoke<SearchHitInfo[]>("search", { query }),

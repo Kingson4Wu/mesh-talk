@@ -44,6 +44,14 @@ impl UpdateOutcome {
     }
 }
 
+/// Maximum distinct peers the roster will hold. A hostile LAN can announce thousands
+/// of distinct (validly-signed) fake `user_id`s; without a cap the roster — and so the
+/// process memory — would grow unbounded. 1024 is far above any plausible real LAN.
+/// When full, recording a NEW peer evicts the least-recently-seen existing one (LRU),
+/// so a flood of fakes can churn the table but can't grow it without bound. Refreshing
+/// or looking up a KNOWN peer is never blocked by the cap.
+pub const MAX_PEERS: usize = 1024;
+
 /// The known-peers map.
 #[derive(Default)]
 pub struct Roster {
@@ -69,6 +77,20 @@ impl Roster {
             return UpdateOutcome::Rejected;
         }
         let existed = self.peers.contains_key(&announce.user_id);
+        // Cap enforcement: a NEW peer that would push us over MAX_PEERS evicts the
+        // least-recently-seen existing peer first, so a flood of distinct fake ids can
+        // churn the table but never grows it past the cap. Known peers (refreshes) are
+        // exempt — they overwrite in place and don't add an entry.
+        if !existed && self.peers.len() >= MAX_PEERS {
+            if let Some(oldest) = self
+                .peers
+                .iter()
+                .min_by_key(|(_, r)| r.last_seen)
+                .map(|(id, _)| id.clone())
+            {
+                self.peers.remove(&oldest);
+            }
+        }
         self.peers.insert(
             announce.user_id.clone(),
             PeerRecord {
@@ -303,6 +325,46 @@ mod tests {
         assert_eq!(roster.devices_of_account(&mine.account_id()).len(), 1);
         assert_eq!(roster.devices_of_account(&theirs.account_id()).len(), 1);
         assert!(roster.devices_of_account("unknown-account").is_empty());
+    }
+
+    #[test]
+    fn roster_is_bounded_under_a_flood_of_distinct_peers() {
+        // Announce far more distinct (validly-signed) peers than the cap; the roster
+        // must never exceed MAX_PEERS, evicting the least-recently-seen to make room.
+        let mut roster = Roster::default();
+        for i in 0..(MAX_PEERS + 50) {
+            let dev = DeviceIdentity::generate();
+            let outcome =
+                roster.update(&Announce::new(&dev, format!("peer{i}"), 4000), ip(), "self");
+            assert_eq!(outcome, UpdateOutcome::New);
+            assert!(
+                roster.peers().len() <= MAX_PEERS,
+                "roster grew past the cap at insert {i}"
+            );
+        }
+        assert_eq!(roster.peers().len(), MAX_PEERS);
+    }
+
+    #[test]
+    fn refreshing_a_known_peer_is_not_blocked_by_the_cap() {
+        // Fill to the cap, then re-announce an EXISTING peer: it must refresh in place
+        // (no new entry, no eviction churn).
+        let mut roster = Roster::default();
+        let first = DeviceIdentity::generate();
+        roster.update(&Announce::new(&first, "first", 4000), ip(), "self");
+        for i in 1..MAX_PEERS {
+            let dev = DeviceIdentity::generate();
+            roster.update(&Announce::new(&dev, format!("p{i}"), 4000), ip(), "self");
+        }
+        assert_eq!(roster.peers().len(), MAX_PEERS);
+        // The first peer is still present and re-announcing it refreshes (not New).
+        let outcome = roster.update(&Announce::new(&first, "first", 4001), ip(), "self");
+        assert_eq!(outcome, UpdateOutcome::Refreshed);
+        assert_eq!(roster.peers().len(), MAX_PEERS);
+        assert_eq!(
+            roster.get(&first.public().user_id()).unwrap().addr.port(),
+            4001
+        );
     }
 
     #[test]

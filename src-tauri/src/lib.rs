@@ -23,6 +23,7 @@ pub mod services;
 pub mod settings;
 pub mod state;
 pub mod tray;
+pub mod trust;
 
 use crate::settings::SettingsState;
 use crate::state::AppState;
@@ -69,6 +70,7 @@ pub fn run_tauri() {
     log::info!("No sockets are bound until a user signs in.");
 
     let settings_state = SettingsState::default();
+    let trust_state = crate::trust::TrustState::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -87,6 +89,10 @@ pub fn run_tauri() {
             }
             // Seed the managed settings from disk before any window/notification logic runs.
             crate::settings::load_into_state(&app.handle().clone(), &app.state::<SettingsState>());
+            crate::trust::load_into_state(
+                &app.handle().clone(),
+                &app.state::<crate::trust::TrustState>(),
+            );
             crate::tray::create_system_tray(&app.handle().clone())?;
 
             // A login-time autostart launch should come up hidden to the tray.
@@ -123,6 +129,7 @@ pub fn run_tauri() {
         })
         .manage(app_state)
         .manage(settings_state)
+        .manage(trust_state)
         .manage(crate::chat_commands::NodeState::empty())
         .invoke_handler(tauri::generate_handler![
             commands::login,
@@ -154,6 +161,8 @@ pub fn run_tauri() {
             crate::chat_commands::send_file_dm,
             crate::chat_commands::send_file_channel,
             crate::chat_commands::save_file,
+            crate::chat_commands::save_file_to_dir,
+            crate::chat_commands::safety_number,
             crate::chat_commands::read_file,
             crate::chat_commands::react_dm,
             crate::chat_commands::react_channel,
@@ -163,7 +172,9 @@ pub fn run_tauri() {
             crate::chat_commands::diag_get_peers,
             crate::chat_commands::diag_network_info,
             crate::settings::get_app_settings,
-            crate::settings::set_app_settings
+            crate::settings::set_app_settings,
+            crate::trust::get_trust,
+            crate::trust::mark_verified
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

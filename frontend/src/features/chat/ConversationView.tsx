@@ -6,6 +6,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
+import { VerifyContactDialog } from "./VerifyContactDialog";
 import { TransferBar } from "./TransferBar";
 import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
@@ -140,7 +141,13 @@ export function ConversationView() {
               : `Direct message · ${shortId(active.id, 12)}`}
           </div>
         </div>
-        {isChannel && <MembersDialog />}
+        {isChannel ? (
+          <MembersDialog />
+        ) : (
+          active.kind === "account" && (
+            <VerifyContactDialog accountId={active.id} name={active.name} />
+          )
+        )}
       </header>
 
       <div className="relative flex-1 overflow-hidden">
