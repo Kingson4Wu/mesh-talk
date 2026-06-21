@@ -11,7 +11,17 @@ pub const SALT_SIZE: usize = 16;
 pub const NONCE_SIZE: usize = 12;
 const KEY_SIZE: usize = 32;
 // OWASP 2023 minimum for PBKDF2-HMAC-SHA256 protecting long-term keys.
+//
+// PBKDF2 dominates the debug test suite (~12s per derivation), so it is collapsed to a trivial
+// cost in two TEST-ONLY situations: (a) `cfg(test)` — true only when compiling THIS crate as a
+// test target; (b) the `fast-test-kdf` feature — enabled exclusively from a downstream crate's
+// `[dev-dependencies]` (src-tauri), which Cargo does NOT activate for normal `cargo build`/
+// release builds. So release builds and the shipped app always use the strong production value;
+// there is no way to enable the cheap path in a real build.
+#[cfg(not(any(test, feature = "fast-test-kdf")))]
 const PBKDF2_ROUNDS: u32 = 600_000;
+#[cfg(any(test, feature = "fast-test-kdf"))]
+const PBKDF2_ROUNDS: u32 = 1;
 
 pub struct EncryptionKey([u8; KEY_SIZE]);
 

@@ -5,7 +5,22 @@
 
 set -e  # Exit on any error
 
-echo "Running Mesh-Talk health checks..."
+# FAST mode (FAST=1, or `check-health.sh --fast`): runs only the quick local gate used by the
+# pre-commit hook — formatting, clippy, frontend lint/tests, and the now-cheap in-memory Rust
+# unit slice. It SKIPS the slow, redundant steps (full `cargo test --workspace`, the verbose
+# workspace build, the frontend build, and the supply-chain/secret/typos scans), because CI
+# (.github/workflows/ci.yml) runs the full `cargo test --workspace` on all three platforms plus
+# every one of those scans. Default (no flag) keeps the complete suite for CI/manual use.
+FAST="${FAST:-0}"
+case "${1:-}" in
+    --fast) FAST=1 ;;
+esac
+
+if [ "$FAST" = "1" ]; then
+    echo "Running Mesh-Talk health checks (FAST pre-commit gate)..."
+else
+    echo "Running Mesh-Talk health checks..."
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -107,6 +122,10 @@ if ! { cd src-tauri && cargo clippy --workspace --all-targets --fix --allow-dirt
 fi
 cd ..
 
+# Supply-chain / secret / spelling / shell scans below mirror CI and are slow or require extra
+# tooling — skip them in FAST mode; CI (.github/workflows/ci.yml) runs them on every push.
+if [ "$FAST" != "1" ]; then
+
 # Spelling (typos) — mirrors CI's crate-ci/typos. Warn-skip if not installed.
 print_status "success" "Checking spelling (typos)..."
 if command_exists typos; then
@@ -164,6 +183,8 @@ else
     print_status "warning" "shellcheck not installed — skipping; CI will still check."
 fi
 
+fi  # end FAST-skip of scan block
+
 # Run ESLint (Frontend linter). ESLint 9 uses flat config (eslint.config.js);
 # the `--ext` flag was removed, so run the package script which lints the project.
 print_status "success" "Running frontend linter (ESLint)..."
@@ -181,19 +202,36 @@ if ! { cd frontend && npm test; }; then
 fi
 cd ..
 
-# Run tests
-print_status "success" "Running tests..."
-if ! { cd src-tauri && cargo test --workspace; }; then
-    print_status "error" "Tests failed. Please fix test issues."
-    exit 1
+# Run tests.
+# FAST: only the in-memory unit slice (lib tests of both crates). With the test-only cheap-KDF
+# params (cfg(test) in mesh-talk-core), these run in well under a second instead of ~20 min.
+# The full `cargo test --workspace` (heavy/integration/e2e) is left to CI.
+if [ "$FAST" = "1" ]; then
+    print_status "success" "Running fast Rust unit tests (lib only)..."
+    if ! { cd src-tauri && cargo test -p mesh-talk-core --lib && cargo test -p mesh-talk --lib; }; then
+        print_status "error" "Rust unit tests failed. Please fix test issues."
+        exit 1
+    fi
+    cd ..
+else
+    print_status "success" "Running tests..."
+    if ! { cd src-tauri && cargo test --workspace; }; then
+        print_status "error" "Tests failed. Please fix test issues."
+        exit 1
+    fi
+    cd ..
 fi
-cd ..
 
 # Rust security advisories are gated by cargo-deny above (its `advisories` check uses the same
 # RUSTSEC database as cargo-audit, is BLOCKING, and is exactly what CI runs — allowlist a
 # known/unfixable advisory in deny.toml). No separate cargo-audit step: it duplicated cargo-deny
 # and a workspace tripped it (Cargo.lock at the repo root, not src-tauri), and an out-of-date
 # local cargo-audit chokes parsing newer advisory entries.
+
+# The npm vuln scan and the full release-style builds are slow and redundant for a pre-commit
+# gate — skip them in FAST mode. CI builds the frontend + workspace on all three platforms and
+# audits npm dependencies (dependency-review / audit-ci) on every push.
+if [ "$FAST" != "1" ]; then
 
 # Check for security vulnerabilities (Node.js)
 print_status "success" "Checking for Node.js security vulnerabilities..."
@@ -227,5 +265,11 @@ if ! { cd frontend && npm run build; }; then
 fi
 cd ..
 
-print_status "success" "All health checks passed!"
+fi  # end FAST-skip of npm-audit + build steps
+
+if [ "$FAST" = "1" ]; then
+    print_status "success" "Fast pre-commit gate passed! (full suite + scans run in CI)"
+else
+    print_status "success" "All health checks passed!"
+fi
 exit 0

@@ -6,6 +6,15 @@ license.workspace = true
 repository.workspace = true
 description = "Mesh-Talk core: a serverless, end-to-end-encrypted LAN messaging protocol — identity & device certificates, an encrypted event log with peer sync, Double Ratchet + sender-key forward secrecy, a Noise transport, LAN discovery, a store-and-forward post office, and the node runtime. UI-free; the basis for an SDK."
 
+[features]
+# TEST-ONLY: collapses the password KDFs (Argon2 + PBKDF2) to a trivial cost so downstream
+# test suites (notably src-tauri, which links this crate normally and so doesn't see our own
+# `cfg(test)`) don't pay ~12s per key derivation. Enable it ONLY from `[dev-dependencies]`
+# (see src-tauri/Cargo.toml): Cargo does NOT activate a dev-dependency-only feature for normal
+# `cargo build`/release builds, so production key strength is never affected. Never list this
+# under `[dependencies]` or `default`.
+fast-test-kdf = []
+
 [lib]
 name = "mesh_talk_core"
 path = "src/lib.rs"
