@@ -16,7 +16,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  NODE_VERSION: '18'
+  # Node 20+ required: vite 8 needs >=20.19 and uses CustomEvent (a Node 20 global).
+  NODE_VERSION: '20'
 
 jobs:
   check:
