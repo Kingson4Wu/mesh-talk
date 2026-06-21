@@ -17,6 +17,7 @@ import type { SearchHitInfo } from "@/lib/types";
 export function SearchDialog() {
   const open = useChat((s) => s.open);
   const peers = useChat((s) => s.peers);
+  const ready = useChat((s) => s.ready);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHitInfo[]>([]);
@@ -24,7 +25,9 @@ export function SearchDialog() {
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
-    if (!dialogOpen) return;
+    // Don't invoke backend search before the node is up (gates the one node-dependent
+    // control reachable during the two-phase startup window).
+    if (!dialogOpen || !ready) return;
     if (!query.trim()) {
       setHits([]);
       return;
@@ -48,7 +51,7 @@ export function SearchDialog() {
       active = false;
       clearTimeout(timer.current);
     };
-  }, [query, dialogOpen]);
+  }, [query, dialogOpen, ready]);
 
   const go = (h: SearchHitInfo) => {
     let conv: Conversation;
@@ -70,7 +73,12 @@ export function SearchDialog() {
   return (
     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title="Search messages">
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Search messages"
+          disabled={!ready}
+        >
           <Search className="h-4 w-4" />
         </Button>
       </DialogTrigger>
