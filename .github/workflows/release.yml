@@ -239,12 +239,20 @@ jobs:
           path: release_zips/*
           if-no-files-found: error
 
-      # 1️⃣2️⃣ On a version tag only, also publish them to the GitHub Release.
+      # 1️⃣2️⃣ On a version tag only: build the release body (verification + usage notes, with
+      # the tag substituted in) and publish the artifacts to the GitHub Release.
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: sed "s/__TAG__/${GITHUB_REF_NAME}/g" .github/release-notes.md > release_notes.md
+
       - name: Upload zipped artifacts and signature bundle to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          body_path: release_notes.md
+          generate_release_notes: true # append an auto changelog under the notes above
           files: release_zips/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

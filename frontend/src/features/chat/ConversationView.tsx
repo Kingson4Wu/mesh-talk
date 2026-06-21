@@ -27,6 +27,12 @@ function EmptyState() {
   );
 }
 
+// Stable empty references. Returning a fresh `[]` from a zustand selector makes
+// useSyncExternalStore read a new snapshot on every render → an infinite render loop
+// ("Maximum update depth exceeded") that tears the whole app down to a blank screen.
+const NO_MESSAGES: ChatMessage[] = [];
+const NO_REACTIONS: ReactionInfo[] = [];
+
 export function ConversationView() {
   const active = useChat((s) => s.active);
   const send = useChat((s) => s.send);
@@ -37,8 +43,8 @@ export function ConversationView() {
   const myAccountId = useChat((s) => s.myAccountId);
   const members = useChat((s) => s.members);
   const key = active ? convKey(active) : "";
-  const messages = useChat((s) => (active ? (s.messages[key] ?? []) : []));
-  const reactions = useChat((s) => (active ? (s.reactions[key] ?? []) : []));
+  const messages = useChat((s) => (active ? (s.messages[key] ?? NO_MESSAGES) : NO_MESSAGES));
+  const reactions = useChat((s) => (active ? (s.reactions[key] ?? NO_REACTIONS) : NO_REACTIONS));
   const loading = useChat((s) => s.loading);
   const myName = useAuth((s) => s.user?.username ?? "");
 

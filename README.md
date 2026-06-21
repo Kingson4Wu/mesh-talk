@@ -66,19 +66,22 @@ mesh-talk/
 
 ## Download & first run
 
-Grab the package for your OS from the [**Releases**](https://github.com/Kingson4Wu/mesh-talk/releases)
-page. The builds are **free and unsigned** (no paid Apple/Windows code-signing certificate), so
-macOS and Windows show a one-time "unidentified developer" / SmartScreen prompt the first time —
-this is expected for unsigned open-source software and does **not** mean the app is unsafe. Each
-release also ships a `SHA256SUMS` list and a Sigstore `cosign` signature so you can verify the
-download came from this project's CI. How to open, per platform:
+Grab the `.zip` for your OS/arch from the [**Releases**](https://github.com/Kingson4Wu/mesh-talk/releases)
+page (e.g. `mesh-talk_vX.Y.Z_macos_arm64.zip`) and **unzip it** — inside are the installer(s) for
+your platform plus a `SHA256SUMS` file. The builds are **free and unsigned** (no paid Apple/Windows
+code-signing certificate), so macOS and Windows show a one-time "unidentified developer" /
+SmartScreen prompt the first time — this is expected for unsigned open-source software and does
+**not** mean the app is unsafe. Every release also ships a `SHA256SUMS` list, a Sigstore `cosign`
+signature, and a SLSA build-provenance attestation; the **release page documents the exact verify
+commands** (`shasum -c`, `cosign verify-blob`, `gh attestation verify`). How to open, per platform:
 
 - **Linux** — no prompt at all.
   - **AppImage** (portable, no install): `chmod +x Mesh-Talk_*.AppImage && ./Mesh-Talk_*.AppImage`
   - or install the `.deb` / `.rpm` (adds an app-menu entry): `sudo dpkg -i mesh-talk_*.deb`
-- **macOS** — open the `.dmg`, drag **Mesh-Talk** to Applications. On first launch macOS blocks an
+- **macOS** — open the `.dmg`, drag **mesh-talk** to Applications. On first launch macOS blocks an
   unsigned app, so **right-click the app → Open → Open** (only needed once). If it says
-  "damaged", clear the quarantine flag: `xattr -dr com.apple.quarantine /Applications/Mesh-Talk.app`.
+  "damaged", clear the quarantine flag with the full path (a Homebrew/Conda `xattr` in `PATH` may
+  shadow the system one and lack `-r`): `/usr/bin/xattr -dr com.apple.quarantine /Applications/mesh-talk.app`.
 - **Windows** — run the `.exe` (or `.msi`) installer. SmartScreen shows "Windows protected your
   PC" → click **More info → Run anyway** (only the first time). WebView2 is fetched automatically
   if missing.
@@ -90,33 +93,44 @@ always prompt-free.
 
 ## Build from source
 
-## Prerequisites
+### Prerequisites
 
-- Rust 2021 edition or later
-- Cargo package manager
+- **Rust** (stable, edition 2021) + Cargo
+- **Node.js 20+** (frontend toolchain)
+- **protoc** — `brew install protobuf` (macOS) · `choco install protoc` (Windows) · `apt install protobuf-compiler` (Linux)
+- **Tauri CLI** — `cargo install tauri-cli`
+- **Linux only** — the GTK/WebKit stack:
+  `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
 
-## Installation
-
-Clone the repository and build the project:
+### Build & run the desktop app
 
 ```bash
-git clone https://github.com/yourusername/mesh-talk.git
+git clone https://github.com/Kingson4Wu/mesh-talk.git
 cd mesh-talk
-cargo build --release
+make dev          # install Rust + Node deps + git hooks (first run is slow)
+make tauri-dev    # run the app in dev mode (hot-reload frontend)
+make tauri-build  # or: produce a release bundle (.app / .dmg / .exe / .deb / ...)
 ```
 
-## Usage
+### Headless node (CLI / post-office relay)
 
-Run the application with your desired name and port:
+The same core runs without a UI as `mesh-talk-node` (also the offline-delivery relay):
 
 ```bash
-cargo run -- --name YourName --port 8000
+cargo run --bin mesh-talk-node -- --keystore alice.ks --password <pw> --name alice
 ```
 
-### Command Line Arguments
+| Flag | Meaning |
+|------|---------|
+| `--keystore <path>` | encrypted identity keystore, created if absent (**required**) |
+| `--password <pw>` | password that encrypts the keystore (**required**) |
+| `--name <name>` | display name advertised to peers (**required**) |
+| `--port <n>` | TCP port to listen on (`0` = OS-assigned) |
+| `--discovery-port <n>` | UDP discovery port (**must match across peers**) |
+| `--post-office` | run as a store-and-forward relay for offline delivery (no chat REPL) |
 
-- `--name` or `-n`: Your display name in the chat
-- `--port` or `-p`: The TCP port to listen on for incoming connections
+Each instance needs its **own** keystore path — two nodes sharing one clobber each other's data.
+In the chat REPL: `/msg <peer-id-prefix> <text>` to DM, `/history <peer-id-prefix>` to view a thread.
 
 ## How It Works
 
