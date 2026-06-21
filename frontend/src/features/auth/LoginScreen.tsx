@@ -89,7 +89,9 @@ export function LoginScreen() {
                 </div>
 
                 {error && (
-                  <p className="text-sm font-medium text-destructive">{error}</p>
+                  <p className="text-sm font-medium text-destructive">
+                    {error}
+                  </p>
                 )}
                 {notice && (
                   <p className="text-sm font-medium text-primary">{notice}</p>

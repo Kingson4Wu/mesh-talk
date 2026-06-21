@@ -24,8 +24,7 @@ export function CreateChannelDialog() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
-  const toggle = (id: string) =>
-    setSelected((s) => ({ ...s, [id]: !s[id] }));
+  const toggle = (id: string) => setSelected((s) => ({ ...s, [id]: !s[id] }));
 
   const submit = async () => {
     const ids = Object.keys(selected).filter((k) => selected[k]);
@@ -44,7 +43,12 @@ export function CreateChannelDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-6 w-6" title="New channel">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="New channel"
+        >
           <Plus className="h-4 w-4" />
         </Button>
       </DialogTrigger>

@@ -110,7 +110,9 @@ export function LinkDeviceDialog() {
         </section>
 
         <section className="space-y-2 rounded-lg border p-3">
-          <p className="text-sm font-medium">Have a code from your other device?</p>
+          <p className="text-sm font-medium">
+            Have a code from your other device?
+          </p>
           <select
             value={joinPeer}
             onChange={(e) => setJoinPeer(e.target.value)}
@@ -129,7 +131,10 @@ export function LinkDeviceDialog() {
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
             />
-            <Button disabled={!joinPeer || !joinCode.trim() || busy} onClick={doLink}>
+            <Button
+              disabled={!joinPeer || !joinCode.trim() || busy}
+              onClick={doLink}
+            >
               {busy && <Loader2 className="h-4 w-4 animate-spin" />}
               Link
             </Button>
@@ -143,7 +148,12 @@ export function LinkDeviceDialog() {
               Rotate to a fresh account identity.
             </p>
           </div>
-          <Button variant="destructive" size="sm" disabled={busy} onClick={rekey}>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={busy}
+            onClick={rekey}
+          >
             <KeyRound className="h-4 w-4" />
             Re-key
           </Button>

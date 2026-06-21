@@ -81,7 +81,12 @@ function sendTextFor(c: Conversation, text: string, replyTo: string | null) {
     ? chat.sendToAccount(c.id, text, replyTo)
     : chat.sendChannelMessage(c.id, text, replyTo);
 }
-function reactFor(c: Conversation, target: string, emoji: string, remove: boolean) {
+function reactFor(
+  c: Conversation,
+  target: string,
+  emoji: string,
+  remove: boolean,
+) {
   return c.kind === "account"
     ? chat.reactAccount(c.id, target, emoji, remove)
     : chat.reactChannel(c.id, target, emoji, remove);
@@ -268,7 +273,10 @@ export const useChat = create<ChatState>((set, get) => ({
     const key = convKey(c);
     set({ loading: true });
     try {
-      const [items, reacts] = await Promise.all([historyFor(c), reactionsFor(c)]);
+      const [items, reacts] = await Promise.all([
+        historyFor(c),
+        reactionsFor(c),
+      ]);
       set((s) => ({
         messages: { ...s.messages, [key]: items.map(fromHistory) },
         reactions: { ...s.reactions, [key]: reacts },
@@ -295,7 +303,10 @@ export const useChat = create<ChatState>((set, get) => ({
       clientId,
     };
     set((s) => ({
-      messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), optimistic] },
+      messages: {
+        ...s.messages,
+        [key]: [...(s.messages[key] ?? []), optimistic],
+      },
     }));
     try {
       await sendTextFor(c, text, replyTo);
@@ -326,7 +337,8 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ error: `Couldn't send file: ${errorMessage(e)}` });
       return;
     }
-    if (get().active && convKey(get().active!) === convKey(c)) await get().reload();
+    if (get().active && convKey(get().active!) === convKey(c))
+      await get().reload();
   },
 
   toggleReaction: async (target, emoji) => {

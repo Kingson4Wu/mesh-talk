@@ -17,7 +17,7 @@ use crate::node::transport::dial;
 /// encode differently and the tie-break would pick different winners on different nodes
 /// (divergence). Canonicalizing at every construction site keeps the wire form deterministic.
 fn canonical_members(mut members: Vec<PublicIdentity>) -> Vec<PublicIdentity> {
-    members.sort_by(|a, b| a.user_id().cmp(&b.user_id()));
+    members.sort_by_key(|m| m.user_id());
     members.dedup_by(|a, b| a.user_id() == b.user_id());
     members
 }

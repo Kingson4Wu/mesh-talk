@@ -9,15 +9,15 @@ import { SearchDialog } from "./SearchDialog";
 import { FilesTray } from "./FilesTray";
 import { LinkDeviceDialog } from "./LinkDeviceDialog";
 import { useAuth } from "@/store/auth";
-import {
-  convKey,
-  useChat,
-  type Conversation,
-} from "@/store/chat";
+import { convKey, useChat, type Conversation } from "@/store/chat";
 import type { AccountInfo, ChannelInfo } from "@/lib/types";
 
 function accountConv(a: AccountInfo): Conversation {
-  return { kind: "account", id: a.account_id, name: a.names[0] || shortId(a.account_id) };
+  return {
+    kind: "account",
+    id: a.account_id,
+    name: a.names[0] || shortId(a.account_id),
+  };
 }
 function channelConv(c: ChannelInfo): Conversation {
   return { kind: "channel", id: c.channel_id, name: c.name };
@@ -114,7 +114,12 @@ export function Sidebar() {
           <FilesTray />
           <LinkDeviceDialog />
           <div className="flex-1" />
-          <Button variant="ghost" size="icon" title="Sign out" onClick={() => logout()}>
+          <Button
+            variant="ghost"
+            size="icon"
+            title="Sign out"
+            onClick={() => logout()}
+          >
             <LogOut className="h-4 w-4" />
           </Button>
         </div>
@@ -132,14 +137,18 @@ export function Sidebar() {
             key={a.account_id}
             conv={accountConv(a)}
             subtitle={
-              a.device_count > 1 ? `${a.device_count} devices` : shortId(a.account_id, 12)
+              a.device_count > 1
+                ? `${a.device_count} devices`
+                : shortId(a.account_id, 12)
             }
           />
         ))}
 
         <SectionLabel action={<CreateChannelDialog />}>Channels</SectionLabel>
         {channels.length === 0 && (
-          <p className="px-2.5 py-2 text-xs text-muted-foreground">No channels yet.</p>
+          <p className="px-2.5 py-2 text-xs text-muted-foreground">
+            No channels yet.
+          </p>
         )}
         {channels.map((c) => (
           <Row

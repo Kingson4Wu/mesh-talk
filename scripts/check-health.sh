@@ -78,7 +78,7 @@ fi
 
 # Check code formatting (Frontend)
 print_status "success" "Checking frontend code formatting..."
-if ! cd frontend && npx prettier --check src/; then
+if ! { cd frontend && npx prettier --check src/; }; then
     print_status "error" "Frontend code formatting issues found. Run 'npx prettier --write src/' to fix."
     exit 1
 fi
@@ -86,7 +86,7 @@ cd ..
 
 # Apply automatic code formatting fixes (Frontend)
 print_status "success" "Applying automatic frontend code formatting fixes..."
-if ! cd frontend && npx prettier --write src/; then
+if ! { cd frontend && npx prettier --write src/; }; then
     print_status "warning" "Failed to apply some frontend code formatting fixes automatically."
 fi
 cd ..
@@ -94,7 +94,7 @@ cd ..
 # Run Clippy (Rust linter). MUST mirror CI: --all-targets covers tests/benches/bins'
 # test modules — without it, lints in test code only surface on CI (and break it).
 print_status "success" "Running Rust linter (Clippy)..."
-if ! cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings; then
+if ! { cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings; }; then
     print_status "error" "Rust linting issues found. Please fix Clippy warnings."
     exit 1
 fi
@@ -102,7 +102,7 @@ cd ..
 
 # Apply automatic Clippy fixes
 print_status "success" "Applying automatic Clippy fixes..."
-if ! cd src-tauri && cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged; then
+if ! { cd src-tauri && cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged; }; then
     print_status "warning" "Failed to apply some Clippy fixes automatically."
 fi
 cd ..
@@ -121,7 +121,7 @@ fi
 # Supply-chain policy (cargo-deny) — mirrors CI. Warn-skip if not installed.
 print_status "success" "Checking supply-chain policy (cargo-deny)..."
 if command_exists cargo-deny; then
-    if ! cd src-tauri && cargo deny check; then
+    if ! { cd src-tauri && cargo deny check; }; then
         print_status "error" "cargo-deny policy violation (advisories/bans/licenses/sources)."
         exit 1
     fi
@@ -167,7 +167,7 @@ fi
 # Run ESLint (Frontend linter). ESLint 9 uses flat config (eslint.config.js);
 # the `--ext` flag was removed, so run the package script which lints the project.
 print_status "success" "Running frontend linter (ESLint)..."
-if ! cd frontend && npm run lint; then
+if ! { cd frontend && npm run lint; }; then
     print_status "error" "Frontend linting issues found. Please fix ESLint errors."
     exit 1
 fi
@@ -175,7 +175,7 @@ cd ..
 
 # Run frontend unit tests (Vitest)
 print_status "success" "Running frontend tests..."
-if ! cd frontend && npm test; then
+if ! { cd frontend && npm test; }; then
     print_status "error" "Frontend tests failed. Please fix the failing tests."
     exit 1
 fi
@@ -183,7 +183,7 @@ cd ..
 
 # Run tests
 print_status "success" "Running tests..."
-if ! cd src-tauri && cargo test --workspace; then
+if ! { cd src-tauri && cargo test --workspace; }; then
     print_status "error" "Tests failed. Please fix test issues."
     exit 1
 fi
@@ -195,7 +195,7 @@ if ! command_exists cargo-audit; then
     print_status "warning" "cargo-audit not found. Installing..."
     if cargo install cargo-audit; then
         print_status "success" "cargo-audit installed successfully"
-        if ! cd src-tauri && cargo audit; then
+        if ! { cd src-tauri && cargo audit; }; then
             print_status "warning" "Security vulnerabilities found in Rust dependencies."
         fi
         cd ..
@@ -204,7 +204,7 @@ if ! command_exists cargo-audit; then
         exit 1
     fi
 else
-    if ! cd src-tauri && cargo audit; then
+    if ! { cd src-tauri && cargo audit; }; then
         print_status "warning" "Security vulnerabilities found in Rust dependencies."
     fi
     cd ..
@@ -218,14 +218,14 @@ if ! command_exists npx; then
 fi
 
 # Ensure audit-ci is installed
-if ! cd frontend && npx audit-ci --config audit-ci.json; then
+if ! { cd frontend && npx audit-ci --config audit-ci.json; }; then
     print_status "warning" "Security vulnerabilities found in Node.js dependencies or audit-ci.json not found."
 fi
 cd .. || true
 
 # Build the project
 print_status "success" "Building the project..."
-if ! cd src-tauri && cargo build --workspace --verbose; then
+if ! { cd src-tauri && cargo build --workspace --verbose; }; then
     print_status "error" "Build failed. Please fix build issues."
     exit 1
 fi
@@ -233,7 +233,7 @@ cd ..
 
 # Build the frontend
 print_status "success" "Building the frontend..."
-if ! cd frontend && npm run build; then
+if ! { cd frontend && npm run build; }; then
     print_status "error" "Frontend build failed. Please fix build issues."
     exit 1
 fi

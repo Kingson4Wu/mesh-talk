@@ -2,7 +2,11 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Download, FileDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { errorMessage } from "@/lib/error";
 import { humanSize } from "@/lib/format";
 import { useChat } from "@/store/chat";
@@ -25,7 +29,12 @@ export function FilesTray() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" title="Received files" className="relative">
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Received files"
+          className="relative"
+        >
           <Download className="h-4 w-4" />
           {files.length > 0 && (
             <Badge className="absolute -right-0.5 -top-0.5 h-4 min-w-4 justify-center bg-primary px-1 text-primary-foreground">

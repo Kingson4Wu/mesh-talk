@@ -41,7 +41,9 @@ export function Composer({
     const el = ref.current;
     if (!el) return;
     const caret = el.selectionStart ?? text.length;
-    const before = text.slice(0, caret).replace(/@([\p{L}\p{N}_-]*)$/u, `@${name} `);
+    const before = text
+      .slice(0, caret)
+      .replace(/@([\p{L}\p{N}_-]*)$/u, `@${name} `);
     const next = before + text.slice(caret);
     setText(next);
     setMentionQuery(null);
@@ -83,7 +85,8 @@ export function Composer({
         <div className="mb-2 flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-sm">
           <CornerUpLeft className="h-3.5 w-3.5 shrink-0 text-primary" />
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            Replying to <span className="text-foreground">{replyTo.text || "message"}</span>
+            Replying to{" "}
+            <span className="text-foreground">{replyTo.text || "message"}</span>
           </span>
           <button
             onClick={onCancelReply}
@@ -132,7 +135,10 @@ export function Composer({
           />
           <Button
             size="icon"
-            className={cn("h-9 w-9 shrink-0 rounded-xl", !text.trim() && "opacity-50")}
+            className={cn(
+              "h-9 w-9 shrink-0 rounded-xl",
+              !text.trim() && "opacity-50",
+            )}
             disabled={!text.trim()}
             onClick={send}
           >

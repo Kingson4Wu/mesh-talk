@@ -112,7 +112,9 @@ export function ConversationView() {
 
       <div ref={scrollRef} className="flex-1 space-y-0.5 overflow-y-auto py-4">
         {loading && messages.length === 0 && (
-          <p className="py-8 text-center text-sm text-muted-foreground">Loading…</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Loading…
+          </p>
         )}
         {!loading && messages.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
@@ -121,7 +123,8 @@ export function ConversationView() {
         )}
         {messages.map((m, i) => {
           const prev = messages[i - 1];
-          const showAuthor = !prev || prev.who !== m.who || prev.fromMe !== m.fromMe;
+          const showAuthor =
+            !prev || prev.who !== m.who || prev.fromMe !== m.fromMe;
           const parent = m.replyTo ? (byId.get(m.replyTo) ?? null) : null;
           return (
             <MessageBubble
@@ -140,7 +143,9 @@ export function ConversationView() {
       </div>
 
       <Composer
-        placeholder={isChannel ? `Message #${active.name}` : `Message ${active.name}`}
+        placeholder={
+          isChannel ? `Message #${active.name}` : `Message ${active.name}`
+        }
         mentionNames={mentionNames}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
