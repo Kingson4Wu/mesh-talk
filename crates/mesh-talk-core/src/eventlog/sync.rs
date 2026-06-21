@@ -793,14 +793,17 @@ mod tests {
 
     #[test]
     fn random_partitions_converge() {
-        use rand::rngs::StdRng;
-        use rand::{Rng, SeedableRng};
+        use rand_chacha::ChaCha20Rng;
+        use rand_core::{RngCore, SeedableRng};
         use std::collections::HashMap;
+
+        // 70% inclusion, expressed against next_u32() so the test needs no `rand` crate.
+        let pct = |rng: &mut ChaCha20Rng, p: u32| rng.next_u32() % 100 < p;
 
         let authors: Vec<DeviceIdentity> = (0..3).map(|_| DeviceIdentity::generate()).collect();
 
         for seed in 0..8u64 {
-            let mut rng = StdRng::seed_from_u64(seed);
+            let mut rng = ChaCha20Rng::seed_from_u64(seed);
 
             // Build a valid reference DAG of 12 events using a reference log's
             // `prepare` for correct parents/lamport, with dense per-author seqs.
@@ -808,7 +811,7 @@ mod tests {
             let mut all: Vec<Event> = Vec::new();
             let mut seqs: HashMap<[u8; 32], u64> = HashMap::new();
             for i in 0..12u64 {
-                let author = &authors[rng.gen_range(0..authors.len())];
+                let author = &authors[(rng.next_u32() as usize) % authors.len()];
                 let (parents, lamport) = reference.prepare(&conv());
                 let pk = author.public().ed25519_pub;
                 let seq = {
@@ -828,11 +831,11 @@ mod tests {
             let (mut a_ids, mut b_ids): (HashSet<EventId>, HashSet<EventId>) =
                 (HashSet::new(), HashSet::new());
             for e in &all {
-                if rng.gen_bool(0.7) && e.parents.iter().all(|p| a_ids.contains(p)) {
+                if pct(&mut rng, 70) && e.parents.iter().all(|p| a_ids.contains(p)) {
                     a.append(e.clone()).unwrap();
                     a_ids.insert(e.id);
                 }
-                if rng.gen_bool(0.7) && e.parents.iter().all(|p| b_ids.contains(p)) {
+                if pct(&mut rng, 70) && e.parents.iter().all(|p| b_ids.contains(p)) {
                     b.append(e.clone()).unwrap();
                     b_ids.insert(e.id);
                 }

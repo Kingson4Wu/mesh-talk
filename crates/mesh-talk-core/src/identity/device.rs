@@ -40,8 +40,8 @@ pub struct DeviceIdentity {
 impl DeviceIdentity {
     /// Generate a fresh identity from the OS CSPRNG.
     pub fn generate() -> Self {
-        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
-        let dh_secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let dh_secret = StaticSecret::random_from_rng(rand_core::OsRng);
         Self {
             signing_key,
             dh_secret,

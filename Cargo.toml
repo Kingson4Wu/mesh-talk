@@ -36,9 +36,12 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 snow = "0.9"
 zeroize = "1"
 argon2 = { version = "0.5", features = ["std"] }
-rand = "0.8"
+# RNG: use rand_core 0.6 directly (exactly what the dalek crates need) instead of pinning the
+# full `rand` 0.8. The desktop app uses `rand` 0.9 locally (see src-tauri).
+rand_core = { version = "0.6", features = ["getrandom"] }
 # Networking
 socket2 = { version = "0.5", features = ["all"] }
+if-addrs = "0.15"
 # CLI
 clap = { version = "4.4", features = ["derive"] }
 # Misc

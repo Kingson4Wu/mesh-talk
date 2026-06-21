@@ -23,6 +23,14 @@ export function formatDay(wall: number): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+/** Compact "Ns ago" / "Nm ago" for a whole-seconds elapsed value. */
+export function formatAgo(secs: number): string {
+  if (secs < 1) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
+}
+
 export function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;

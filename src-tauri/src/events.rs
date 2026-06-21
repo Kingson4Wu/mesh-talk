@@ -1,8 +1,57 @@
 //! Tauri events emitted to the frontend by the node. (Legacy
 //! message/contact/network/file-transfer events were retired with the legacy stack.)
 
+use crate::settings::SettingsState;
 use mesh_talk_core::eventlog::event::EventId;
-use tauri::{Emitter, Runtime};
+use tauri::{Emitter, Manager, Runtime};
+use tauri_plugin_notification::NotificationExt;
+
+/// How many characters of a message body we surface in a notification preview.
+const PREVIEW_LEN: usize = 80;
+
+/// Fire a native notification for an incoming item, but only when it would
+/// actually be useful: notifications are enabled in settings AND the main window
+/// is not currently focused (no point pinging the user about a message they can
+/// already see). Best-effort — failures are logged, never propagated.
+///
+/// `body` must contain only what the UI already shows (decoded plaintext / a
+/// generic "sent a file"); never raw ciphertext or anything more than the chat view.
+fn notify_if_unfocused<R: Runtime>(app_handle: &tauri::AppHandle<R>, title: &str, body: &str) {
+    // Respect the user's toggle.
+    let enabled = app_handle
+        .try_state::<SettingsState>()
+        .map(|s| s.get().notifications)
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+
+    // Skip when the window is focused — the message is already on screen.
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if window.is_focused().unwrap_or(false) {
+            return;
+        }
+    }
+
+    if let Err(e) = app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+    {
+        log::warn!("Failed to show notification: {e}");
+    }
+}
+
+/// Truncate a preview to a sane length on a char boundary, appending an ellipsis.
+fn preview(text: &str) -> String {
+    if text.chars().count() <= PREVIEW_LEN {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(PREVIEW_LEN).collect();
+    format!("{truncated}…")
+}
 
 /// A received DM, surfaced to the `/` UI.
 pub const EVENT_DM_RECEIVED: &str = "dm-received";
@@ -51,6 +100,7 @@ pub fn emit_dm_received<R: Runtime>(
         text: String::from_utf8_lossy(&text).into_owned(),
         reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
     };
+    notify_if_unfocused(app_handle, &event.from_name, &preview(&event.text));
     if let Err(e) = app_handle.emit(EVENT_DM_RECEIVED, event) {
         log::error!("Failed to emit dm event: {e}");
     }
@@ -71,6 +121,11 @@ pub fn emit_channel_message<R: Runtime>(
         text: String::from_utf8_lossy(&text).into_owned(),
         reply_to: reply_to.map(|id| hex::encode(id.as_bytes())),
     };
+    notify_if_unfocused(
+        app_handle,
+        &format!("# {}", event.channel_name),
+        &preview(&event.text),
+    );
     if let Err(e) = app_handle.emit(EVENT_CHANNEL_MESSAGE, event) {
         log::error!("Failed to emit channel event: {e}");
     }
@@ -91,6 +146,7 @@ pub fn emit_file_received<R: Runtime>(
         size,
         file_conv,
     };
+    notify_if_unfocused(app_handle, &event.from, "sent a file");
     if let Err(e) = app_handle.emit(EVENT_FILE_RECEIVED, event) {
         log::error!("Failed to emit file event: {e}");
     }

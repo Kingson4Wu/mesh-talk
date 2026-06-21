@@ -9,6 +9,8 @@ import { CreateChannelDialog } from "./CreateChannelDialog";
 import { SearchDialog } from "./SearchDialog";
 import { FilesTray } from "./FilesTray";
 import { LinkDeviceDialog } from "./LinkDeviceDialog";
+import { DiagnosticsDialog } from "./DiagnosticsDialog";
+import { SettingsDialog } from "./SettingsDialog";
 import { useAuth } from "@/store/auth";
 import { convKey, useChat, type Conversation } from "@/store/chat";
 import type { AccountInfo, ChannelInfo } from "@/lib/types";
@@ -116,6 +118,8 @@ export function Sidebar() {
           <SearchDialog />
           <FilesTray />
           <LinkDeviceDialog />
+          <DiagnosticsDialog />
+          <SettingsDialog />
           <div className="flex-1" />
           <Button
             variant="ghost"

@@ -20,12 +20,14 @@ pub mod events;
 pub mod logger;
 pub mod perf;
 pub mod services;
+pub mod settings;
 pub mod state;
 pub mod tray;
 
+use crate::settings::SettingsState;
 use crate::state::AppState;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
 
 /// The user's home directory, cross-platform: `HOME` on Unix/macOS, `USERPROFILE` on
 /// Windows (where `HOME` is normally unset). Anchors the app's data + logs at `~/.mesh-talk`.
@@ -66,16 +68,33 @@ pub fn run_tauri() {
 
     log::info!("No sockets are bound until a user signs in.");
 
+    let settings_state = SettingsState::default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        // Launch-at-login. `--hidden` is passed on autostart so a login-time launch
+        // comes up straight to the tray (see the WindowEvent handler / frontend boot).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .setup(move |app| {
             if let Err(e) = crate::logger::init_logging(app.handle()) {
                 log::error!("Failed to initialize logging: {e}");
             }
+            // Seed the managed settings from disk before any window/notification logic runs.
+            crate::settings::load_into_state(&app.handle().clone(), &app.state::<SettingsState>());
             crate::tray::create_system_tray(&app.handle().clone())?;
+
+            // A login-time autostart launch should come up hidden to the tray.
+            if std::env::args().any(|a| a == "--hidden") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
             #[cfg(debug_assertions)]
             {
@@ -85,7 +104,25 @@ pub fn run_tauri() {
             }
             Ok(())
         })
+        // Close-to-tray: if "minimize to tray" is on, hide instead of exiting so the
+        // node runtime stays alive and keeps receiving. Quit (tray menu) is the real exit.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let hide = window
+                        .app_handle()
+                        .try_state::<SettingsState>()
+                        .map(|s| s.get().minimize_to_tray)
+                        .unwrap_or(true);
+                    if hide {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .manage(app_state)
+        .manage(settings_state)
         .manage(crate::chat_commands::NodeState::empty())
         .invoke_handler(tauri::generate_handler![
             commands::login,
@@ -122,7 +159,11 @@ pub fn run_tauri() {
             crate::chat_commands::react_channel,
             crate::chat_commands::reactions,
             crate::chat_commands::channel_reactions,
-            crate::chat_commands::search
+            crate::chat_commands::search,
+            crate::chat_commands::diag_get_peers,
+            crate::chat_commands::diag_network_info,
+            crate::settings::get_app_settings,
+            crate::settings::set_app_settings
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -4,8 +4,8 @@
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand_core::OsRng;
+use rand_core::RngCore;
 use sha2::{Digest, Sha256};
 
 const KEY_SIZE: usize = 32;

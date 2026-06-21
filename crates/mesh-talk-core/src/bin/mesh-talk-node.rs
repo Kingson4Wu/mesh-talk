@@ -4,13 +4,14 @@
 //! `/quit`), printing inbound DMs as they arrive.
 
 use clap::Parser;
-use mesh_talk_core::discovery::service::{run_broadcast, run_listen};
 use mesh_talk_core::discovery::{Announce, PeerRecord, Roster, UserId};
 use mesh_talk_core::identity::device::DeviceIdentity;
 use mesh_talk_core::node::run_relay_accept_loop;
-use mesh_talk_core::node::{discovery_socket, Node, ReceivedDm, DEFAULT_DISCOVERY_PORT};
+use mesh_talk_core::node::{
+    discovery_socket, spawn_discovery, Node, ReceivedDm, DEFAULT_DISCOVERY_PORT,
+};
 use mesh_talk_core::postoffice::PostOffice;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -133,20 +134,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.password,
     )?;
 
-    // Discovery: one shared reuse+broadcast socket drives both loops.
+    // Discovery: one shared reuse+multicast socket drives all loops (listen with
+    // announce/response, broadcast, /24 scan fallback, periodic re-join).
     let socket = Arc::new(discovery_socket(args.discovery_port)?);
-    let target: SocketAddr = (Ipv4Addr::BROADCAST, args.discovery_port).into();
-    tokio::spawn(run_listen(
+    spawn_discovery(
         Arc::clone(&socket),
         Arc::clone(&roster),
-        user_id.clone(),
-    ));
-    tokio::spawn(run_broadcast(
-        Arc::clone(&socket),
         announce,
-        target,
-        Duration::from_secs(2),
-    ));
+        user_id.clone(),
+        args.discovery_port,
+    );
 
     // Inbound: serve sync rounds on each accepted connection.
     tokio::spawn(Arc::clone(&node).run_accept_loop(listener));
@@ -257,18 +254,13 @@ async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Discovery: advertise ourselves (and harmlessly track peers) on the shared socket.
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
     let socket = Arc::new(discovery_socket(args.discovery_port)?);
-    let target: SocketAddr = (Ipv4Addr::BROADCAST, args.discovery_port).into();
-    tokio::spawn(run_listen(
+    spawn_discovery(
         Arc::clone(&socket),
         Arc::clone(&roster),
-        user_id.clone(),
-    ));
-    tokio::spawn(run_broadcast(
-        Arc::clone(&socket),
         announce,
-        target,
-        Duration::from_secs(2),
-    ));
+        user_id.clone(),
+        args.discovery_port,
+    );
 
     emit(&format!(
         "post-office {user_id} listening on tcp/{tcp_port}, discovery udp/{}",

@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose, Engine as _};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use std::convert::TryInto;
 
 pub struct KeyManager;

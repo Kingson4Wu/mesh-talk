@@ -85,7 +85,7 @@ pub struct Account {
 impl Account {
     pub fn generate() -> Self {
         Account {
-            signing_key: SigningKey::generate(&mut rand::rngs::OsRng),
+            signing_key: SigningKey::generate(&mut rand_core::OsRng),
         }
     }
 

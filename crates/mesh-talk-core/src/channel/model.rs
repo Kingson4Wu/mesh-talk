@@ -12,8 +12,8 @@ use crate::channel::sender_key::{
 use crate::eventlog::event::ConversationId;
 use crate::identity::device::PublicIdentity;
 use bincode::Options;
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand_core::OsRng;
+use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

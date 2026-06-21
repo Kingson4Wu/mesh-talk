@@ -24,6 +24,26 @@ pub struct PeerRecord {
     pub last_seen: Instant,
 }
 
+/// The outcome of feeding an announce to the roster. Distinguishing `New` from
+/// `Refreshed` lets the listener unicast a reply only on first sight of a peer
+/// (LocalSend's announce/response), avoiding a reply storm on every re-announce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateOutcome {
+    /// The announce was invalid or our own — nothing recorded.
+    Rejected,
+    /// A peer we had not seen before was recorded for the first time.
+    New,
+    /// A peer we already knew re-announced (record refreshed).
+    Refreshed,
+}
+
+impl UpdateOutcome {
+    /// True if the announce was accepted (recorded), whether new or a refresh.
+    pub fn accepted(self) -> bool {
+        !matches!(self, UpdateOutcome::Rejected)
+    }
+}
+
 /// The known-peers map.
 #[derive(Default)]
 pub struct Roster {
@@ -31,17 +51,24 @@ pub struct Roster {
 }
 
 impl Roster {
-    /// Verify and record an announce received from `source_ip`. Returns `true`
-    /// if it was accepted (authentic and not our own `self_user_id`). The peer's
-    /// address is `(source_ip, announce.tcp_port)` — the announce names the TCP
-    /// port; the IP comes from the datagram source.
-    pub fn update(&mut self, announce: &Announce, source_ip: IpAddr, self_user_id: &str) -> bool {
+    /// Verify and record an announce received from `source_ip`. Returns an
+    /// [`UpdateOutcome`]: `Rejected` if inauthentic or our own `self_user_id`,
+    /// `New` on first sight of the peer, `Refreshed` if it was already known.
+    /// The peer's address is `(source_ip, announce.tcp_port)` — the announce names
+    /// the TCP port; the IP comes from the datagram source.
+    pub fn update(
+        &mut self,
+        announce: &Announce,
+        source_ip: IpAddr,
+        self_user_id: &str,
+    ) -> UpdateOutcome {
         if announce.user_id == self_user_id {
-            return false; // self-filter
+            return UpdateOutcome::Rejected; // self-filter
         }
         if !announce.verify() {
-            return false;
+            return UpdateOutcome::Rejected;
         }
+        let existed = self.peers.contains_key(&announce.user_id);
         self.peers.insert(
             announce.user_id.clone(),
             PeerRecord {
@@ -53,7 +80,11 @@ impl Roster {
                 last_seen: Instant::now(),
             },
         );
-        true
+        if existed {
+            UpdateOutcome::Refreshed
+        } else {
+            UpdateOutcome::New
+        }
     }
 
     pub fn get(&self, user_id: &str) -> Option<&PeerRecord> {
@@ -108,7 +139,10 @@ mod tests {
         let announce = Announce::new(&alice, "Alice", 4000);
         let mut roster = Roster::default();
 
-        assert!(roster.update(&announce, ip(), "some-other-self"));
+        assert_eq!(
+            roster.update(&announce, ip(), "some-other-self"),
+            UpdateOutcome::New
+        );
         let rec = roster
             .get(&alice.public().user_id())
             .expect("alice recorded");
@@ -122,7 +156,10 @@ mod tests {
         let me = DeviceIdentity::generate();
         let announce = Announce::new(&me, "Me", 4000);
         let mut roster = Roster::default();
-        assert!(!roster.update(&announce, ip(), &me.public().user_id()));
+        assert_eq!(
+            roster.update(&announce, ip(), &me.public().user_id()),
+            UpdateOutcome::Rejected
+        );
         assert!(roster.get(&me.public().user_id()).is_none());
     }
 
@@ -132,7 +169,10 @@ mod tests {
         let mut announce = Announce::new(&alice, "Alice", 4000);
         announce.sig[0] ^= 0xFF;
         let mut roster = Roster::default();
-        assert!(!roster.update(&announce, ip(), "self"));
+        assert_eq!(
+            roster.update(&announce, ip(), "self"),
+            UpdateOutcome::Rejected
+        );
         assert!(roster.get(&alice.public().user_id()).is_none());
     }
 
@@ -172,6 +212,21 @@ mod tests {
             .expect("alice present");
         assert_eq!(rec.addr.port(), 5000); // refreshed to the new port
         assert_eq!(roster.peers().len(), 1); // still one peer, not two
+    }
+
+    #[test]
+    fn update_reports_new_then_refreshed_for_same_peer() {
+        let alice = DeviceIdentity::generate();
+        let mut roster = Roster::default();
+        // First sight → New; re-announce of the same peer → Refreshed.
+        assert_eq!(
+            roster.update(&Announce::new(&alice, "Alice", 4000), ip(), "self"),
+            UpdateOutcome::New
+        );
+        assert_eq!(
+            roster.update(&Announce::new(&alice, "Alice", 4001), ip(), "self"),
+            UpdateOutcome::Refreshed
+        );
     }
 
     #[test]

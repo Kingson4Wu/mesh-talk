@@ -71,6 +71,37 @@ export interface SearchHitInfo {
   wall_clock: number;
 }
 
+// --- Diagnostics / discovery (src-tauri/src/chat_commands.rs) ---
+
+export interface DiagPeerInfo {
+  user_id: string;
+  name: string;
+  ip: string;
+  tcp_port: number;
+  post_office: boolean;
+  account_id: string | null;
+  last_seen_secs: number;
+}
+
+export interface DiagNetworkInfo {
+  own_user_id: string;
+  own_name: string;
+  account_id: string;
+  listen_tcp_port: number;
+  discovery_port: number;
+  multicast_group: string;
+  interfaces: string[];
+}
+
+// --- Background-presence settings (src-tauri/src/settings.rs) ---
+
+export interface AppSettings {
+  /** Closing the window hides it to the tray instead of quitting. */
+  minimize_to_tray: boolean;
+  /** Native notification on incoming messages when the window isn't focused. */
+  notifications: boolean;
+}
+
 // --- Tauri events (src-tauri/src/events.rs) ---
 
 export interface DmReceivedEvent {

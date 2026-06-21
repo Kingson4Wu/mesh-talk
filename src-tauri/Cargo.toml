@@ -24,14 +24,16 @@ tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-log = "2"
+tauri-plugin-autostart = "2"
 # Shared (versions from the workspace)
 tokio = { workspace = true }
 serde = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
-rand = { workspace = true }
+rand = "0.9" # session-token generation; already in the tree via tauri-plugin-notification
 hex = { workspace = true }
 lazy_static = { workspace = true }
+serde_json = "1" # persist app settings as JSON in the app config dir
 
 [dev-dependencies]
 tempfile = { workspace = true }

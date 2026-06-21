@@ -8,8 +8,8 @@ use crate::dm::{self, DmError};
 use crate::identity::device::DeviceIdentity;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand_core::OsRng;
+use rand_core::RngCore;
 use zeroize::Zeroize;
 
 const KEY_SIZE: usize = 32;

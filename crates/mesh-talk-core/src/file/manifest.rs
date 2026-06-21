@@ -69,8 +69,8 @@ pub fn reassemble_and_verify(
 mod tests {
     use super::*;
     use crate::file::crypto::{seal_chunk, split_chunks, CHUNK_SIZE};
-    use rand::rngs::OsRng;
-    use rand::RngCore;
+    use rand_core::OsRng;
+    use rand_core::RngCore;
 
     fn random_conv() -> ConversationId {
         let mut id = [0u8; 32];

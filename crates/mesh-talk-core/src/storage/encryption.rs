@@ -4,7 +4,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use pbkdf2::pbkdf2_hmac;
-use rand::RngCore;
+use rand_core::RngCore;
 use sha2::Sha256;
 
 pub const SALT_SIZE: usize = 16;
@@ -29,13 +29,13 @@ impl EncryptionKey {
 
 pub fn generate_salt() -> [u8; SALT_SIZE] {
     let mut salt = [0u8; SALT_SIZE];
-    rand::thread_rng().fill_bytes(&mut salt);
+    rand_core::OsRng.fill_bytes(&mut salt);
     salt
 }
 
 pub fn generate_nonce() -> Result<[u8; NONCE_SIZE], StorageError> {
     let mut nonce = [0u8; NONCE_SIZE];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand_core::OsRng.fill_bytes(&mut nonce);
     Ok(nonce)
 }
 

@@ -3,7 +3,7 @@
 //! holds the handles. Tauri-agnostic — inbound DMs are delivered via an injected
 //! `on_dm` callback, so this is unit-testable without a GUI.
 
-use crate::discovery::service::{run_broadcast, run_listen};
+use crate::discovery::service::spawn_discovery;
 use crate::discovery::{Announce, PeerRecord, Roster};
 use crate::eventlog::LogError;
 use crate::identity::account_keystore;
@@ -11,7 +11,7 @@ use crate::identity::device::PublicIdentity;
 use crate::identity::keystore;
 use crate::node::net::discovery_socket;
 use crate::node::{HistoryEntry, Node, NodeError, ReceivedDm};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,6 +60,10 @@ pub struct NodeRuntime {
     roster: Arc<Mutex<Roster>>,
     user_id: String,
     account_id: String,
+    /// The display name this node advertises (for the diagnostics page).
+    display_name: String,
+    /// The OS-assigned TCP port the accept loop listens on (for the diagnostics page).
+    tcp_port: u16,
     /// Where the account keystore lives, so a successful device link can persist the
     /// adopted account secret (effective on next login).
     account_path: std::path::PathBuf,
@@ -125,20 +129,15 @@ impl NodeRuntime {
         )?;
 
         let socket = Arc::new(discovery_socket(discovery_port)?);
-        let target: SocketAddr = (Ipv4Addr::BROADCAST, discovery_port).into();
 
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
-        tasks.push(tokio::spawn(run_listen(
+        tasks.extend(spawn_discovery(
             Arc::clone(&socket),
             Arc::clone(&roster),
-            self_uid.clone(),
-        )));
-        tasks.push(tokio::spawn(run_broadcast(
-            Arc::clone(&socket),
             announce,
-            target,
-            Duration::from_secs(2),
-        )));
+            self_uid.clone(),
+            discovery_port,
+        ));
         tasks.push(tokio::spawn(Arc::clone(&node).run_accept_loop(listener)));
         {
             let node = Arc::clone(&node);
@@ -170,6 +169,8 @@ impl NodeRuntime {
             roster,
             user_id: self_uid,
             account_id,
+            display_name: display_name.to_string(),
+            tcp_port,
             account_path: dir.join("account.keystore"),
             password: password.to_string(),
             tasks,
@@ -179,6 +180,16 @@ impl NodeRuntime {
     /// This node's own user-id fingerprint.
     pub fn user_id(&self) -> &str {
         &self.user_id
+    }
+
+    /// The display name this node advertises to peers.
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    /// The local TCP port the node's accept loop is listening on.
+    pub fn listen_tcp_port(&self) -> u16 {
+        self.tcp_port
     }
 
     /// This node's cryptographic account id (stable across devices once linking

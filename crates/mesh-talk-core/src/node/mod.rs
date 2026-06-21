@@ -32,12 +32,15 @@ pub(crate) mod serving;
 pub(crate) mod session;
 pub(crate) mod transport;
 
+pub use crate::discovery::service::spawn_discovery;
 pub use channel::ReceivedChannelMessage;
 pub use dm_envelope::{DmEnvelope, DmRoute, ReactionEnvelope};
 pub use dm_ratchet::DmRatchet;
 pub use filebook::{FileBook, ReceivedFile};
 pub use message::MessageBody;
-pub use net::{discovery_socket, DEFAULT_DISCOVERY_PORT};
+pub use net::{
+    discovery_socket, ipv4_interface_addrs, DEFAULT_DISCOVERY_PORT, DISCOVERY_MULTICAST_GROUP,
+};
 pub use node::{
     ChannelSummary, HistoryEntry, LinkedAccount, Node, NodeError, ReceivedDm, SearchHit,
 };

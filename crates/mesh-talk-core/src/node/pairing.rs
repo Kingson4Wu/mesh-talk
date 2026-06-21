@@ -24,9 +24,9 @@ pub struct PairingCode([u8; 16]);
 impl PairingCode {
     /// A fresh random 128-bit code.
     pub fn generate() -> Self {
-        use rand::RngCore;
+        use rand_core::RngCore;
         let mut bytes = [0u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand_core::OsRng.fill_bytes(&mut bytes);
         PairingCode(bytes)
     }
 

@@ -390,9 +390,9 @@ pub(in crate::node) fn now_millis() -> u64 {
 /// A fresh random 32-byte logical message id (shared across an account send's
 /// per-device copies, so reactions/replies can target it account-wide).
 pub(in crate::node) fn random_msg_id() -> [u8; 32] {
-    use rand::RngCore;
+    use rand_core::RngCore;
     let mut id = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut id);
+    rand_core::OsRng.fill_bytes(&mut id);
     id
 }
 

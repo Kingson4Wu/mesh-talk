@@ -6,7 +6,7 @@ use crate::ratchet::kdf::{kdf_ck, kdf_rk, message_keys};
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use bincode::Options;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use x25519_dalek::{PublicKey, StaticSecret};

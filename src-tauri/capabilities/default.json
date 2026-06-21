@@ -9,6 +9,9 @@
     "log:default",
     "dialog:default",
     "shell:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     "fs:allow-home-read-recursive",
     "fs:allow-home-write-recursive"
   ]

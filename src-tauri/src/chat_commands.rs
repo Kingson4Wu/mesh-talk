@@ -669,6 +669,76 @@ pub async fn search(
         .collect())
 }
 
+// --- Diagnostics / discovery ------------------------------------------------
+
+/// A discovered peer as shown on the Diagnostics page.
+#[derive(Serialize)]
+pub struct DiagPeerInfo {
+    pub user_id: String,
+    pub name: String,
+    pub ip: String,
+    pub tcp_port: u16,
+    pub post_office: bool,
+    pub account_id: Option<String>,
+    /// Whole seconds since this peer was last heard from.
+    pub last_seen_secs: u64,
+}
+
+/// This device's own identity + network facts, for the Diagnostics page.
+#[derive(Serialize)]
+pub struct DiagNetworkInfo {
+    pub own_user_id: String,
+    pub own_name: String,
+    pub account_id: String,
+    pub listen_tcp_port: u16,
+    pub discovery_port: u16,
+    pub multicast_group: String,
+    pub interfaces: Vec<String>,
+}
+
+/// Snapshot the current roster for the Diagnostics page. Polled by the frontend.
+#[tauri::command]
+pub async fn diag_get_peers(
+    state: tauri::State<'_, NodeState>,
+) -> Result<Vec<DiagPeerInfo>, CommandError> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(rt
+        .peers()
+        .into_iter()
+        .map(|p| DiagPeerInfo {
+            user_id: p.public.user_id(),
+            name: p.name,
+            ip: p.addr.ip().to_string(),
+            tcp_port: p.addr.port(),
+            post_office: p.post_office,
+            account_id: p.account_id,
+            last_seen_secs: p.last_seen.elapsed().as_secs(),
+        })
+        .collect())
+}
+
+/// This device's own identity + LAN/discovery facts, for the Diagnostics page.
+#[tauri::command]
+pub async fn diag_network_info(
+    state: tauri::State<'_, NodeState>,
+) -> Result<DiagNetworkInfo, CommandError> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    Ok(DiagNetworkInfo {
+        own_user_id: rt.user_id().to_string(),
+        own_name: rt.display_name().to_string(),
+        account_id: rt.account_id().to_string(),
+        listen_tcp_port: rt.listen_tcp_port(),
+        discovery_port: mesh_talk_core::node::DEFAULT_DISCOVERY_PORT,
+        multicast_group: mesh_talk_core::node::DISCOVERY_MULTICAST_GROUP.to_string(),
+        interfaces: mesh_talk_core::node::ipv4_interface_addrs()
+            .into_iter()
+            .map(|ip| ip.to_string())
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -117,7 +117,7 @@ pub fn seal(
     let recipient_pub = PublicKey::from(*recipient_x25519_pub);
 
     // Fresh per-message ephemeral; compute its public key before the DH consumes it.
-    let ephemeral = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+    let ephemeral = EphemeralSecret::random_from_rng(rand_core::OsRng);
     let ephemeral_pub = PublicKey::from(&ephemeral);
 
     let mut dh1 = sender_static.diffie_hellman(&recipient_pub).to_bytes();
