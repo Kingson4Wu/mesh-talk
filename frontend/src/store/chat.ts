@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { chat, favorites as favoritesApi } from "@/lib/api";
-import { errorMessage } from "@/lib/error";
+import { errorMessage, sendFailReason, type SendFailReason } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
 import { notifyInbound } from "@/lib/notify";
 import { useTransfers } from "@/store/transfers";
@@ -36,6 +36,7 @@ export interface ChatMessage {
   replyTo: string | null;
   pending?: boolean;
   failed?: boolean; // a send that errored — kept visible (not silently dropped)
+  failReason?: SendFailReason; // coarse, frontend-derived cause (drives the label + help)
   clientId?: string; // stable id for an optimistic bubble (survives a concurrent reload)
   file?: { name: string; size: number; fileConv: string } | null;
 }
@@ -144,6 +145,7 @@ interface ChatState {
   open: (c: Conversation) => Promise<void>;
   reload: () => Promise<void>;
   send: (text: string, replyTo: string | null) => Promise<void>;
+  retry: (clientId: string) => Promise<void>;
   sendFile: (path: string) => Promise<void>;
   saveFile: (fileConv: string, dest: string) => Promise<void>;
   toggleReaction: (target: string, emoji: string) => Promise<void>;
@@ -385,24 +387,34 @@ export const useChat = create<ChatState>((set, get) => ({
         [key]: [...(s.messages[key] ?? []), optimistic],
       },
     }));
-    try {
-      await sendTextFor(c, text, replyTo);
-    } catch {
-      // Keep the bubble visible, marked failed, instead of silently dropping it. Match by
-      // clientId (not object identity), and re-append if a concurrent reload() already
-      // replaced the array — so an inbound message mid-send can't make the failure vanish.
-      set((s) => {
-        const arr = s.messages[key] ?? [];
-        const failed = { ...optimistic, pending: false, failed: true };
-        const next = arr.some((m) => m.clientId === clientId)
-          ? arr.map((m) => (m.clientId === clientId ? failed : m))
-          : [...arr, failed];
-        return { messages: { ...s.messages, [key]: next } };
-      });
-      return;
-    }
-    // Success: re-sync from the log so the message gets its real id (needed for reactions).
-    if (get().active && convKey(get().active!) === key) await get().reload();
+    await dispatchSend(set, get, c, key, optimistic);
+  },
+
+  // Re-send a previously-failed optimistic bubble (reusing its clientId/text/replyTo).
+  // Clears the failed state, shows pending again, then runs the same dispatch as send().
+  retry: async (clientId) => {
+    const c = get().active;
+    if (!c) return;
+    const key = convKey(c);
+    const arr = get().messages[key] ?? [];
+    const orig = arr.find((m) => m.clientId === clientId);
+    if (!orig || !orig.failed) return;
+    const pending: ChatMessage = {
+      ...orig,
+      pending: true,
+      failed: false,
+      failReason: undefined,
+      wallClock: Date.now(),
+    };
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [key]: (s.messages[key] ?? []).map((m) =>
+          m.clientId === clientId ? pending : m,
+        ),
+      },
+    }));
+    await dispatchSend(set, get, c, key, pending);
   },
 
   sendFile: async (path) => {
@@ -484,6 +496,43 @@ function bump(set: Set, key: string, active: boolean) {
   if (!active) {
     set((s) => ({ unread: { ...s.unread, [key]: (s.unread[key] ?? 0) + 1 } }));
   }
+}
+
+// Shared optimistic-send dispatch for send() and retry(): fire the per-conversation send;
+// on failure mark the (already-present) bubble failed with a coarse reason; on success
+// re-sync from the log so the message gets its real id. The bubble (matched by clientId)
+// is assumed to already be in `messages[key]` as pending.
+async function dispatchSend(
+  set: Set,
+  get: Get,
+  c: Conversation,
+  key: string,
+  bubble: ChatMessage,
+) {
+  try {
+    await sendTextFor(c, bubble.text, bubble.replyTo);
+  } catch (e) {
+    // Keep the bubble visible, marked failed, instead of silently dropping it. Match by
+    // clientId (not object identity), and re-append if a concurrent reload() already
+    // replaced the array — so an inbound message mid-send can't make the failure vanish.
+    const reason = sendFailReason(e);
+    set((s) => {
+      const arr = s.messages[key] ?? [];
+      const failed: ChatMessage = {
+        ...bubble,
+        pending: false,
+        failed: true,
+        failReason: reason,
+      };
+      const next = arr.some((m) => m.clientId === bubble.clientId)
+        ? arr.map((m) => (m.clientId === bubble.clientId ? failed : m))
+        : [...arr, failed];
+      return { messages: { ...s.messages, [key]: next } };
+    });
+    return;
+  }
+  // Success: re-sync from the log so the message gets its real id (needed for reactions).
+  if (get().active && convKey(get().active!) === key) await get().reload();
 }
 
 let lastUnknownSenderRefresh = 0;

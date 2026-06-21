@@ -11,11 +11,9 @@ use mesh_talk_core::node::{
     discovery_socket, spawn_discovery, Node, ReceivedDm, DEFAULT_DISCOVERY_PORT,
 };
 use mesh_talk_core::postoffice::PostOffice;
-use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 /// How often a normal node drains held DMs from the elected post office.
@@ -104,8 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account =
         mesh_talk_core::identity::account_keystore::load_or_create(&account_path, &args.password)?;
 
-    // TCP listener for peer connections; resolve the actual (possibly OS-assigned) port.
-    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
+    // TCP listener for peer connections; dual-stack (IPv6 + IPv4-mapped, falling back to
+    // IPv4) so the node is reachable over IPv6/link-local too. Resolve the actual port.
+    let listener = mesh_talk_core::node::bind_dual_stack_listener(args.port).await?;
     let tcp_port = listener.local_addr()?.port();
 
     // Build the signed announce (borrows identity) BEFORE moving identity into the node.
@@ -230,7 +229,7 @@ async fn run_post_office(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let account =
         mesh_talk_core::identity::account_keystore::load_or_create(&account_path, &args.password)?;
 
-    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
+    let listener = mesh_talk_core::node::bind_dual_stack_listener(args.port).await?;
     let tcp_port = listener.local_addr()?.port();
 
     // The relay advertises the post-office role.

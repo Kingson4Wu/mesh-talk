@@ -11,11 +11,9 @@ use crate::identity::device::PublicIdentity;
 use crate::identity::keystore;
 use crate::node::net::discovery_socket;
 use crate::node::{HistoryEntry, Node, NodeError, ReceivedDm};
-use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -103,7 +101,9 @@ impl NodeRuntime {
             .map_err(|e| RuntimeError::Open(e.into()))?;
         let account_id = account.account_id();
 
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await?;
+        // Dual-stack TCP listener (IPv6 + IPv4-mapped, falling back to IPv4) so the node is
+        // reachable over IPv6/link-local too; OS-assigned port (0).
+        let listener = crate::node::net::bind_dual_stack_listener(0u16).await?;
         let tcp_port = listener.local_addr()?.port();
 
         // Build the announce BEFORE the identity is moved into the node.

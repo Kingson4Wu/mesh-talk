@@ -61,6 +61,7 @@ export function ConversationView() {
   const active = useChat((s) => s.active);
   const favorites = useChat((s) => s.favorites);
   const send = useChat((s) => s.send);
+  const retry = useChat((s) => s.retry);
   const sendFile = useChat((s) => s.sendFile);
   const setError = useChat((s) => s.setError);
   const toggleReaction = useChat((s) => s.toggleReaction);
@@ -177,6 +178,11 @@ export function ConversationView() {
             // switching conversations — equivalent to the old `[messages.length, key]` reset.
             key={key}
             data={messages}
+            // Announce newly-arriving messages to assistive tech. `polite` so it waits for
+            // a pause rather than interrupting; the per-bubble aria-label carries the text.
+            role="log"
+            aria-live="polite"
+            aria-label={t("conversation.messageLog", { name: headerName })}
             className="h-full py-4"
             // Start pinned to the newest message (chat opens at the bottom).
             initialTopMostItemIndex={messages.length - 1}
@@ -203,6 +209,7 @@ export function ConversationView() {
                     myName={myName}
                     onReply={setReplyTo}
                     onReact={toggleReaction}
+                    onRetry={retry}
                   />
                 </div>
               );

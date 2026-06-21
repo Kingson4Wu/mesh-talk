@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Hash,
   LogOut,
@@ -70,6 +70,7 @@ function Row({
 
   return (
     <div
+      role="listitem"
       className={cn(
         "group flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
         isActive ? "bg-accent" : "hover:bg-accent/50",
@@ -77,6 +78,9 @@ function Row({
     >
       <button
         onClick={() => open(conv)}
+        data-conv-option
+        aria-current={isActive ? "true" : undefined}
+        aria-label={`${conv.name}${subtitle ? `, ${subtitle}` : ""}`}
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
       >
         {icon ?? <Avatar name={conv.name} id={conv.id} className="h-9 w-9" />}
@@ -157,6 +161,31 @@ export function Sidebar() {
   // Inline rename dialog state (a contact id + a draft alias). Kept local/primitive.
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+
+  // Roving keyboard navigation across the conversation rows. Arrow Up/Down moves focus
+  // between the option buttons within the list (Enter/Space already open via the native
+  // button). Scoped to the nav so it never traps the composer or other controls.
+  const navRef = useRef<HTMLElement>(null);
+  const onNavKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const nav = navRef.current;
+    if (!nav) return;
+    const options = Array.from(
+      nav.querySelectorAll<HTMLButtonElement>("[data-conv-option]"),
+    );
+    if (options.length === 0) return;
+    const idx = options.indexOf(document.activeElement as HTMLButtonElement);
+    e.preventDefault();
+    const next =
+      e.key === "ArrowDown"
+        ? idx < 0
+          ? 0
+          : Math.min(idx + 1, options.length - 1)
+        : idx <= 0
+          ? 0
+          : idx - 1;
+    options[next]?.focus();
+  };
 
   const startRename = (id: string, current: string) => {
     setRenameId(id);
@@ -262,7 +291,13 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 pb-4">
+      <nav
+        ref={navRef}
+        role="list"
+        aria-label={t("conversation.list")}
+        onKeyDown={onNavKeyDown}
+        className="flex-1 overflow-y-auto px-2 pb-4"
+      >
         {hasPinned && (
           <>
             <SectionLabel>{t("sidebar.pinned")}</SectionLabel>

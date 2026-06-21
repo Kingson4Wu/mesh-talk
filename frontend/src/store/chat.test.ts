@@ -263,6 +263,69 @@ describe("send/action failures", () => {
     expect(msgs[0].text).toBe("hi");
     expect(msgs[0].failed).toBe(true);
     expect(msgs[0].pending).toBe(false);
+    // "node down" maps to the relay-unreachable coarse reason.
+    expect(msgs[0].failReason).toBe("relay-unreachable");
+  });
+
+  it("retry re-sends a failed bubble and clears the failed state on success", async () => {
+    let history: unknown[] = [];
+    let fail = true;
+    invoke.mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === "send_to_account") {
+        if (fail)
+          return Promise.reject({ kind: "service", message: "no peer" });
+        const a = args as { text: string };
+        history = [
+          {
+            id: "e1",
+            from_me: true,
+            who: "me",
+            text: a.text,
+            wall_clock: 1,
+            reply_to: null,
+          },
+        ];
+        return Promise.resolve();
+      }
+      if (cmd === "account_history") return Promise.resolve(history);
+      if (cmd === "account_reactions") return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct });
+    await useChat.getState().send("hi", null);
+
+    const failed = useChat.getState().messages[convKey(acct)][0];
+    expect(failed.failed).toBe(true);
+    expect(failed.failReason).toBe("peer-unknown");
+    const clientId = failed.clientId!;
+    expect(clientId).toBeTruthy();
+
+    // The send now succeeds; retry should re-dispatch and reconcile from the log.
+    fail = false;
+    await useChat.getState().retry(clientId);
+
+    const msgs = useChat.getState().messages[convKey(acct)];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({ id: "e1", text: "hi", fromMe: true });
+    expect(msgs[0].failed).toBeFalsy();
+    expect(msgs[0].pending).toBeFalsy();
+  });
+
+  it("retry keeps the bubble failed (new reason) when the resend also fails", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "send_to_account")
+        return Promise.reject({ kind: "service", message: "decrypt error" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct });
+    await useChat.getState().send("hi", null);
+    const clientId = useChat.getState().messages[convKey(acct)][0].clientId!;
+    await useChat.getState().retry(clientId);
+
+    const msgs = useChat.getState().messages[convKey(acct)];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].failed).toBe(true);
+    expect(msgs[0].failReason).toBe("crypto");
   });
 
   it("sets a structured error message when sendFile rejects", async () => {

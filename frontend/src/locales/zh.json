@@ -63,7 +63,19 @@
     "messageChannel": "发消息到 #{{name}}",
     "messageContact": "发消息给 {{name}}",
     "jumpToLatest": "跳到最新消息",
-    "dismissError": "关闭错误提示"
+    "dismissError": "关闭错误提示",
+    "messageLog": "与 {{name}} 的消息",
+    "list": "会话列表"
+  },
+  "message": {
+    "sending": "发送中…",
+    "retry": "重试",
+    "fail": {
+      "peer-unknown": "发送失败——暂时无法联系到接收方",
+      "relay-unreachable": "发送失败——网络不可达",
+      "crypto": "发送失败——加密错误",
+      "unknown": "发送失败"
+    }
   },
   "composer": {
     "replyingTo": "正在回复",

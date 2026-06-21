@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { CornerUpLeft, SmilePlus } from "lucide-react";
+import { CornerUpLeft, RotateCw, SmilePlus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Avatar } from "@/components/ui/avatar";
 import {
   Popover,
@@ -21,6 +22,7 @@ export function MessageBubble({
   myName,
   onReply,
   onReact,
+  onRetry,
 }: {
   m: ChatMessage;
   parent: ChatMessage | null;
@@ -32,13 +34,33 @@ export function MessageBubble({
   myName: string;
   onReply: (m: ChatMessage) => void;
   onReact: (target: string, emoji: string) => void;
+  onRetry: (clientId: string) => void;
 }) {
+  const { t } = useTranslation();
   const mine = m.fromMe;
   const [pickerOpen, setPickerOpen] = useState(false);
   const mentioned = !mine && mentionsName(m.text, myName);
 
+  // Accessible summary of the bubble: who, the text, and the time — folding the transient
+  // pending/failed state so a screen reader announces the message's status too.
+  const speaker = mine
+    ? t("common.you")
+    : m.who.length > 20
+      ? shortId(m.who, 10)
+      : m.who;
+  const status = m.pending
+    ? t("message.sending")
+    : m.failed
+      ? t(`message.fail.${m.failReason ?? "unknown"}`)
+      : "";
+  const ariaLabel = `${speaker}: ${m.text} · ${formatTime(m.wallClock)}${
+    status ? ` · ${status}` : ""
+  }`;
+
   return (
     <div
+      role="article"
+      aria-label={ariaLabel}
       className={cn(
         "group flex gap-2.5 px-4 py-0.5",
         mine && "flex-row-reverse",
@@ -145,11 +167,29 @@ export function MessageBubble({
 
         <span className="mt-0.5 px-1 text-[10px] text-muted-foreground">
           {formatTime(m.wallClock)}
-          {m.pending && " · sending…"}
-          {m.failed && (
-            <span className="text-destructive"> · failed to send</span>
-          )}
+          {m.pending && ` · ${t("message.sending")}`}
         </span>
+
+        {m.failed && (
+          <span
+            className={cn(
+              "mt-0.5 flex items-center gap-1.5 px-1 text-[10px] text-destructive",
+              mine && "flex-row-reverse",
+            )}
+          >
+            <span>{t(`message.fail.${m.failReason ?? "unknown"}`)}</span>
+            <button
+              type="button"
+              onClick={() => m.clientId && onRetry(m.clientId)}
+              disabled={!m.clientId}
+              aria-label={t("message.retry")}
+              className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 font-medium text-destructive underline-offset-2 hover:bg-destructive/10 hover:underline disabled:opacity-40"
+            >
+              <RotateCw className="h-2.5 w-2.5" />
+              {t("message.retry")}
+            </button>
+          </span>
+        )}
       </div>
     </div>
   );

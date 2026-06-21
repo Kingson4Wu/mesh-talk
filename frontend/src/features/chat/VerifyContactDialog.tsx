@@ -164,7 +164,7 @@ export function VerifyContactDialog({
         {err && <p className="text-sm text-destructive">{err}</p>}
 
         <div className="flex justify-end">
-          <Button disabled={!fingerprint || busy} onClick={verify}>
+          <Button autoFocus disabled={!fingerprint || busy} onClick={verify}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
             {verified && !changed
               ? t("verify.reverify")

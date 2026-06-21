@@ -63,7 +63,19 @@
     "messageChannel": "Message #{{name}}",
     "messageContact": "Message {{name}}",
     "jumpToLatest": "Jump to latest messages",
-    "dismissError": "Dismiss error"
+    "dismissError": "Dismiss error",
+    "messageLog": "Messages with {{name}}",
+    "list": "Conversations"
+  },
+  "message": {
+    "sending": "sending…",
+    "retry": "Retry",
+    "fail": {
+      "peer-unknown": "Couldn't send — recipient not reachable yet",
+      "relay-unreachable": "Couldn't send — network unreachable",
+      "crypto": "Couldn't send — encryption error",
+      "unknown": "Failed to send"
+    }
   },
   "composer": {
     "replyingTo": "Replying to",

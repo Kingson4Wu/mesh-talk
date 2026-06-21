@@ -75,4 +75,18 @@
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  /* Respect the OS "reduce motion" preference: neutralize animations & transitions
+     globally (covers Radix/shadcn dialog/popover enter-exit animations, spinners,
+     hover transitions, and smooth scrolling). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }

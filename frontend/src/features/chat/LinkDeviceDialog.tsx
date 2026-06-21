@@ -127,6 +127,7 @@ export function LinkDeviceDialog() {
           </select>
           <div className="flex gap-2">
             <Input
+              autoFocus
               placeholder={t("linkDevice.pairingCode")}
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
