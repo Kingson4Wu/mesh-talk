@@ -2,10 +2,22 @@
 // src-tauri/src/commands.rs. These helpers read it safely, falling back for plain
 // string / Error rejections.
 
+// Mirrors the Rust `CommandError` `kind` taxonomy (src-tauri/src/commands.rs). The
+// legacy single-word kinds ("validation" / "authentication" / "service" / "network") are
+// kept here only so older/handwritten rejections still type-check and route sensibly.
 export type CommandErrorKind =
+  | "peer-unknown"
+  | "relay-unreachable"
+  | "crypto"
+  | "auth"
+  | "authorization"
+  | "io"
+  | "not-started"
+  | "invalid-input"
+  | "internal"
+  // legacy kinds (pre-taxonomy) — still accepted on the wire
   | "validation"
   | "authentication"
-  | "authorization"
   | "service"
   | "network";
 
@@ -37,10 +49,11 @@ export function errorKind(e: unknown): CommandErrorKind | null {
   return isCommandError(e) ? e.kind : null;
 }
 
-// Coarse reason for a failed outgoing message, derived FRONTEND-SIDE from whatever the
-// send rejection currently exposes (a CommandError kind, or — until the backend grows
-// structured send errors — keyword-sniffing the message string). Keep this mapping the
-// single place that knows the error shape, so a later batch can upgrade it in one spot.
+// Coarse reason for a failed outgoing message. The backend now ships a structured
+// CommandError `kind`, so we map from THAT first; keyword-sniffing the message is only a
+// last-resort fallback for kinds the core can't split (e.g. `internal` from a flat
+// file/channel error string) or for non-CommandError rejections. Keep this the single
+// place that knows the error shape.
 export type SendFailReason =
   | "peer-unknown" // the recipient/peer isn't known / not discovered / offline
   | "relay-unreachable" // the node/relay/network couldn't carry the message
@@ -48,9 +61,22 @@ export type SendFailReason =
   | "unknown";
 
 export function sendFailReason(e: unknown): SendFailReason {
-  const msg = errorMessage(e).toLowerCase();
-  const kind = errorKind(e);
+  // 1) Map from the structured kind when the backend gave us one it can vouch for.
+  switch (errorKind(e)) {
+    case "peer-unknown":
+      return "peer-unknown";
+    case "relay-unreachable":
+    case "network": // legacy
+      return "relay-unreachable";
+    case "crypto":
+      return "crypto";
+    // `io`, `not-started`, `auth`, `invalid-input`, `internal`, and the legacy
+    // catch-all kinds carry no reliable send-cause on their own — fall through to
+    // keyword-sniffing the message (covers `internal` file/channel error strings).
+  }
 
+  // 2) Fallback: sniff the message text.
+  const msg = errorMessage(e).toLowerCase();
   if (/crypt|encrypt|decrypt|\bkey\b|ratchet|session|cipher/.test(msg))
     return "crypto";
   if (
@@ -60,8 +86,7 @@ export function sendFailReason(e: unknown): SendFailReason {
   )
     return "peer-unknown";
   if (
-    kind === "network" ||
-    /network|unreachable|connect|timed out|timeout|relay|post office|post-office|node down|not ready|transport|send fail/.test(
+    /network|unreachable|connect|timed out|timeout|relay|post office|post-office|node down|not ready|not started|transport|send fail/.test(
       msg,
     )
   )

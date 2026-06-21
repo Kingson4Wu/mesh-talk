@@ -120,6 +120,7 @@
     "thisAccount": "This device's account:",
     "addDevice": "Add another of your devices",
     "showCode": "Show pairing code",
+    "qrHint": "Scan the QR with a phone, or just copy the code above and paste it on your other device.",
     "enterCodeHint": "Enter this code on your other device, below.",
     "haveCode": "Have a code from your other device?",
     "pickDevice": "Pick the device…",

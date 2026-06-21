@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Smartphone, KeyRound, Loader2 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -106,6 +107,19 @@ export function LinkDeviceDialog() {
               </code>
             )}
           </div>
+          {code && (
+            <div className="flex items-center gap-3">
+              {/* Display-only QR: this is a desktop app with no scanner, so the QR is just
+                  a convenience for transcribing the code via a phone camera / future mobile
+                  client. The copyable text above remains the primary (desktop) path. */}
+              <div className="rounded-md bg-white p-2">
+                <QRCodeSVG value={code} size={96} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("linkDevice.qrHint")}
+              </p>
+            </div>
+          )}
           <p className="text-xs text-muted-foreground">
             {t("linkDevice.enterCodeHint")}
           </p>

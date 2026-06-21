@@ -120,6 +120,7 @@
     "thisAccount": "本设备的账户：",
     "addDevice": "添加你的另一台设备",
     "showCode": "显示配对码",
+    "qrHint": "用手机扫描二维码，或直接复制上方的配对码并粘贴到你的另一台设备上。",
     "enterCodeHint": "在你的另一台设备上输入下方的配对码。",
     "haveCode": "已有来自另一台设备的配对码？",
     "pickDevice": "选择设备…",

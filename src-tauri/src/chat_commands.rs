@@ -85,19 +85,17 @@ pub struct ChannelMemberInfo {
     pub name: String,
 }
 
-const NOT_STARTED: &str = "node not started";
-
 #[tauri::command]
 pub async fn my_id(state: tauri::State<'_, NodeState>) -> Result<String, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt.user_id().to_string())
 }
 
 #[tauri::command]
 pub async fn list_peers(state: tauri::State<'_, NodeState>) -> Result<Vec<PeerInfo>, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt
         .peers()
         .into_iter()
@@ -121,7 +119,7 @@ pub async fn send_dm(
     // Snapshot the node handle, then release the state lock before the .await send.
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let reply = match reply_to {
@@ -143,7 +141,7 @@ pub async fn history(
     // request an unbounded scan; the node truncates to this anyway.
     let limit = limit.min(500);
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     let public = rt
         .peer_public(&peer)
         .ok_or_else(|| CommandError::Validation(format!("unknown peer: {peer}")))?;
@@ -157,7 +155,7 @@ pub async fn history(
 #[tauri::command]
 pub async fn account_id(state: tauri::State<'_, NodeState>) -> Result<String, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt.account_id().to_string())
 }
 
@@ -171,7 +169,7 @@ pub async fn send_to_account(
     // Snapshot the node handle, then release the state lock before the .await send.
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let reply = match reply_to {
@@ -191,7 +189,7 @@ pub async fn account_history(
 ) -> Result<Vec<HistoryItem>, CommandError> {
     let limit = limit.min(500);
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt
         .account_history(&account, limit)
         .into_iter()
@@ -202,14 +200,14 @@ pub async fn account_history(
 #[tauri::command]
 pub async fn start_linking(state: tauri::State<'_, NodeState>) -> Result<String, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt.start_linking())
 }
 
 #[tauri::command]
 pub async fn stop_linking(state: tauri::State<'_, NodeState>) -> Result<(), CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     rt.stop_linking();
     Ok(())
 }
@@ -221,7 +219,7 @@ pub async fn link_device(
     code: String,
 ) -> Result<String, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     rt.link_device(&peer, &code)
         .await
         .map_err(CommandError::from)
@@ -230,7 +228,7 @@ pub async fn link_device(
 #[tauri::command]
 pub async fn rekey_account(state: tauri::State<'_, NodeState>) -> Result<String, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     rt.rekey_account().map_err(CommandError::from)
 }
 
@@ -248,7 +246,7 @@ pub async fn list_accounts(
 ) -> Result<Vec<AccountInfo>, CommandError> {
     use std::collections::BTreeMap;
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     let mut by_account: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in rt.peers() {
         if let Some(acct) = p.account_id {
@@ -307,7 +305,7 @@ pub async fn list_channels(
     state: tauri::State<'_, NodeState>,
 ) -> Result<Vec<ChannelInfo>, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt
         .list_channels()
         .into_iter()
@@ -326,7 +324,7 @@ pub async fn channel_members(
 ) -> Result<Vec<ChannelMemberInfo>, CommandError> {
     let channel = parse_channel_id(&channel_id)?;
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     // Build a user_id -> display name map from the known roster so members show a
     // friendly name when we know one; otherwise fall back to the user_id.
     let names: std::collections::HashMap<String, String> = rt
@@ -356,7 +354,7 @@ pub async fn create_channel(
 ) -> Result<String, CommandError> {
     let (node, members) = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         let mut members = Vec::new();
         for uid in &member_ids {
             let p = rt
@@ -382,7 +380,7 @@ pub async fn add_channel_member(
     let channel = parse_channel_id(&channel_id)?;
     let (node, member) = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         let member = rt
             .peer_public(&member_id)
             .ok_or_else(|| CommandError::Validation(format!("unknown peer: {member_id}")))?;
@@ -402,7 +400,7 @@ pub async fn remove_channel_member(
     let channel = parse_channel_id(&channel_id)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     node.remove_channel_member(channel, &member_id)
@@ -424,7 +422,7 @@ pub async fn send_channel_message(
     };
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     node.send_channel_message_reply(id, text.as_bytes(), reply)
@@ -441,7 +439,7 @@ pub async fn send_file_dm(
 ) -> Result<String, CommandError> {
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     // The per-file conv id isn't known until staging completes, but progress events key
@@ -466,7 +464,7 @@ pub async fn send_file_to_account(
 ) -> Result<String, CommandError> {
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let mut prog = crate::events::ProgressThrottle::new(app, account.clone(), "send");
@@ -489,7 +487,7 @@ pub async fn send_file_channel(
     let id = parse_channel_id(&channel_id)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let mut prog = crate::events::ProgressThrottle::new(app, channel_id.clone(), "send");
@@ -512,7 +510,7 @@ pub async fn save_file(
     let id = parse_channel_id(&file_conv)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let mut prog = crate::events::ProgressThrottle::new(app, file_conv.clone(), "save");
@@ -542,7 +540,7 @@ pub async fn save_file_to_dir(
     let id = parse_channel_id(&file_conv)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let path = tokio::task::spawn_blocking(move || {
@@ -632,7 +630,7 @@ pub async fn read_file(
     let id = parse_channel_id(&file_conv)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     let bytes = tokio::task::spawn_blocking(move || node.read_file(id))
@@ -651,7 +649,7 @@ pub async fn channel_history(
     let limit = limit.min(500);
     let id = parse_channel_id(&channel_id)?;
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt
         .channel_history(id, limit)
         .into_iter()
@@ -670,7 +668,7 @@ pub async fn react_dm(
     let id = parse_event_id(&target)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     node.react_dm(&recipient, id, &emoji, remove)
@@ -690,7 +688,7 @@ pub async fn react_channel(
     let id = parse_event_id(&target)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     node.react_channel(channel, id, &emoji, remove)
@@ -704,7 +702,7 @@ pub async fn reactions(
     peer: String,
 ) -> Result<Vec<ReactionInfo>, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     let public = rt
         .peer_public(&peer)
         .ok_or_else(|| CommandError::Validation(format!("unknown peer: {peer}")))?;
@@ -718,7 +716,7 @@ pub async fn channel_reactions(
 ) -> Result<Vec<ReactionInfo>, CommandError> {
     let channel = parse_channel_id(&channel_id)?;
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(to_reaction_infos(rt.channel_reactions(channel)))
 }
 
@@ -733,7 +731,7 @@ pub async fn react_account(
     let id = parse_event_id(&target)?;
     let node = {
         let guard = state.0.lock().await;
-        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
         rt.handle()
     };
     node.react_to_account(&account, id, &emoji, remove)
@@ -747,7 +745,7 @@ pub async fn account_reactions(
     account: String,
 ) -> Result<Vec<ReactionInfo>, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(to_reaction_infos(rt.account_reactions(&account)))
 }
 
@@ -769,7 +767,7 @@ pub async fn search(
     query: String,
 ) -> Result<Vec<SearchHitInfo>, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt
         .search(&query)
         .into_iter()
@@ -818,7 +816,7 @@ pub async fn diag_get_peers(
     state: tauri::State<'_, NodeState>,
 ) -> Result<Vec<DiagPeerInfo>, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(rt
         .peers()
         .into_iter()
@@ -840,7 +838,7 @@ pub async fn diag_network_info(
     state: tauri::State<'_, NodeState>,
 ) -> Result<DiagNetworkInfo, CommandError> {
     let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
     Ok(DiagNetworkInfo {
         own_user_id: rt.user_id().to_string(),
         own_name: rt.display_name().to_string(),
