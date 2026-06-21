@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Smartphone, KeyRound, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,7 @@ import { shortId } from "@/lib/format";
 import { useChat } from "@/store/chat";
 
 export function LinkDeviceDialog() {
+  const { t } = useTranslation();
   const myAccountId = useChat((s) => s.myAccountId);
   const peers = useChat((s) => s.peers);
 
@@ -52,10 +54,10 @@ export function LinkDeviceDialog() {
     try {
       await chat.linkDevice(joinPeer, joinCode.trim());
       await auth.adoptLinkedAccount();
-      setMsg("Linked! This device now shares that account.");
+      setMsg(t("linkDevice.linked"));
       setJoinCode("");
     } catch (e) {
-      setMsg(`Link failed: ${errorMessage(e)}`);
+      setMsg(t("linkDevice.linkFailed", { error: errorMessage(e) }));
     } finally {
       setBusy(false);
     }
@@ -66,9 +68,9 @@ export function LinkDeviceDialog() {
     setMsg(null);
     try {
       const id = await chat.rekeyAccount();
-      setMsg(`Re-keyed. New account: ${shortId(id, 12)}…`);
+      setMsg(t("linkDevice.rekeyed", { id: shortId(id, 12) }));
     } catch (e) {
-      setMsg(`Re-key failed: ${errorMessage(e)}`);
+      setMsg(t("linkDevice.rekeyFailed", { error: errorMessage(e) }));
     } finally {
       setBusy(false);
     }
@@ -77,15 +79,15 @@ export function LinkDeviceDialog() {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title="Link a device">
+        <Button variant="ghost" size="icon" title={t("linkDevice.trigger")}>
           <Smartphone className="h-4 w-4" />
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Your devices</DialogTitle>
+          <DialogTitle>{t("linkDevice.title")}</DialogTitle>
           <DialogDescription>
-            This device's account:{" "}
+            {t("linkDevice.thisAccount")}{" "}
             <code className="font-mono">
               {myAccountId ? `${shortId(myAccountId, 12)}…` : "—"}
             </code>
@@ -93,10 +95,10 @@ export function LinkDeviceDialog() {
         </DialogHeader>
 
         <section className="space-y-2 rounded-lg border p-3">
-          <p className="text-sm font-medium">Add another of your devices</p>
+          <p className="text-sm font-medium">{t("linkDevice.addDevice")}</p>
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="sm" onClick={showCode}>
-              Show pairing code
+              {t("linkDevice.showCode")}
             </Button>
             {code && (
               <code className="rounded bg-muted px-2 py-1 font-mono text-sm tracking-widest">
@@ -105,29 +107,27 @@ export function LinkDeviceDialog() {
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            Enter this code on your other device, below.
+            {t("linkDevice.enterCodeHint")}
           </p>
         </section>
 
         <section className="space-y-2 rounded-lg border p-3">
-          <p className="text-sm font-medium">
-            Have a code from your other device?
-          </p>
+          <p className="text-sm font-medium">{t("linkDevice.haveCode")}</p>
           <select
             value={joinPeer}
             onChange={(e) => setJoinPeer(e.target.value)}
             className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
           >
-            <option value="">Pick the device…</option>
+            <option value="">{t("linkDevice.pickDevice")}</option>
             {peers.map((p) => (
               <option key={p.user_id} value={p.user_id}>
-                {p.name || "(unnamed)"} ({shortId(p.user_id)})
+                {p.name || t("common.unnamed")} ({shortId(p.user_id)})
               </option>
             ))}
           </select>
           <div className="flex gap-2">
             <Input
-              placeholder="pairing code"
+              placeholder={t("linkDevice.pairingCode")}
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
             />
@@ -136,16 +136,16 @@ export function LinkDeviceDialog() {
               onClick={doLink}
             >
               {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-              Link
+              {t("common.link")}
             </Button>
           </div>
         </section>
 
         <section className="flex items-center justify-between rounded-lg border border-destructive/30 p-3">
           <div>
-            <p className="text-sm font-medium">Lost or compromised device?</p>
+            <p className="text-sm font-medium">{t("linkDevice.lostDevice")}</p>
             <p className="text-xs text-muted-foreground">
-              Rotate to a fresh account identity.
+              {t("linkDevice.rotateIdentity")}
             </p>
           </div>
           <Button
@@ -155,7 +155,7 @@ export function LinkDeviceDialog() {
             onClick={rekey}
           >
             <KeyRound className="h-4 w-4" />
-            Re-key
+            {t("linkDevice.rekey")}
           </Button>
         </section>
 

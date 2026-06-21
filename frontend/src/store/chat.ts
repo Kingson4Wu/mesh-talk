@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { chat } from "@/lib/api";
+import { chat, favorites as favoritesApi } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
 import { notifyInbound } from "@/lib/notify";
@@ -10,6 +10,7 @@ import type {
   ChannelMemberInfo,
   ChannelMessageEvent,
   DmReceivedEvent,
+  FavoriteInfo,
   FileReceivedEvent,
   HistoryItem,
   PeerInfo,
@@ -47,6 +48,18 @@ export interface IncomingFile {
 }
 
 export const convKey = (c: Conversation) => `${c.kind}:${c.id}`;
+
+/** Stable empty favorites map so a "no favorites yet" selector keeps a constant ref. */
+export const NO_FAVORITES: Record<string, FavoriteInfo> = {};
+
+/** The name to show for a contact: its user-set alias if any, else the announced name. */
+export function displayName(
+  favorites: Record<string, FavoriteInfo>,
+  id: string,
+  announced: string,
+): string {
+  return favorites[id]?.custom_alias || announced;
+}
 
 let clientIdCounter = 0;
 /** A process-unique id for an optimistic message bubble. */
@@ -112,12 +125,18 @@ interface ChatState {
   unread: Record<string, number>;
   members: ChannelMemberInfo[];
   incomingFiles: IncomingFile[];
+  // Per-contact UI prefs (pin + custom alias), keyed by account_id/channel_id. Persisted
+  // on the Rust side; mirrored here so the sidebar can sort/rename without a roundtrip.
+  favorites: Record<string, FavoriteInfo>;
   loading: boolean;
   error: string | null; // transient action error (file/reaction send), surfaced to the user
   bootFailed: boolean; // the node never came up within the boot window
 
   start: () => () => void;
   retryBoot: () => void;
+  loadFavorites: () => Promise<void>;
+  togglePinned: (id: string, pinned: boolean) => Promise<void>;
+  setAlias: (id: string, alias: string | null) => Promise<void>;
   dismissFile: (fileConv: string) => void;
   clearError: () => void;
   setError: (msg: string) => void;
@@ -146,12 +165,63 @@ export const useChat = create<ChatState>((set, get) => ({
   unread: {},
   members: [],
   incomingFiles: [],
+  favorites: NO_FAVORITES,
   loading: false,
   error: null,
   bootFailed: false,
 
   clearError: () => set({ error: null }),
   setError: (msg) => set({ error: msg }),
+
+  loadFavorites: async () => {
+    try {
+      const list = await favoritesApi.get();
+      const map: Record<string, FavoriteInfo> = {};
+      for (const f of list) map[f.id] = f;
+      set({ favorites: map });
+    } catch {
+      // favorites are local-only UI prefs; a load failure is non-fatal.
+    }
+  },
+
+  // Optimistically update the local mirror, persist, then reconcile from disk so the
+  // truth on disk (which prunes empty entries) is reflected.
+  togglePinned: async (id, pinned) => {
+    set((s) => {
+      const prev = s.favorites[id];
+      return {
+        favorites: {
+          ...s.favorites,
+          [id]: { id, pinned, custom_alias: prev?.custom_alias ?? null },
+        },
+      };
+    });
+    try {
+      await favoritesApi.setFavorite(id, pinned);
+    } catch (e) {
+      set({ error: `Couldn't update pin: ${errorMessage(e)}` });
+    }
+    await get().loadFavorites();
+  },
+
+  setAlias: async (id, alias) => {
+    const trimmed = alias?.trim() ? alias.trim() : null;
+    set((s) => {
+      const prev = s.favorites[id];
+      return {
+        favorites: {
+          ...s.favorites,
+          [id]: { id, pinned: prev?.pinned ?? false, custom_alias: trimmed },
+        },
+      };
+    });
+    try {
+      await favoritesApi.setAlias(id, trimmed);
+    } catch (e) {
+      set({ error: `Couldn't rename contact: ${errorMessage(e)}` });
+    }
+    await get().loadFavorites();
+  },
 
   // Re-attempt the node-id poll after a boot failure (events + roster interval from the
   // original start() are still live, so we only need to re-resolve my_id/account_id).
@@ -206,7 +276,10 @@ export const useChat = create<ChatState>((set, get) => ({
       unread: {},
       members: [],
       incomingFiles: [],
+      favorites: NO_FAVORITES,
     });
+    // Favorites are local UI prefs (no node needed) — load them right away.
+    void get().loadFavorites();
     // Poll my_id until the node finishes opening (post-login KDF unlock takes a moment).
     let cancelled = false;
     const boot = async () => {

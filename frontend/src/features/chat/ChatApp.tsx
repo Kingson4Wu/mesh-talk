@@ -1,9 +1,11 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Sidebar } from "./Sidebar";
 import { ConversationView } from "./ConversationView";
 import { useChat } from "@/store/chat";
 
 export function ChatApp() {
+  const { t } = useTranslation();
   const start = useChat((s) => s.start);
   const error = useChat((s) => s.error);
   const clearError = useChat((s) => s.clearError);
@@ -26,7 +28,7 @@ export function ChatApp() {
           <button
             type="button"
             onClick={clearError}
-            aria-label="Dismiss error"
+            aria-label={t("conversation.dismissError")}
             className="font-bold opacity-80 hover:opacity-100"
           >
             ×

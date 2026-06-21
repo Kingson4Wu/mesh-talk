@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Copy, Radar, Trash2, Wifi } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   Dialog,
   DialogContent,
@@ -24,6 +26,7 @@ interface LogLine {
 
 /** A monospace value that copies itself to the clipboard when clicked. */
 function CopyValue({ value, label }: { value: string; label?: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = () => {
     void navigator.clipboard?.writeText(value).then(
@@ -38,17 +41,23 @@ function CopyValue({ value, label }: { value: string; label?: string }) {
     <button
       type="button"
       onClick={copy}
-      title="Copy"
+      title={t("common.copy")}
       className="group inline-flex max-w-full items-center gap-1 font-mono text-xs hover:text-foreground"
     >
       <span className="truncate">{label ?? value}</span>
       <Copy className="h-3 w-3 shrink-0 opacity-40 group-hover:opacity-100" />
-      {copied && <span className="text-[10px] text-primary">copied</span>}
+      {copied && (
+        <span className="text-[10px] text-primary">{t("common.copied")}</span>
+      )}
     </button>
   );
 }
 
-function diffPeers(prev: DiagPeerInfo[], next: DiagPeerInfo[]): LogLine[] {
+function diffPeers(
+  prev: DiagPeerInfo[],
+  next: DiagPeerInfo[],
+  t: TFunction,
+): LogLine[] {
   const ts = Date.now();
   const prevIds = new Set(prev.map((p) => p.user_id));
   const nextIds = new Set(next.map((p) => p.user_id));
@@ -57,19 +66,28 @@ function diffPeers(prev: DiagPeerInfo[], next: DiagPeerInfo[]): LogLine[] {
     if (!prevIds.has(p.user_id)) {
       lines.push({
         ts,
-        text: `peer appeared: ${p.name || "(unnamed)"} (${p.ip})`,
+        text: t("diagnostics.peerAppeared", {
+          name: p.name || t("common.unnamed"),
+          ip: p.ip,
+        }),
       });
     }
   }
   for (const p of prev) {
     if (!nextIds.has(p.user_id)) {
-      lines.push({ ts, text: `peer disappeared: ${p.name || "(unnamed)"}` });
+      lines.push({
+        ts,
+        text: t("diagnostics.peerDisappeared", {
+          name: p.name || t("common.unnamed"),
+        }),
+      });
     }
   }
   return lines;
 }
 
 export function DiagnosticsDialog() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<DiagNetworkInfo | null>(null);
   const [peers, setPeers] = useState<DiagPeerInfo[]>([]);
@@ -79,7 +97,7 @@ export function DiagnosticsDialog() {
   const poll = useCallback(async () => {
     try {
       const next = await diag.getPeers();
-      const lines = diffPeers(prevPeers.current, next);
+      const lines = diffPeers(prevPeers.current, next, t);
       prevPeers.current = next;
       setPeers(next);
       if (lines.length > 0) {
@@ -88,7 +106,7 @@ export function DiagnosticsDialog() {
     } catch {
       /* node may still be starting; ignore */
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!open) return;
@@ -116,50 +134,61 @@ export function DiagnosticsDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title="Diagnostics / discovery">
+        <Button variant="ghost" size="icon" title={t("diagnostics.trigger")}>
           <Radar className="h-4 w-4" />
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Radar className="h-4 w-4" /> Diagnostics
+            <Radar className="h-4 w-4" /> {t("diagnostics.title")}
           </DialogTitle>
-          <DialogDescription>
-            See LAN discovery working: who is found, your identity, and the
-            network.
-          </DialogDescription>
+          <DialogDescription>{t("diagnostics.description")}</DialogDescription>
         </DialogHeader>
 
         <div className="grid max-h-[70vh] gap-4 overflow-y-auto">
           {/* This device */}
           <section className="space-y-2 rounded-lg border p-3">
             <p className="flex items-center gap-2 text-sm font-semibold">
-              <Wifi className="h-4 w-4" /> This device
+              <Wifi className="h-4 w-4" /> {t("diagnostics.thisDevice")}
             </p>
             {info ? (
               <dl className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 text-sm">
-                <dt className="text-muted-foreground">Name</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.name")}
+                </dt>
                 <dd className="truncate">{info.own_name || "—"}</dd>
-                <dt className="text-muted-foreground">Fingerprint</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.fingerprint")}
+                </dt>
                 <dd>
                   <CopyValue value={info.own_user_id} />
                 </dd>
-                <dt className="text-muted-foreground">Account</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.account")}
+                </dt>
                 <dd>
                   <CopyValue value={info.account_id} />
                 </dd>
-                <dt className="text-muted-foreground">Listen port (TCP)</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.listenPort")}
+                </dt>
                 <dd className="font-mono text-xs">{info.listen_tcp_port}</dd>
-                <dt className="text-muted-foreground">Discovery port</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.discoveryPort")}
+                </dt>
                 <dd className="font-mono text-xs">{info.discovery_port}</dd>
-                <dt className="text-muted-foreground">Multicast group</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.multicastGroup")}
+                </dt>
                 <dd className="font-mono text-xs">{info.multicast_group}</dd>
-                <dt className="text-muted-foreground">Interfaces</dt>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.interfaces")}
+                </dt>
                 <dd className="flex flex-wrap gap-1">
                   {info.interfaces.length === 0 ? (
                     <span className="text-xs text-muted-foreground">
-                      none found
+                      {t("diagnostics.noneFound")}
                     </span>
                   ) : (
                     info.interfaces.map((ip) => (
@@ -169,32 +198,34 @@ export function DiagnosticsDialog() {
                 </dd>
               </dl>
             ) : (
-              <p className="text-sm text-muted-foreground">Node not ready…</p>
+              <p className="text-sm text-muted-foreground">
+                {t("diagnostics.nodeNotReady")}
+              </p>
             )}
           </section>
 
           {/* Discovered peers */}
           <section className="space-y-2 rounded-lg border p-3">
             <p className="flex items-center gap-2 text-sm font-semibold">
-              <Radar className="h-4 w-4" /> Discovered peers
+              <Radar className="h-4 w-4" /> {t("diagnostics.discoveredPeers")}
               <Badge className="bg-muted text-muted-foreground">
                 {peers.length}
               </Badge>
             </p>
             {peers.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                No peers discovered yet. Make sure another device is on the same
-                LAN.
+                {t("diagnostics.noPeers")}
               </p>
             )}
             <div className="space-y-2">
               {[...grouped.entries()].map(([acct, devices]) => (
                 <div key={acct} className="rounded-md bg-muted/40 p-2">
                   <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>account</span>
+                    <span>{t("diagnostics.account")}</span>
                     <CopyValue value={acct} label={`${shortId(acct, 12)}…`} />
                     <span>
-                      · {devices.length} device{devices.length === 1 ? "" : "s"}
+                      ·{" "}
+                      {t("diagnostics.deviceCount", { count: devices.length })}
                     </span>
                   </div>
                   {devices.map((p) => (
@@ -214,7 +245,7 @@ export function DiagnosticsDialog() {
           <section className="space-y-2 rounded-lg border p-3">
             <div className="flex items-center justify-between">
               <p className="flex items-center gap-2 text-sm font-semibold">
-                <Activity className="h-4 w-4" /> Activity log
+                <Activity className="h-4 w-4" /> {t("diagnostics.activityLog")}
               </p>
               <Button
                 variant="ghost"
@@ -222,13 +253,12 @@ export function DiagnosticsDialog() {
                 onClick={() => setLog([])}
                 disabled={log.length === 0}
               >
-                <Trash2 className="h-3.5 w-3.5" /> Clear
+                <Trash2 className="h-3.5 w-3.5" /> {t("common.clear")}
               </Button>
             </div>
             {log.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No discovery activity yet. Appearances/disappearances will show
-                here.
+                {t("diagnostics.noActivity")}
               </p>
             ) : (
               <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs">
@@ -250,15 +280,18 @@ export function DiagnosticsDialog() {
 }
 
 function PeerRow({ p }: { p: DiagPeerInfo }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center justify-between gap-2 py-1">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">
-            {p.name || "(unnamed)"}
+            {p.name || t("common.unnamed")}
           </span>
           {p.post_office && (
-            <Badge className="bg-primary/15 text-primary">post office</Badge>
+            <Badge className="bg-primary/15 text-primary">
+              {t("diagnostics.postOffice")}
+            </Badge>
           )}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground">

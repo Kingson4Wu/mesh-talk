@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Users, UserPlus, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +14,7 @@ import { shortId } from "@/lib/format";
 import { useChat } from "@/store/chat";
 
 export function MembersDialog() {
+  const { t } = useTranslation();
   const members = useChat((s) => s.members);
   const peers = useChat((s) => s.peers);
   const addMember = useChat((s) => s.addMember);
@@ -25,13 +27,15 @@ export function MembersDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title="Members">
+        <Button variant="ghost" size="icon" title={t("members.trigger")}>
           <Users className="h-4 w-4" />
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Channel members ({members.length})</DialogTitle>
+          <DialogTitle>
+            {t("members.title", { count: members.length })}
+          </DialogTitle>
         </DialogHeader>
 
         <div className="max-h-48 space-y-1 overflow-y-auto">
@@ -51,7 +55,7 @@ export function MembersDialog() {
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                title="Remove"
+                title={t("common.remove")}
                 onClick={() => removeMember(m.user_id)}
               >
                 <X className="h-4 w-4" />
@@ -63,7 +67,7 @@ export function MembersDialog() {
         {addable.length > 0 && (
           <>
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Add a peer
+              {t("members.addPeer")}
             </div>
             <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-1">
               {addable.map((p) => (
@@ -74,7 +78,7 @@ export function MembersDialog() {
                 >
                   <Avatar name={p.name} id={p.user_id} className="h-7 w-7" />
                   <span className="flex-1 truncate text-sm">
-                    {p.name || "(unnamed)"}
+                    {p.name || t("common.unnamed")}
                   </span>
                   <UserPlus className="h-4 w-4 text-muted-foreground" />
                 </button>

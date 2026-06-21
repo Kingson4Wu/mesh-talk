@@ -11,6 +11,7 @@ import type {
   ChannelMemberInfo,
   DiagNetworkInfo,
   DiagPeerInfo,
+  FavoriteInfo,
   HistoryItem,
   LoginResult,
   LogoutResult,
@@ -128,6 +129,17 @@ export const chat = {
 export const diag = {
   getPeers: () => invoke<DiagPeerInfo[]>("diag_get_peers"),
   networkInfo: () => invoke<DiagNetworkInfo>("diag_network_info"),
+};
+
+export const favorites = {
+  /** Every favorites entry the user has set (pin and/or alias), keyed by id. */
+  get: () => invoke<FavoriteInfo[]>("get_favorites"),
+  /** Pin or unpin a contact by id. */
+  setFavorite: (id: string, pinned: boolean) =>
+    invoke<void>("set_favorite", { id, pinned }),
+  /** Set or clear (null/blank) a contact's custom alias. */
+  setAlias: (id: string, alias: string | null) =>
+    invoke<void>("set_alias", { id, alias }),
 };
 
 export const settings = {

@@ -17,6 +17,7 @@
 pub mod chat_commands;
 pub mod commands;
 pub mod events;
+pub mod favorites;
 pub mod logger;
 pub mod perf;
 pub mod services;
@@ -71,6 +72,7 @@ pub fn run_tauri() {
 
     let settings_state = SettingsState::default();
     let trust_state = crate::trust::TrustState::default();
+    let favorites_state = crate::favorites::FavoritesState::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -92,6 +94,10 @@ pub fn run_tauri() {
             crate::trust::load_into_state(
                 &app.handle().clone(),
                 &app.state::<crate::trust::TrustState>(),
+            );
+            crate::favorites::load_into_state(
+                &app.handle().clone(),
+                &app.state::<crate::favorites::FavoritesState>(),
             );
             crate::tray::create_system_tray(&app.handle().clone())?;
 
@@ -130,6 +136,7 @@ pub fn run_tauri() {
         .manage(app_state)
         .manage(settings_state)
         .manage(trust_state)
+        .manage(favorites_state)
         .manage(crate::chat_commands::NodeState::empty())
         .invoke_handler(tauri::generate_handler![
             commands::login,
@@ -174,7 +181,10 @@ pub fn run_tauri() {
             crate::settings::get_app_settings,
             crate::settings::set_app_settings,
             crate::trust::get_trust,
-            crate::trust::mark_verified
+            crate::trust::mark_verified,
+            crate::favorites::get_favorites,
+            crate::favorites::set_favorite,
+            crate::favorites::set_alias
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

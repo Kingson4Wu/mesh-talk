@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MessagesSquare, Loader2, ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useAuth } from "@/store/auth";
 
 export function LoginScreen() {
+  const { t } = useTranslation();
   const { login, register, loading, error, clearError } = useAuth();
   const [tab, setTab] = useState<"signin" | "register">("signin");
   const [username, setUsername] = useState("");
@@ -21,7 +23,7 @@ export function LoginScreen() {
     } else {
       const ok = await register(username.trim(), password);
       if (ok) {
-        setNotice("Account created — you can sign in now.");
+        setNotice(t("login.accountCreated"));
         setTab("signin");
         setPassword("");
       }
@@ -48,32 +50,32 @@ export function LoginScreen() {
           <h1 className="text-2xl font-semibold tracking-tight">Mesh-Talk</h1>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
             <ShieldCheck className="h-3.5 w-3.5" />
-            Serverless · end-to-end encrypted
+            {t("login.tagline")}
           </p>
         </div>
 
         <div className="rounded-2xl border bg-card/60 p-6 shadow-xl backdrop-blur">
           <Tabs value={tab} onValueChange={onTab}>
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="signin">Sign in</TabsTrigger>
-              <TabsTrigger value="register">Register</TabsTrigger>
+              <TabsTrigger value="signin">{t("login.signIn")}</TabsTrigger>
+              <TabsTrigger value="register">{t("login.register")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value={tab} forceMount>
               <form onSubmit={submit} className="mt-5 space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="username">Username</Label>
+                  <Label htmlFor="username">{t("login.username")}</Label>
                   <Input
                     id="username"
                     autoFocus
                     autoComplete="username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    placeholder="alice"
+                    placeholder={t("login.usernamePlaceholder")}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
+                  <Label htmlFor="password">{t("login.password")}</Label>
                   <Input
                     id="password"
                     type="password"
@@ -83,7 +85,9 @@ export function LoginScreen() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder={
-                      tab === "register" ? "at least 8 characters" : "••••••••"
+                      tab === "register"
+                        ? t("login.passwordHint")
+                        : t("login.passwordPlaceholder")
                     }
                   />
                 </div>
@@ -103,7 +107,9 @@ export function LoginScreen() {
                   disabled={loading || !username.trim() || !password}
                 >
                   {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {tab === "signin" ? "Sign in" : "Create account"}
+                  {tab === "signin"
+                    ? t("login.signIn")
+                    : t("login.createAccount")}
                 </Button>
               </form>
             </TabsContent>
@@ -111,7 +117,7 @@ export function LoginScreen() {
         </div>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          Your keys never leave this device. Peers are discovered on your LAN.
+          {t("login.footer")}
         </p>
       </div>
     </div>

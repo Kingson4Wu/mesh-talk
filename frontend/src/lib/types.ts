@@ -120,6 +120,17 @@ export interface SafetyNumber {
   words: string[];
 }
 
+// --- Favorites / pinned contacts (src-tauri/src/favorites.rs) ---
+
+export interface FavoriteInfo {
+  /** account_id (or channel_id) the preference is keyed by. */
+  id: string;
+  /** Pinned contacts sort to the top of the sidebar. */
+  pinned: boolean;
+  /** A user-set alias that overrides the announced name (null = use announced name). */
+  custom_alias: string | null;
+}
+
 // --- Tauri events (src-tauri/src/events.rs) ---
 
 export interface DmReceivedEvent {

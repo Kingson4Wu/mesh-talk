@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Download, FileDown, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -48,6 +49,7 @@ function ImageThumb({ fileConv, alt }: { fileConv: string; alt: string }) {
 }
 
 export function FilesTray() {
+  const { t } = useTranslation();
   const files = useChat((s) => s.incomingFiles);
   const dismissFile = useChat((s) => s.dismissFile);
   const saveFile = useChat((s) => s.saveFile);
@@ -58,7 +60,7 @@ export function FilesTray() {
       const dest = await save({ defaultPath: name });
       if (typeof dest === "string") await saveFile(fileConv, dest);
     } catch (e) {
-      setError(`Couldn't save file: ${errorMessage(e)}`);
+      setError(t("files.couldntSave", { error: errorMessage(e) }));
     }
   };
 
@@ -68,7 +70,7 @@ export function FilesTray() {
         <Button
           variant="ghost"
           size="icon"
-          title="Received files"
+          title={t("files.received")}
           className="relative"
         >
           <Download className="h-4 w-4" />
@@ -81,11 +83,11 @@ export function FilesTray() {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-0">
         <div className="border-b px-3 py-2 text-sm font-semibold">
-          Received files
+          {t("files.received")}
         </div>
         {files.length === 0 ? (
           <p className="px-3 py-4 text-center text-sm text-muted-foreground">
-            Nothing received yet.
+            {t("files.nothingReceived")}
           </p>
         ) : (
           <div className="max-h-72 overflow-y-auto p-1">
@@ -111,7 +113,7 @@ export function FilesTray() {
                     className="h-7"
                     onClick={() => saveOne(f.fileConv, f.name)}
                   >
-                    Save
+                    {t("common.save")}
                   </Button>
                   <button
                     onClick={() => dismissFile(f.fileConv)}

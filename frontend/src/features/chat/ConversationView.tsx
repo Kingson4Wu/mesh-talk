@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, Hash, Loader2, MessagesSquare } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
@@ -11,19 +12,20 @@ import { TransferBar } from "./TransferBar";
 import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
 import { useAuth } from "@/store/auth";
-import { convKey, useChat, type ChatMessage } from "@/store/chat";
+import { convKey, displayName, useChat, type ChatMessage } from "@/store/chat";
 import type { ReactionInfo } from "@/lib/types";
 
 function EmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
         <MessagesSquare className="h-8 w-8" />
       </div>
       <div>
-        <p className="font-medium">No conversation selected</p>
+        <p className="font-medium">{t("conversation.noneSelectedTitle")}</p>
         <p className="text-sm text-muted-foreground">
-          Pick a contact or channel to start chatting.
+          {t("conversation.noneSelectedDesc")}
         </p>
       </div>
     </div>
@@ -34,13 +36,14 @@ function EmptyState() {
 // background (the heavy argon2 KDF + store opens). The login invoke already returned, so
 // this is a non-blocking "two-phase startup" state — not a frozen window.
 function UnlockingState() {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
       <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
       <div>
-        <p className="font-medium">Unlocking your encrypted stores…</p>
+        <p className="font-medium">{t("conversation.unlockingTitle")}</p>
         <p className="text-sm text-muted-foreground">
-          Decrypting keys and starting peer discovery.
+          {t("conversation.unlockingDesc")}
         </p>
       </div>
     </div>
@@ -54,7 +57,9 @@ const NO_MESSAGES: ChatMessage[] = [];
 const NO_REACTIONS: ReactionInfo[] = [];
 
 export function ConversationView() {
+  const { t } = useTranslation();
   const active = useChat((s) => s.active);
+  const favorites = useChat((s) => s.favorites);
   const send = useChat((s) => s.send);
   const sendFile = useChat((s) => s.sendFile);
   const setError = useChat((s) => s.setError);
@@ -122,6 +127,8 @@ export function ConversationView() {
   const isChannel = active.kind === "channel";
   // Reaction `who` is keyed by account id for account conversations, device user-id for channels.
   const selfReactionId = isChannel ? myId : myAccountId;
+  // Alias (if set) overrides the conversation's announced name in the header + composer.
+  const headerName = displayName(favorites, active.id, active.name);
 
   return (
     <main className="flex flex-1 flex-col">
@@ -131,21 +138,23 @@ export function ConversationView() {
             <Hash className="h-4 w-4" />
           </div>
         ) : (
-          <Avatar name={active.name} id={active.id} className="h-9 w-9" />
+          <Avatar name={headerName} id={active.id} className="h-9 w-9" />
         )}
         <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold">{active.name}</div>
+          <div className="truncate font-semibold">{headerName}</div>
           <div className="truncate text-xs text-muted-foreground">
             {isChannel
-              ? `${members.length || ""} ${members.length ? "members" : "channel"}`.trim()
-              : `Direct message · ${shortId(active.id, 12)}`}
+              ? members.length
+                ? t("conversation.members", { count: members.length })
+                : t("conversation.channel")
+              : t("conversation.directMessage", { id: shortId(active.id, 12) })}
           </div>
         </div>
         {isChannel ? (
           <MembersDialog />
         ) : (
           active.kind === "account" && (
-            <VerifyContactDialog accountId={active.id} name={active.name} />
+            <VerifyContactDialog accountId={active.id} name={headerName} />
           )
         )}
       </header>
@@ -153,12 +162,12 @@ export function ConversationView() {
       <div className="relative flex-1 overflow-hidden">
         {loading && messages.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            Loading…
+            {t("common.loading")}
           </p>
         )}
         {!loading && messages.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            No messages yet — say hello.
+            {t("conversation.noMessages")}
           </p>
         )}
         {messages.length > 0 && (
@@ -205,7 +214,7 @@ export function ConversationView() {
         {showJump && (
           <button
             type="button"
-            aria-label="Jump to latest messages"
+            aria-label={t("conversation.jumpToLatest")}
             onClick={() =>
               virtuosoRef.current?.scrollToIndex({
                 index: messages.length - 1,
@@ -223,7 +232,9 @@ export function ConversationView() {
 
       <Composer
         placeholder={
-          isChannel ? `Message #${active.name}` : `Message ${active.name}`
+          isChannel
+            ? t("conversation.messageChannel", { name: headerName })
+            : t("conversation.messageContact", { name: headerName })
         }
         mentionNames={mentionNames}
         replyTo={replyTo}
@@ -233,7 +244,7 @@ export function ConversationView() {
             const path = await openFileDialog({ multiple: false });
             if (typeof path === "string") await sendFile(path);
           } catch (e) {
-            setError(`Couldn't open file: ${errorMessage(e)}`);
+            setError(t("composer.couldntOpenFile", { error: errorMessage(e) }));
           }
         }}
         onSend={(t) => {

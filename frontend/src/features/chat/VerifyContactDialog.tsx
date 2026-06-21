@@ -5,6 +5,7 @@ import {
   ShieldQuestion,
   Loader2,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -36,6 +37,7 @@ export function VerifyContactDialog({
   accountId: string;
   name: string;
 }) {
+  const { t } = useTranslation();
   const peers = useChat((s) => s.peers);
   // The current device fingerprint presenting this account (any of its devices).
   const fingerprint =
@@ -93,8 +95,8 @@ export function VerifyContactDialog({
         <Button
           variant="ghost"
           size="icon"
-          title="Verify safety number"
-          aria-label="Verify safety number"
+          title={t("verify.trigger")}
+          aria-label={t("verify.trigger")}
         >
           {changed ? (
             <ShieldAlert className="h-4 w-4 text-destructive" />
@@ -108,16 +110,15 @@ export function VerifyContactDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            Verify {name}
+            {t("verify.title", { name })}
             {verified && !changed && (
               <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                <ShieldCheck className="mr-1 h-3 w-3" /> Verified
+                <ShieldCheck className="mr-1 h-3 w-3" /> {t("verify.verified")}
               </Badge>
             )}
           </DialogTitle>
           <DialogDescription>
-            Compare this safety number with {name} over a trusted channel (in
-            person, a phone call). If it matches, there is no one in the middle.
+            {t("verify.description", { name })}
           </DialogDescription>
         </DialogHeader>
 
@@ -125,30 +126,21 @@ export function VerifyContactDialog({
           <div className="flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
             <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
-              <p className="font-semibold">
-                This contact's safety number changed.
-              </p>
-              <p className="text-xs">
-                Their device fingerprint differs from what you first saw. This
-                happens when they add or replace a device — but it can also be
-                an impostor. Re-verify before trusting it.
-              </p>
+              <p className="font-semibold">{t("verify.changedTitle")}</p>
+              <p className="text-xs">{t("verify.changedDesc")}</p>
             </div>
           </div>
         )}
 
         {!fingerprint && (
-          <p className="text-sm text-muted-foreground">
-            This contact isn't currently online, so its fingerprint can't be
-            shown.
-          </p>
+          <p className="text-sm text-muted-foreground">{t("verify.offline")}</p>
         )}
 
         {sn && fingerprint && (
           <div className="space-y-3 rounded-lg border p-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Safety number
+                {t("verify.safetyNumber")}
               </p>
               <code className="mt-1 block break-all font-mono text-sm leading-relaxed">
                 {sn.grouped}
@@ -174,7 +166,9 @@ export function VerifyContactDialog({
         <div className="flex justify-end">
           <Button disabled={!fingerprint || busy} onClick={verify}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {verified && !changed ? "Re-verify" : "Mark as verified"}
+            {verified && !changed
+              ? t("verify.reverify")
+              : t("verify.markVerified")}
           </Button>
         </div>
       </DialogContent>

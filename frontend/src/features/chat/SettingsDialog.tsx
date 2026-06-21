@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Bell, MinusSquare, Rocket, Settings } from "lucide-react";
+import { Bell, Languages, MinusSquare, Rocket, Settings } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { settings as settingsApi } from "@/lib/api";
+import { setLanguage, SUPPORTED_LANGUAGES, type Language } from "@/lib/i18n";
 
 interface Row {
   id: string;
@@ -53,7 +55,13 @@ function ToggleRow({
   );
 }
 
+const LANGUAGE_LABELS: Record<Language, string> = {
+  en: "English",
+  zh: "中文",
+};
+
 export function SettingsDialog() {
+  const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
   // Primitive state only (memory: zustand selectors returning fresh objects each
   // render once black-screened the app — kept as local primitives here regardless).
@@ -108,30 +116,65 @@ export function SettingsDialog() {
     }
   };
 
+  // The active base language (i18n.language may be a region code like "en-US").
+  const currentLang = (
+    SUPPORTED_LANGUAGES.includes(i18n.language as Language)
+      ? i18n.language
+      : i18n.language.split("-")[0]
+  ) as Language;
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title="Settings">
+        <Button variant="ghost" size="icon" title={t("settings.title")}>
           <Settings className="h-4 w-4" />
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Settings className="h-4 w-4" /> Settings
+            <Settings className="h-4 w-4" /> {t("settings.title")}
           </DialogTitle>
-          <DialogDescription>
-            Keep Mesh-Talk running in the background so it can receive messages
-            and stay discoverable.
-          </DialogDescription>
+          <DialogDescription>{t("settings.description")}</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-3">
+          <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="mt-0.5 text-muted-foreground">
+                <Languages className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <label
+                  htmlFor="setting-language"
+                  className="block text-sm font-medium"
+                >
+                  {t("settings.language")}
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.languageDesc")}
+                </p>
+              </div>
+            </div>
+            <select
+              id="setting-language"
+              value={currentLang}
+              onChange={(e) => setLanguage(e.target.value as Language)}
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              aria-label={t("settings.language")}
+            >
+              {SUPPORTED_LANGUAGES.map((lng) => (
+                <option key={lng} value={lng}>
+                  {LANGUAGE_LABELS[lng]}
+                </option>
+              ))}
+            </select>
+          </div>
           <ToggleRow
             id="setting-launch-at-login"
             icon={<Rocket className="h-4 w-4" />}
-            title="Launch at login"
-            desc="Start Mesh-Talk in the background when you sign in."
+            title={t("settings.launchAtLogin")}
+            desc={t("settings.launchAtLoginDesc")}
             checked={launchAtLogin}
             onChange={(v) => void onLaunch(v)}
             disabled={autostartBusy}
@@ -139,16 +182,16 @@ export function SettingsDialog() {
           <ToggleRow
             id="setting-close-to-tray"
             icon={<MinusSquare className="h-4 w-4" />}
-            title="Close to tray"
-            desc="Closing the window hides it to the tray instead of quitting."
+            title={t("settings.closeToTray")}
+            desc={t("settings.closeToTrayDesc")}
             checked={minimizeToTray}
             onChange={onMinimize}
           />
           <ToggleRow
             id="setting-notifications"
             icon={<Bell className="h-4 w-4" />}
-            title="Notifications"
-            desc="Notify me about new messages when the window isn't focused."
+            title={t("settings.notifications")}
+            desc={t("settings.notificationsDesc")}
             checked={notifications}
             onChange={onNotifications}
           />

@@ -6,6 +6,7 @@ import {
   Paperclip,
   Smile,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store/chat";
@@ -69,6 +70,7 @@ export function Composer({
   onCancelReply?: () => void;
   mentionNames: string[];
 }) {
+  const { t } = useTranslation();
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -148,8 +150,10 @@ export function Composer({
         <div className="mb-2 flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-sm">
           <CornerUpLeft className="h-3.5 w-3.5 shrink-0 text-primary" />
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            Replying to{" "}
-            <span className="text-foreground">{replyTo.text || "message"}</span>
+            {t("composer.replyingTo")}{" "}
+            <span className="text-foreground">
+              {replyTo.text || t("composer.message")}
+            </span>
           </span>
           <button
             onClick={onCancelReply}
@@ -184,7 +188,7 @@ export function Composer({
                   type="button"
                   onClick={() => insertEmoji(e)}
                   className="rounded-md p-1 text-lg leading-none hover:bg-accent"
-                  aria-label={`Insert ${e}`}
+                  aria-label={t("composer.insertEmoji", { emoji: e })}
                 >
                   {e}
                 </button>
@@ -199,7 +203,7 @@ export function Composer({
               variant="ghost"
               size="icon"
               className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
-              title="Attach a file"
+              title={t("composer.attach")}
               onClick={onAttach}
             >
               <Paperclip className="h-4 w-4" />
@@ -209,8 +213,8 @@ export function Composer({
             variant="ghost"
             size="icon"
             className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
-            title="Emoji"
-            aria-label="Emoji"
+            title={t("composer.emoji")}
+            aria-label={t("composer.emoji")}
             onClick={() => setShowEmoji((v) => !v)}
           >
             <Smile className="h-4 w-4" />

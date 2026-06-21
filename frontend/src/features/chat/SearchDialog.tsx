@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +16,7 @@ import { useChat, type Conversation } from "@/store/chat";
 import type { SearchHitInfo } from "@/lib/types";
 
 export function SearchDialog() {
+  const { t } = useTranslation();
   const open = useChat((s) => s.open);
   const peers = useChat((s) => s.peers);
   const ready = useChat((s) => s.ready);
@@ -76,7 +78,7 @@ export function SearchDialog() {
         <Button
           variant="ghost"
           size="icon"
-          title="Search messages"
+          title={t("search.title")}
           disabled={!ready}
         >
           <Search className="h-4 w-4" />
@@ -84,23 +86,23 @@ export function SearchDialog() {
       </DialogTrigger>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Search messages</DialogTitle>
+          <DialogTitle>{t("search.title")}</DialogTitle>
         </DialogHeader>
         <Input
           autoFocus
-          placeholder="Search across all conversations…"
+          placeholder={t("search.placeholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="max-h-80 space-y-1 overflow-y-auto">
           {searching && (
             <p className="py-4 text-center text-sm text-muted-foreground">
-              Searching…
+              {t("search.searching")}
             </p>
           )}
           {!searching && query.trim() && hits.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">
-              No matches.
+              {t("search.noMatches")}
             </p>
           )}
           {hits.map((h, i) => (
@@ -120,7 +122,7 @@ export function SearchDialog() {
               </div>
               <div className="truncate text-sm text-muted-foreground">
                 <span className="text-foreground/70">
-                  {h.from_me ? "you" : h.who}:
+                  {h.from_me ? t("common.you") : h.who}:
                 </span>{" "}
                 {h.text}
               </div>
