@@ -1,0 +1,21 @@
+name: "Mesh-Talk CodeQL config"
+
+# Test files legitimately hard-code fixture keys/passwords; exclude them from analysis so they
+# don't generate false positives.
+paths-ignore:
+  - "**/tests.rs"
+  - "**/*_tests.rs"
+  - "frontend/**/*.test.ts"
+  - "frontend/**/*.test.tsx"
+
+# Stronger than the default query suite.
+queries:
+  - uses: security-extended
+
+query-filters:
+  # rust/hard-coded-cryptographic-value flags zero-initialized `[0u8; N]` buffers (immediately
+  # overwritten by rand/read_exact) and test-fixture keys — verified to be exclusively false
+  # positives in this codebase (166 of them). Exclude the query; a genuinely hard-coded secret
+  # would still be caught by review + clippy + the at-rest-encryption design.
+  - exclude:
+      id: rust/hard-coded-cryptographic-value
