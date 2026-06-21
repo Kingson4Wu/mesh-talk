@@ -78,6 +78,7 @@ export function Sidebar() {
   const myId = useChat((s) => s.myId);
   const ready = useChat((s) => s.ready);
   const bootFailed = useChat((s) => s.bootFailed);
+  const retryBoot = useChat((s) => s.retryBoot);
   const username = useAuth((s) => s.user?.username ?? "");
   const logout = useAuth((s) => s.logout);
 
@@ -92,11 +93,19 @@ export function Sidebar() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold">{username}</div>
             <div className="truncate font-mono text-xs text-muted-foreground">
-              {ready
-                ? `you · ${shortId(myId)}`
-                : bootFailed
-                  ? "node unavailable"
-                  : "starting…"}
+              {ready ? (
+                `you · ${shortId(myId)}`
+              ) : bootFailed ? (
+                <button
+                  type="button"
+                  onClick={() => retryBoot()}
+                  className="text-destructive underline-offset-2 hover:underline"
+                >
+                  node unavailable — retry
+                </button>
+              ) : (
+                "starting…"
+              )}
             </div>
           </div>
         </div>

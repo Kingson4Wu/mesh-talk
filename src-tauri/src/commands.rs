@@ -108,6 +108,11 @@ pub async fn login(
 
     if result.success {
         // Start the node: per-account stores under ~/.mesh-talk/accounts/<user_id>/.
+        // NOTE: the node keystore intentionally uses the RAW `password` here, while the auth
+        // keystore uses the trimmed form (auth_service::login trims). They are independent
+        // stores; the node's was first created with the raw value, so it must keep using the
+        // raw value. Do NOT "unify" these to the trimmed form without a keystore migration —
+        // that would break decryption for any user whose password has leading/trailing space.
         if let Some(session) = app_state.session().get() {
             spawn_node_runtime(
                 app_handle.clone(),
@@ -171,9 +176,12 @@ pub async fn logout(
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
 ) -> Result<LogoutResult, CommandError> {
+    // Clear the session FIRST; only stop the node once logout actually succeeded, so an
+    // error path (e.g. no session) can't leave the node torn down with the session intact.
+    let result = logout_impl(app_state.inner())?;
     // Stop and drop the node runtime (Drop aborts its background tasks).
     node_state.0.lock().await.take();
-    logout_impl(app_state.inner())
+    Ok(result)
 }
 
 fn logout_impl(app_state: &AppState) -> CommandResult<LogoutResult> {

@@ -5,6 +5,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
+import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
 import { useAuth } from "@/store/auth";
 import { convKey, useChat, type ChatMessage } from "@/store/chat";
@@ -30,6 +31,7 @@ export function ConversationView() {
   const active = useChat((s) => s.active);
   const send = useChat((s) => s.send);
   const sendFile = useChat((s) => s.sendFile);
+  const setError = useChat((s) => s.setError);
   const toggleReaction = useChat((s) => s.toggleReaction);
   const myId = useChat((s) => s.myId);
   const myAccountId = useChat((s) => s.myAccountId);
@@ -143,8 +145,12 @@ export function ConversationView() {
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
         onAttach={async () => {
-          const path = await openFileDialog({ multiple: false });
-          if (typeof path === "string") await sendFile(path);
+          try {
+            const path = await openFileDialog({ multiple: false });
+            if (typeof path === "string") await sendFile(path);
+          } catch (e) {
+            setError(`Couldn't open file: ${errorMessage(e)}`);
+          }
         }}
         onSend={(t) => {
           send(t, replyTo?.id ?? null);

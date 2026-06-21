@@ -110,13 +110,16 @@ interface ChatState {
   bootFailed: boolean; // the node never came up within the boot window
 
   start: () => () => void;
+  retryBoot: () => void;
   dismissFile: (fileConv: string) => void;
   clearError: () => void;
+  setError: (msg: string) => void;
   refreshRoster: () => Promise<void>;
   open: (c: Conversation) => Promise<void>;
   reload: () => Promise<void>;
   send: (text: string, replyTo: string | null) => Promise<void>;
   sendFile: (path: string) => Promise<void>;
+  saveFile: (fileConv: string, dest: string) => Promise<void>;
   toggleReaction: (target: string, emoji: string) => Promise<void>;
   createChannel: (name: string, memberIds: string[]) => Promise<void>;
   addMember: (memberId: string) => Promise<void>;
@@ -141,6 +144,36 @@ export const useChat = create<ChatState>((set, get) => ({
   bootFailed: false,
 
   clearError: () => set({ error: null }),
+  setError: (msg) => set({ error: msg }),
+
+  // Re-attempt the node-id poll after a boot failure (events + roster interval from the
+  // original start() are still live, so we only need to re-resolve my_id/account_id).
+  retryBoot: () => {
+    set({ bootFailed: false, ready: false });
+    void (async () => {
+      for (let i = 0; i < 60; i++) {
+        try {
+          const id = await chat.myId();
+          const acct = await chat.accountId();
+          set({ myId: id, myAccountId: acct, ready: true });
+          await get().refreshRoster();
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      set({ bootFailed: true });
+    })();
+  },
+
+  saveFile: async (fileConv, dest) => {
+    try {
+      await chat.saveFile(fileConv, dest);
+      get().dismissFile(fileConv);
+    } catch (e) {
+      set({ error: `Couldn't save file: ${errorMessage(e)}` });
+    }
+  },
 
   dismissFile: (fileConv) =>
     set((s) => ({
@@ -309,32 +342,45 @@ export const useChat = create<ChatState>((set, get) => ({
     );
     try {
       await reactFor(c, target, emoji, Boolean(mine));
-      await get().reload();
+      // Only reload if still on this conversation (matches send/sendFile).
+      if (get().active && convKey(get().active!) === key) await get().reload();
     } catch (e) {
       set({ error: `Couldn't update reaction: ${errorMessage(e)}` });
     }
   },
 
   createChannel: async (name, memberIds) => {
-    const id = await chat.createChannel(name, memberIds);
-    await get().refreshRoster();
-    await get().open({ kind: "channel", id, name });
+    try {
+      const id = await chat.createChannel(name, memberIds);
+      await get().refreshRoster();
+      await get().open({ kind: "channel", id, name });
+    } catch (e) {
+      set({ error: `Couldn't create channel: ${errorMessage(e)}` });
+    }
   },
 
   addMember: async (memberId) => {
     const c = get().active;
     if (!c || c.kind !== "channel") return;
-    await chat.addChannelMember(c.id, memberId);
-    set({ members: await chat.channelMembers(c.id) });
-    void get().refreshRoster();
+    try {
+      await chat.addChannelMember(c.id, memberId);
+      set({ members: await chat.channelMembers(c.id) });
+      void get().refreshRoster();
+    } catch (e) {
+      set({ error: `Couldn't add member: ${errorMessage(e)}` });
+    }
   },
 
   removeMember: async (memberId) => {
     const c = get().active;
     if (!c || c.kind !== "channel") return;
-    await chat.removeChannelMember(c.id, memberId);
-    set({ members: await chat.channelMembers(c.id) });
-    void get().refreshRoster();
+    try {
+      await chat.removeChannelMember(c.id, memberId);
+      set({ members: await chat.channelMembers(c.id) });
+      void get().refreshRoster();
+    } catch (e) {
+      set({ error: `Couldn't remove member: ${errorMessage(e)}` });
+    }
   },
 }));
 

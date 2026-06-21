@@ -3,22 +3,22 @@ import { Download, FileDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { chat } from "@/lib/api";
+import { errorMessage } from "@/lib/error";
 import { humanSize } from "@/lib/format";
 import { useChat } from "@/store/chat";
 
 export function FilesTray() {
   const files = useChat((s) => s.incomingFiles);
   const dismissFile = useChat((s) => s.dismissFile);
+  const saveFile = useChat((s) => s.saveFile);
+  const setError = useChat((s) => s.setError);
 
   const saveOne = async (fileConv: string, name: string) => {
-    const dest = await save({ defaultPath: name });
-    if (typeof dest !== "string") return;
     try {
-      await chat.saveFile(fileConv, dest);
-      dismissFile(fileConv);
-    } catch {
-      /* ignore */
+      const dest = await save({ defaultPath: name });
+      if (typeof dest === "string") await saveFile(fileConv, dest);
+    } catch (e) {
+      setError(`Couldn't save file: ${errorMessage(e)}`);
     }
   };
 
