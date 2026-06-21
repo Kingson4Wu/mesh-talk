@@ -189,22 +189,11 @@ if ! { cd src-tauri && cargo test --workspace; }; then
 fi
 cd ..
 
-# Check for security vulnerabilities (Rust). BLOCKING: a known advisory must be fixed (or
-# explicitly ignored in deny.toml / via `cargo audit --ignore RUSTSEC-...`) before committing,
-# so a vulnerable dependency can't be introduced silently. (cargo-deny above also gates these.)
-print_status "success" "Checking for Rust security vulnerabilities..."
-if ! command_exists cargo-audit; then
-    print_status "warning" "cargo-audit not found. Installing..."
-    if ! cargo install cargo-audit; then
-        print_status "error" "Failed to install cargo-audit"
-        exit 1
-    fi
-fi
-if ! { cd src-tauri && cargo audit; }; then
-    print_status "error" "Security vulnerabilities found in Rust dependencies. Fix them, or ignore a known/unfixable advisory (deny.toml or 'cargo audit --ignore RUSTSEC-XXXX')."
-    exit 1
-fi
-cd ..
+# Rust security advisories are gated by cargo-deny above (its `advisories` check uses the same
+# RUSTSEC database as cargo-audit, is BLOCKING, and is exactly what CI runs — allowlist a
+# known/unfixable advisory in deny.toml). No separate cargo-audit step: it duplicated cargo-deny
+# and a workspace tripped it (Cargo.lock at the repo root, not src-tauri), and an out-of-date
+# local cargo-audit chokes parsing newer advisory entries.
 
 # Check for security vulnerabilities (Node.js)
 print_status "success" "Checking for Node.js security vulnerabilities..."
