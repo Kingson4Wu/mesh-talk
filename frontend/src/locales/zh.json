@@ -65,7 +65,8 @@
     "jumpToLatest": "跳到最新消息",
     "dismissError": "关闭错误提示",
     "messageLog": "与 {{name}} 的消息",
-    "list": "会话列表"
+    "list": "会话列表",
+    "dropToSend": "拖放以发送给 {{name}}"
   },
   "message": {
     "sending": "发送中…",
@@ -106,7 +107,12 @@
   "files": {
     "received": "已接收的文件",
     "nothingReceived": "尚未接收到任何文件。",
-    "couldntSave": "无法保存文件：{{error}}"
+    "couldntSave": "无法保存文件：{{error}}",
+    "couldntOpen": "无法打开：{{error}}",
+    "chooseFolder": "选择默认下载文件夹",
+    "noDefaultFolder": "未设置默认文件夹",
+    "reveal": "在文件夹中显示",
+    "saveAs": "另存为…"
   },
   "linkDevice": {
     "trigger": "关联设备",
@@ -148,7 +154,21 @@
     "noActivity": "暂无发现活动。上线/下线将在此显示。",
     "postOffice": "邮局节点",
     "peerAppeared": "对端上线：{{name}}（{{ip}}）",
-    "peerDisappeared": "对端下线：{{name}}"
+    "peerDisappeared": "对端下线：{{name}}",
+    "environment": "环境",
+    "appVersion": "应用版本",
+    "platform": "平台",
+    "dataDir": "数据目录",
+    "logsDir": "日志目录",
+    "logs": "日志",
+    "revealLogs": "打开日志文件夹",
+    "copyLogTail": "复制日志末尾",
+    "saveLogTail": "保存以便报告问题",
+    "showLogTail": "显示末尾",
+    "logEmpty": "（日志为空）",
+    "troubleshoot": "故障排查",
+    "troubleshootHint": "如果看不到对方，可能是防火墙拦截了局域网发现。请放行 UDP {{udp}}（组播发现）和 TCP {{tcp}}（本次会话），并确保两台设备在同一网络。",
+    "macosFirewall": "系统设置 → 网络 → 防火墙：允许 Mesh-Talk 接收传入连接，或在受信任的局域网中关闭防火墙。"
   },
   "verify": {
     "trigger": "验证安全码",

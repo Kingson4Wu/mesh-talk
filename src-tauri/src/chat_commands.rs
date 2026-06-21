@@ -7,6 +7,7 @@ use mesh_talk_core::eventlog::event::{ConversationId, EventId};
 use mesh_talk_core::node::NodeRuntime;
 use serde::Serialize;
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 /// Managed state holding the current session's node runtime (`None` until login).
@@ -550,6 +551,52 @@ pub async fn save_file_to_dir(
     .await
     .map_err(|e| format!("join error: {e}"))?
     .map_err(CommandError::from)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Write raw bytes (e.g. an image pasted from the clipboard) to a temp file in the app
+/// cache dir and return its path, so the caller can route it through the normal
+/// file-send pipeline (which only takes a path). The name carries the given extension so
+/// the received file is recognized as an image. Best-effort temp: it lives in the OS cache
+/// dir and is overwritten on the next paste of the same name.
+#[tauri::command]
+pub async fn write_temp_file(
+    app: tauri::AppHandle,
+    bytes: Vec<u8>,
+    ext: String,
+) -> Result<String, CommandError> {
+    // Bound a pasted image to a sane size so a paste can't write an arbitrarily large temp
+    // file (the file pipeline enforces its own hard limit on the subsequent send).
+    const MAX_PASTE_BYTES: usize = 64 * 1024 * 1024;
+    if bytes.len() > MAX_PASTE_BYTES {
+        return Err(CommandError::Validation("pasted image too large".into()));
+    }
+    // Sanitize the extension to a short alphanumeric suffix (never trust it for a path).
+    let ext: String = ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let ext = if ext.is_empty() {
+        "png".to_string()
+    } else {
+        ext
+    };
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| CommandError::Validation(format!("no cache dir: {e}")))?
+        .join("pasted");
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::Validation(e.to_string()))?;
+    let name = format!(
+        "pasted-{}.{ext}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let path = dir.join(name);
+    std::fs::write(&path, &bytes).map_err(|e| CommandError::Validation(e.to_string()))?;
     Ok(path.to_string_lossy().into_owned())
 }
 

@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, Copy, Radar, Trash2, Wifi } from "lucide-react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  Activity,
+  Copy,
+  FileText,
+  FolderOpen,
+  Info,
+  Radar,
+  ShieldAlert,
+  Trash2,
+  Wifi,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -12,9 +24,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { diag } from "@/lib/api";
+import { diag, obs } from "@/lib/api";
+import { errorMessage } from "@/lib/error";
 import { formatAgo, formatTime, shortId } from "@/lib/format";
-import type { DiagNetworkInfo, DiagPeerInfo } from "@/lib/types";
+import type { DiagNetworkInfo, DiagPeerInfo, EnvInfo } from "@/lib/types";
 
 const POLL_MS = 1500;
 const LOG_CAP = 200;
@@ -92,7 +105,44 @@ export function DiagnosticsDialog() {
   const [info, setInfo] = useState<DiagNetworkInfo | null>(null);
   const [peers, setPeers] = useState<DiagPeerInfo[]>([]);
   const [log, setLog] = useState<LogLine[]>([]);
+  const [env, setEnv] = useState<EnvInfo | null>(null);
+  const [logTail, setLogTail] = useState<string | null>(null);
+  const [error, setLocalError] = useState<string | null>(null);
   const prevPeers = useRef<DiagPeerInfo[]>([]);
+
+  const revealLogs = async () => {
+    try {
+      await revealItemInDir(await obs.logFile());
+    } catch (e) {
+      setLocalError(errorMessage(e));
+    }
+  };
+
+  const copyLogTail = async () => {
+    try {
+      const tail = await obs.logTail();
+      await navigator.clipboard?.writeText(tail);
+    } catch (e) {
+      setLocalError(errorMessage(e));
+    }
+  };
+
+  const showLogTail = async () => {
+    try {
+      setLogTail(await obs.logTail());
+    } catch (e) {
+      setLocalError(errorMessage(e));
+    }
+  };
+
+  const saveLogTail = async () => {
+    try {
+      const dest = await saveDialog({ defaultPath: "mesh-talk-log.txt" });
+      if (typeof dest === "string") await obs.saveLogTail(dest);
+    } catch (e) {
+      setLocalError(errorMessage(e));
+    }
+  };
 
   const poll = useCallback(async () => {
     try {
@@ -113,6 +163,9 @@ export function DiagnosticsDialog() {
     // Reset the diff baseline each time the panel opens so we don't replay a stale snapshot.
     prevPeers.current = [];
     void diag.networkInfo().then(setInfo, () => setInfo(null));
+    void obs.envInfo().then(setEnv, () => setEnv(null));
+    setLogTail(null);
+    setLocalError(null);
     void poll();
     const id = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(id);
@@ -241,6 +294,95 @@ export function DiagnosticsDialog() {
             </div>
           </section>
 
+          {/* Environment / About */}
+          <section className="space-y-2 rounded-lg border p-3">
+            <p className="flex items-center gap-2 text-sm font-semibold">
+              <Info className="h-4 w-4" /> {t("diagnostics.environment")}
+            </p>
+            {env ? (
+              <dl className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 text-sm">
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.appVersion")}
+                </dt>
+                <dd>
+                  <CopyValue value={env.app_version} />
+                </dd>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.platform")}
+                </dt>
+                <dd>
+                  <CopyValue
+                    value={`${env.os}/${env.arch} (${env.target}, ${env.build_profile})`}
+                  />
+                </dd>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.dataDir")}
+                </dt>
+                <dd>
+                  <CopyValue value={env.data_dir} />
+                </dd>
+                <dt className="text-muted-foreground">
+                  {t("diagnostics.logsDir")}
+                </dt>
+                <dd>
+                  <CopyValue value={env.logs_dir} />
+                </dd>
+              </dl>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t("diagnostics.nodeNotReady")}
+              </p>
+            )}
+          </section>
+
+          {/* Logs */}
+          <section className="space-y-2 rounded-lg border p-3">
+            <p className="flex items-center gap-2 text-sm font-semibold">
+              <FileText className="h-4 w-4" /> {t("diagnostics.logs")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void revealLogs()}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("diagnostics.revealLogs")}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void copyLogTail()}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                {t("diagnostics.copyLogTail")}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void saveLogTail()}
+              >
+                {t("diagnostics.saveLogTail")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void showLogTail()}
+              >
+                {t("diagnostics.showLogTail")}
+              </Button>
+            </div>
+            {logTail !== null && (
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 font-mono text-[11px]">
+                {logTail || t("diagnostics.logEmpty")}
+              </pre>
+            )}
+            {error && <p className="text-xs text-destructive">{error}</p>}
+          </section>
+
+          {/* Troubleshoot — copyable firewall commands per OS */}
+          <Troubleshoot info={info} />
+
           {/* Activity log */}
           <section className="space-y-2 rounded-lg border p-3">
             <div className="flex items-center justify-between">
@@ -276,6 +418,76 @@ export function DiagnosticsDialog() {
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** A copyable shell command line. */
+function CommandLine({ cmd }: { cmd: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard?.writeText(cmd).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1000);
+        });
+      }}
+      title={t("common.copy")}
+      className="group flex w-full items-start gap-2 rounded-md bg-muted/50 p-2 text-left font-mono text-[11px] hover:bg-muted"
+    >
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+        {cmd}
+      </span>
+      <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-40 group-hover:opacity-100" />
+      {copied && (
+        <span className="text-[10px] text-primary">{t("common.copied")}</span>
+      )}
+    </button>
+  );
+}
+
+/** Per-OS, port-interpolated firewall allow-rules so peers can find each other on the LAN.
+ * Static + copyable (no elevated auto-run): the discovery port is UDP multicast, the listen
+ * port is the per-session TCP port. */
+function Troubleshoot({ info }: { info: DiagNetworkInfo | null }) {
+  const { t } = useTranslation();
+  const udp = info?.discovery_port ?? 47474;
+  const tcp = info?.listen_tcp_port ?? 0;
+  const app = "mesh-talk";
+  return (
+    <section className="space-y-2 rounded-lg border p-3">
+      <p className="flex items-center gap-2 text-sm font-semibold">
+        <ShieldAlert className="h-4 w-4" /> {t("diagnostics.troubleshoot")}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {t("diagnostics.troubleshootHint", { udp, tcp })}
+      </p>
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <p className="text-xs font-medium">Windows</p>
+          <CommandLine
+            cmd={`netsh advfirewall firewall add rule name="${app} UDP discovery" dir=in action=allow protocol=UDP localport=${udp}\nnetsh advfirewall firewall add rule name="${app} TCP" dir=in action=allow protocol=TCP localport=${tcp}`}
+          />
+        </div>
+        <div className="space-y-1">
+          <p className="text-xs font-medium">Linux (ufw / firewalld)</p>
+          <CommandLine
+            cmd={`sudo ufw allow ${udp}/udp comment '${app} discovery'\nsudo ufw allow ${tcp}/tcp comment '${app}'`}
+          />
+          <CommandLine
+            cmd={`sudo firewall-cmd --add-port=${udp}/udp --permanent\nsudo firewall-cmd --add-port=${tcp}/tcp --permanent\nsudo firewall-cmd --reload`}
+          />
+        </div>
+        <div className="space-y-1">
+          <p className="text-xs font-medium">macOS</p>
+          <p className="text-xs text-muted-foreground">
+            {t("diagnostics.macosFirewall")}
+          </p>
+        </div>
+      </div>
+    </section>
   );
 }
 

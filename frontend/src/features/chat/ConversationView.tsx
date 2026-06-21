@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Hash, Loader2, MessagesSquare } from "lucide-react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  ChevronDown,
+  Hash,
+  Loader2,
+  MessagesSquare,
+  Upload,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Avatar } from "@/components/ui/avatar";
 import { Composer } from "./Composer";
@@ -9,6 +16,7 @@ import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
 import { VerifyContactDialog } from "./VerifyContactDialog";
 import { TransferBar } from "./TransferBar";
+import { chat as chatApi } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
 import { useAuth } from "@/store/auth";
@@ -81,6 +89,44 @@ export function ConversationView() {
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
+  // Native (Tauri) drag-and-drop: dropping file(s) onto the conversation sends them there.
+  // The webview drag-drop event is global, so we subscribe once and read the latest
+  // active conversation / sendFile through refs (avoids re-subscribing on every change).
+  const [dragOver, setDragOver] = useState(false);
+  const activeRef = useRef(active);
+  const sendFileRef = useRef(sendFile);
+  const setErrorRef = useRef(setError);
+  activeRef.current = active;
+  sendFileRef.current = sendFile;
+  setErrorRef.current = setError;
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      const p = event.payload;
+      if (p.type === "over") {
+        setDragOver(activeRef.current != null);
+      } else if (p.type === "leave") {
+        setDragOver(false);
+      } else if (p.type === "drop") {
+        setDragOver(false);
+        if (!activeRef.current) return;
+        void (async () => {
+          for (const path of p.paths) {
+            try {
+              await sendFileRef.current(path);
+            } catch (e) {
+              setErrorRef.current(
+                t("composer.couldntOpenFile", { error: errorMessage(e) }),
+              );
+            }
+          }
+        })();
+      }
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [t]);
+
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   // `showJump` reveals the jump-to-bottom button whenever the user has scrolled up.
   // Virtuoso's `followOutput` only sticks to the newest message while already at the
@@ -132,7 +178,17 @@ export function ConversationView() {
   const headerName = displayName(favorites, active.id, active.name);
 
   return (
-    <main className="flex flex-1 flex-col">
+    <main className="relative flex flex-1 flex-col">
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-primary/10 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-primary bg-background/90 px-8 py-6 shadow-lg">
+            <Upload className="h-8 w-8 text-primary" />
+            <p className="text-sm font-medium">
+              {t("conversation.dropToSend", { name: headerName })}
+            </p>
+          </div>
+        </div>
+      )}
       <header className="flex items-center gap-3 border-b px-5 py-3">
         {isChannel ? (
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -257,6 +313,14 @@ export function ConversationView() {
         onSend={(t) => {
           send(t, replyTo?.id ?? null);
           setReplyTo(null);
+        }}
+        onPasteImage={async (bytes, ext) => {
+          try {
+            const path = await chatApi.writeTempFile(Array.from(bytes), ext);
+            await sendFile(path);
+          } catch (e) {
+            setError(t("composer.couldntOpenFile", { error: errorMessage(e) }));
+          }
         }}
       />
     </main>

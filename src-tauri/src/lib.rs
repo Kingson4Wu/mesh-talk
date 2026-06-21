@@ -16,6 +16,7 @@
 // Tauri desktop shell over it.
 pub mod chat_commands;
 pub mod commands;
+pub mod diagnostics;
 pub mod events;
 pub mod favorites;
 pub mod logger;
@@ -75,6 +76,20 @@ pub fn run_tauri() {
     let favorites_state = crate::favorites::FavoritesState::default();
 
     tauri::Builder::default()
+        // Single-instance MUST be the first plugin registered (Tauri requirement): its
+        // callback runs in the already-running process when a second launch is attempted,
+        // so we surface the existing window instead of spawning a duplicate that would
+        // fight over the keystore + discovery port.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        // Restore window size/position across launches (clamps off-screen geometry).
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -178,6 +193,12 @@ pub fn run_tauri() {
             crate::chat_commands::search,
             crate::chat_commands::diag_get_peers,
             crate::chat_commands::diag_network_info,
+            crate::chat_commands::write_temp_file,
+            crate::logger::get_logs_dir,
+            crate::logger::get_log_file,
+            crate::logger::read_log_tail,
+            crate::logger::save_log_tail,
+            crate::diagnostics::env_info,
             crate::settings::get_app_settings,
             crate::settings::set_app_settings,
             crate::trust::get_trust,

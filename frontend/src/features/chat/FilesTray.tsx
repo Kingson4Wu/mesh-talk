@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
-import { Download, FileDown, X } from "lucide-react";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { Download, FileDown, FolderOpen, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +10,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { chat } from "@/lib/api";
+import { chat, settings as settingsApi } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { humanSize } from "@/lib/format";
 import { useChat } from "@/store/chat";
@@ -52,15 +53,76 @@ export function FilesTray() {
   const { t } = useTranslation();
   const files = useChat((s) => s.incomingFiles);
   const dismissFile = useChat((s) => s.dismissFile);
-  const saveFile = useChat((s) => s.saveFile);
   const setError = useChat((s) => s.setError);
 
-  const saveOne = async (fileConv: string, name: string) => {
+  // Remembered default download folder ("" = always prompt). Loaded once on mount, kept as
+  // a primitive (memory: zustand selectors returning fresh objects can black-screen).
+  const [downloadDir, setDownloadDir] = useState("");
+  useEffect(() => {
+    void settingsApi.get().then(
+      (s) => setDownloadDir(s.download_dir),
+      () => {},
+    );
+  }, []);
+
+  // Pick (and persist) the remembered default download folder.
+  const chooseDir = async () => {
     try {
-      const dest = await save({ defaultPath: name });
-      if (typeof dest === "string") await saveFile(fileConv, dest);
+      const dir = await openDialog({
+        directory: true,
+        defaultPath: downloadDir || undefined,
+      });
+      if (typeof dir === "string") {
+        const cur = await settingsApi.get();
+        await settingsApi.set({ ...cur, download_dir: dir });
+        setDownloadDir(dir);
+      }
     } catch (e) {
       setError(t("files.couldntSave", { error: errorMessage(e) }));
+    }
+  };
+
+  // Where each saved file landed (by fileConv), so a saved row can reveal/open it instead
+  // of offering Save again. The row stays in the tray until the user dismisses it.
+  const [savedPaths, setSavedPaths] = useState<Record<string, string>>({});
+
+  // Save into the remembered folder (no prompt); falls back to a Save-as dialog when no
+  // default is set.
+  const saveToDefault = async (fileConv: string, name: string) => {
+    try {
+      if (downloadDir) {
+        const path = await chat.saveFileToDir(fileConv, downloadDir);
+        setSavedPaths((m) => ({ ...m, [fileConv]: path }));
+        return;
+      }
+      const dest = await save({ defaultPath: name });
+      if (typeof dest === "string") {
+        await chat.saveFile(fileConv, dest);
+        setSavedPaths((m) => ({ ...m, [fileConv]: dest }));
+      }
+    } catch (e) {
+      setError(t("files.couldntSave", { error: errorMessage(e) }));
+    }
+  };
+
+  // Always-prompt "Save as…" override (ignores the remembered default).
+  const saveAs = async (fileConv: string, name: string) => {
+    try {
+      const dest = await save({ defaultPath: name });
+      if (typeof dest === "string") {
+        await chat.saveFile(fileConv, dest);
+        setSavedPaths((m) => ({ ...m, [fileConv]: dest }));
+      }
+    } catch (e) {
+      setError(t("files.couldntSave", { error: errorMessage(e) }));
+    }
+  };
+
+  const reveal = async (path: string) => {
+    try {
+      await revealItemInDir(path);
+    } catch (e) {
+      setError(t("files.couldntOpen", { error: errorMessage(e) }));
     }
   };
 
@@ -81,9 +143,20 @@ export function FilesTray() {
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-0">
-        <div className="border-b px-3 py-2 text-sm font-semibold">
-          {t("files.received")}
+      <PopoverContent align="end" className="w-80 p-0">
+        <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+          <span className="text-sm font-semibold">{t("files.received")}</span>
+          <button
+            type="button"
+            onClick={() => void chooseDir()}
+            title={t("files.chooseFolder")}
+            className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          >
+            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+            <span className="max-w-32 truncate">
+              {downloadDir || t("files.noDefaultFolder")}
+            </span>
+          </button>
         </div>
         {files.length === 0 ? (
           <p className="px-3 py-4 text-center text-sm text-muted-foreground">
@@ -107,14 +180,26 @@ export function FilesTray() {
                       {f.fromName} · {humanSize(f.size)}
                     </div>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="h-7"
-                    onClick={() => saveOne(f.fileConv, f.name)}
-                  >
-                    {t("common.save")}
-                  </Button>
+                  {savedPaths[f.fileConv] ? (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      onClick={() => void reveal(savedPaths[f.fileConv])}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                      {t("files.reveal")}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      onClick={() => void saveToDefault(f.fileConv, f.name)}
+                    >
+                      {t("common.save")}
+                    </Button>
+                  )}
                   <button
                     onClick={() => dismissFile(f.fileConv)}
                     className="rounded p-1 text-muted-foreground hover:bg-accent"
@@ -122,6 +207,15 @@ export function FilesTray() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
+                {!savedPaths[f.fileConv] && (
+                  <button
+                    type="button"
+                    onClick={() => void saveAs(f.fileConv, f.name)}
+                    className="mt-1 pl-6 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                  >
+                    {t("files.saveAs")}
+                  </button>
+                )}
                 <TransferBar transferKey={f.fileConv} />
               </div>
             ))}

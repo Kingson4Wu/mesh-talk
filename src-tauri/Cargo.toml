@@ -25,6 +25,10 @@ tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-log = "2"
 tauri-plugin-autostart = "2"
+# Desktop integration: focus-existing-instance, restore window geometry, open/reveal files.
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-opener = "2"
 # Shared (versions from the workspace)
 tokio = { workspace = true }
 serde = { workspace = true }

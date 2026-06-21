@@ -19,7 +19,7 @@ use tauri::Manager;
 /// still loads (the missing field falls back to its default) instead of failing the
 /// whole parse and silently resetting every toggle. New fields MUST carry a
 /// `#[serde(default = ...)]` (or a `Default`-backed `#[serde(default)]`) for this.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Closing the window hides it to the tray instead of quitting.
     #[serde(default = "default_true")]
@@ -27,6 +27,11 @@ pub struct AppSettings {
     /// Show a native notification on incoming messages when the window isn't focused.
     #[serde(default = "default_true")]
     pub notifications: bool,
+    /// Remembered default folder received files save into without re-prompting (a per-file
+    /// "Save as…" override still exists). Empty = always prompt. New field, so it carries a
+    /// `#[serde(default)]` for forward-compat with older `settings.json` (see struct docs).
+    #[serde(default)]
+    pub download_dir: String,
 }
 
 /// Default for both toggles (a messenger should run in the background and notify).
@@ -39,6 +44,7 @@ impl Default for AppSettings {
         Self {
             minimize_to_tray: true,
             notifications: true,
+            download_dir: String::new(),
         }
     }
 }
@@ -50,7 +56,7 @@ pub struct SettingsState(Arc<Mutex<AppSettings>>);
 
 impl SettingsState {
     pub fn get(&self) -> AppSettings {
-        *self.0.lock().unwrap()
+        self.0.lock().unwrap().clone()
     }
     pub fn set(&self, value: AppSettings) {
         *self.0.lock().unwrap() = value;
@@ -108,7 +114,7 @@ pub fn set_app_settings(
     state: tauri::State<'_, SettingsState>,
     settings: AppSettings,
 ) -> Result<(), CommandError> {
-    state.set(settings);
     save(&app, &settings);
+    state.set(settings);
     Ok(())
 }

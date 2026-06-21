@@ -86,12 +86,16 @@ export function SettingsDialog() {
     );
   }, [open]);
 
-  // Persist the two non-autostart toggles together (the command takes both).
+  // Persist the toggles. Re-read the current settings first so we don't clobber fields the
+  // dialog doesn't manage (e.g. download_dir, set in the Files tray).
   const persist = (next: {
     minimize_to_tray: boolean;
     notifications: boolean;
   }) => {
-    void settingsApi.set(next).catch(() => {});
+    void settingsApi
+      .get()
+      .then((cur) => settingsApi.set({ ...cur, ...next }))
+      .catch(() => {});
   };
 
   const onMinimize = (v: boolean) => {

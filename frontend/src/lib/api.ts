@@ -11,6 +11,7 @@ import type {
   ChannelMemberInfo,
   DiagNetworkInfo,
   DiagPeerInfo,
+  EnvInfo,
   FavoriteInfo,
   HistoryItem,
   LoginResult,
@@ -118,6 +119,9 @@ export const chat = {
     invoke<string>("save_file_to_dir", { fileConv, dir }),
   readFile: (fileConv: string) =>
     invoke<ArrayBuffer>("read_file", { fileConv }),
+  /** Write pasted bytes to a temp file and return its path, to feed the file-send pipeline. */
+  writeTempFile: (bytes: number[], ext: string) =>
+    invoke<string>("write_temp_file", { bytes, ext }),
   search: (query: string) => invoke<SearchHitInfo[]>("search", { query }),
   startLinking: () => invoke<string>("start_linking"),
   stopLinking: () => invoke<void>("stop_linking"),
@@ -129,6 +133,15 @@ export const chat = {
 export const diag = {
   getPeers: () => invoke<DiagPeerInfo[]>("diag_get_peers"),
   networkInfo: () => invoke<DiagNetworkInfo>("diag_network_info"),
+};
+
+/** Observability: logs + static environment facts for the Diagnostics dialog. */
+export const obs = {
+  envInfo: () => invoke<EnvInfo>("env_info"),
+  logsDir: () => invoke<string>("get_logs_dir"),
+  logFile: () => invoke<string>("get_log_file"),
+  logTail: () => invoke<string>("read_log_tail"),
+  saveLogTail: (dest: string) => invoke<void>("save_log_tail", { dest }),
 };
 
 export const favorites = {

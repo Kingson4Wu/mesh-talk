@@ -100,6 +100,20 @@ export interface AppSettings {
   minimize_to_tray: boolean;
   /** Native notification on incoming messages when the window isn't focused. */
   notifications: boolean;
+  /** Remembered default folder received files save into ("" = always prompt). */
+  download_dir: string;
+}
+
+// --- Environment / About (src-tauri/src/diagnostics.rs) ---
+
+export interface EnvInfo {
+  app_version: string;
+  data_dir: string;
+  logs_dir: string;
+  os: string;
+  arch: string;
+  target: string;
+  build_profile: string;
 }
 
 // --- Contact trust / safety numbers (src-tauri/src/trust.rs + chat_commands.rs) ---

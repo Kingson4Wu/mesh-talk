@@ -65,7 +65,8 @@
     "jumpToLatest": "Jump to latest messages",
     "dismissError": "Dismiss error",
     "messageLog": "Messages with {{name}}",
-    "list": "Conversations"
+    "list": "Conversations",
+    "dropToSend": "Drop to send to {{name}}"
   },
   "message": {
     "sending": "sending…",
@@ -106,7 +107,12 @@
   "files": {
     "received": "Received files",
     "nothingReceived": "Nothing received yet.",
-    "couldntSave": "Couldn't save file: {{error}}"
+    "couldntSave": "Couldn't save file: {{error}}",
+    "couldntOpen": "Couldn't open: {{error}}",
+    "chooseFolder": "Choose default download folder",
+    "noDefaultFolder": "No default folder",
+    "reveal": "Reveal",
+    "saveAs": "Save as…"
   },
   "linkDevice": {
     "trigger": "Link a device",
@@ -148,7 +154,21 @@
     "noActivity": "No discovery activity yet. Appearances/disappearances will show here.",
     "postOffice": "post office",
     "peerAppeared": "peer appeared: {{name}} ({{ip}})",
-    "peerDisappeared": "peer disappeared: {{name}}"
+    "peerDisappeared": "peer disappeared: {{name}}",
+    "environment": "Environment",
+    "appVersion": "App version",
+    "platform": "Platform",
+    "dataDir": "Data directory",
+    "logsDir": "Logs directory",
+    "logs": "Logs",
+    "revealLogs": "Reveal logs folder",
+    "copyLogTail": "Copy log tail",
+    "saveLogTail": "Save for bug report",
+    "showLogTail": "Show tail",
+    "logEmpty": "(log is empty)",
+    "troubleshoot": "Troubleshoot",
+    "troubleshootHint": "If peers don't appear, your firewall may block LAN discovery. Allow UDP {{udp}} (multicast discovery) and TCP {{tcp}} (this session). Make sure both devices are on the same network.",
+    "macosFirewall": "System Settings → Network → Firewall: allow incoming connections for Mesh-Talk, or turn the firewall off on a trusted LAN."
   },
   "verify": {
     "trigger": "Verify safety number",

@@ -58,6 +58,7 @@ const EMOJIS = [
 export function Composer({
   onSend,
   onAttach,
+  onPasteImage,
   placeholder,
   replyTo,
   onCancelReply,
@@ -65,6 +66,8 @@ export function Composer({
 }: {
   onSend: (text: string) => void;
   onAttach?: () => void;
+  /** Send an image pasted from the clipboard (bytes + file extension). */
+  onPasteImage?: (bytes: Uint8Array, ext: string) => void;
   placeholder: string;
   replyTo?: ChatMessage | null;
   onCancelReply?: () => void;
@@ -134,6 +137,24 @@ export function Composer({
       e.preventDefault();
       send();
     }
+  };
+
+  // Paste-to-attach: if the clipboard carries an image (e.g. a screenshot), send it as a
+  // file instead of pasting nothing. Text paste falls through to the default behavior.
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!onPasteImage) return;
+    const item = Array.from(e.clipboardData.items).find((i) =>
+      i.type.startsWith("image/"),
+    );
+    if (!item) return;
+    const file = item.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    const ext = (file.type.split("/")[1] || "png").toLowerCase();
+    void file
+      .arrayBuffer()
+      .then((buf) => onPasteImage(new Uint8Array(buf), ext))
+      .catch(() => {});
   };
 
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -225,6 +246,7 @@ export function Composer({
             value={text}
             onChange={onInput}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             placeholder={placeholder}
             className="max-h-40 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
           />
