@@ -12,12 +12,26 @@ use tauri::Manager;
 
 /// The persisted, user-facing toggles (both default on: a messenger should keep
 /// running in the background and tell you when something arrives).
+///
+/// This is a genuine self-describing JSON-at-rest format (`settings.json`, read via
+/// `serde_json::from_str`), so per-field `#[serde(default)]` IS the right forward-compat
+/// tool: a `settings.json` written by an OLDER build that lacks a field added LATER
+/// still loads (the missing field falls back to its default) instead of failing the
+/// whole parse and silently resetting every toggle. New fields MUST carry a
+/// `#[serde(default = ...)]` (or a `Default`-backed `#[serde(default)]`) for this.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Closing the window hides it to the tray instead of quitting.
+    #[serde(default = "default_true")]
     pub minimize_to_tray: bool,
     /// Show a native notification on incoming messages when the window isn't focused.
+    #[serde(default = "default_true")]
     pub notifications: bool,
+}
+
+/// Default for both toggles (a messenger should run in the background and notify).
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {

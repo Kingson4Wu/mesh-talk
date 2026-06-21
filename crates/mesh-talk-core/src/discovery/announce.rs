@@ -9,7 +9,16 @@ use serde::{Deserialize, Serialize};
 const ANNOUNCE_DOMAIN: &[u8] = b"mesh-talk-announce-v1";
 /// Wire framing: 4-byte magic + 1-byte version, then `bincode(Announce)`.
 const MAGIC: &[u8; 4] = b"MTAN";
-const VERSION: u8 = 2;
+/// The version this build EMITS. Bump only when the bincode body layout changes
+/// (e.g. a new field/variant) — because bincode is positional, a layout change can
+/// never be made in place; it is always a new version with its own parser.
+const CURRENT_VERSION: u8 = 2;
+/// The oldest body layout this build can still DECODE. `decode` accepts any version
+/// in `[MIN_SUPPORTED_VERSION, CURRENT_VERSION]` and dispatches to a per-version
+/// parser that up-converts to the canonical in-memory [`Announce`]. Today there is
+/// exactly one layout (v2), so MIN == CURRENT; when v3 is added, keep this at 2 (so
+/// v2 peers are still understood) and add a `decode_v3` arm.
+const MIN_SUPPORTED_VERSION: u8 = 2;
 
 /// A peer's self-announcement: its identity keys, display name, TCP listen port,
 /// and whether it serves as a post office, signed by its Ed25519 key. `user_id`
@@ -184,29 +193,53 @@ impl Announce {
     }
 }
 
-/// Frame an announce for the wire (magic + version + bincode).
+/// Frame an announce for the wire (magic + CURRENT_VERSION + bincode body).
 pub fn encode(announce: &Announce) -> Vec<u8> {
-    let body = bincode::serialize(announce).expect("announce serializes");
+    let body = encode_v2(announce);
     let mut out = Vec::with_capacity(MAGIC.len() + 1 + body.len());
     out.extend_from_slice(MAGIC);
-    out.push(VERSION);
+    out.push(CURRENT_VERSION);
     out.extend_from_slice(&body);
     out
 }
 
+/// Serialize the v2 body. The descriptive announce evolves by VERSION BUMP, not by
+/// growing this layout in place (bincode is positional, so a new field would shift
+/// every byte after it and break v2 peers) — a future change adds an `encode_v3` /
+/// `decode_v3` pair and bumps `CURRENT_VERSION`, leaving this untouched.
+fn encode_v2(announce: &Announce) -> Vec<u8> {
+    bincode::serialize(announce).expect("announce serializes")
+}
+
 /// Parse a wire datagram into an announce, or `None` if the framing/bincode is
-/// invalid. The result is NOT yet authenticated — call [`Announce::verify`].
+/// invalid. Accepts any version in `[MIN_SUPPORTED_VERSION, CURRENT_VERSION]` and
+/// dispatches to that version's parser, which up-converts to the canonical
+/// in-memory [`Announce`]. A too-new (or too-old/unknown) version is rejected. The
+/// result is NOT yet authenticated — call [`Announce::verify`].
 pub fn decode(data: &[u8]) -> Option<Announce> {
-    if data.len() < MAGIC.len() + 1 || &data[..MAGIC.len()] != MAGIC || data[MAGIC.len()] != VERSION
-    {
+    if data.len() < MAGIC.len() + 1 || &data[..MAGIC.len()] != MAGIC {
         return None;
     }
-    // Strict parse: reject trailing bytes (fail closed). The fixint encoding
-    // matches `bincode::serialize` in `encode`, so valid announces still decode.
+    let version = data[MAGIC.len()];
+    if !(MIN_SUPPORTED_VERSION..=CURRENT_VERSION).contains(&version) {
+        return None;
+    }
+    let body = &data[MAGIC.len() + 1..];
+    match version {
+        2 => decode_v2(body),
+        // Unreachable today; the range check above gates `version`. New arms (e.g.
+        // `3 => decode_v3(body)`) are added here as the body layout evolves.
+        _ => None,
+    }
+}
+
+/// Parse a v2 body. Strict parse: reject trailing bytes (fail closed). The fixint
+/// encoding matches `bincode::serialize` in `encode_v2`, so valid announces decode.
+fn decode_v2(body: &[u8]) -> Option<Announce> {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
-        .deserialize(&data[MAGIC.len() + 1..])
+        .deserialize(body)
         .ok()
 }
 
@@ -261,7 +294,54 @@ mod tests {
     fn decode_rejects_bad_framing() {
         assert!(decode(&[]).is_none());
         assert!(decode(b"XXXX\x01garbage").is_none()); // bad magic
-        assert!(decode(b"MTAN\x02garbage").is_none()); // bad version
+        assert!(decode(b"MTAN\x02garbage").is_none()); // valid version, garbage body
+    }
+
+    #[test]
+    fn decode_rejects_unsupported_versions() {
+        // A version below MIN_SUPPORTED or above CURRENT is rejected outright, even
+        // with an otherwise-valid v2 body — multi-version dispatch fails closed.
+        let id = DeviceIdentity::generate();
+        let framed = encode(&Announce::new(&id, "Alice", 4000));
+        let body = &framed[MAGIC.len() + 1..]; // the valid v2 body bytes
+
+        for bad_version in [0u8, 1, CURRENT_VERSION + 1, 255] {
+            let mut data = MAGIC.to_vec();
+            data.push(bad_version);
+            data.extend_from_slice(body);
+            assert!(
+                decode(&data).is_none(),
+                "version {bad_version} must be rejected"
+            );
+        }
+        // The genuine CURRENT_VERSION framing still round-trips byte-identically.
+        assert_eq!(decode(&framed).unwrap(), Announce::new(&id, "Alice", 4000));
+    }
+
+    #[test]
+    fn current_announce_encodes_to_golden_bytes() {
+        // Pins the v2 wire layout: a hand-built announce with fixed fields (no
+        // account cert, fixed 64-byte sig) must encode to these exact bytes. If a
+        // field is reordered/added/removed, this fails — protecting deployed peers.
+        let a = Announce {
+            user_id: "u".to_string(),
+            ed25519_pub: [0xAA; 32],
+            x25519_pub: [0xBB; 32],
+            name: "N".to_string(),
+            tcp_port: 4000,
+            post_office: false,
+            account_cert: None,
+            sig: vec![0xCC; 64],
+        };
+        let golden = "4d54414e02010000000000000075\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\
+01000000000000004ea00f0000\
+4000000000000000\
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        assert_eq!(hex::encode(encode(&a)), golden);
+        // And it decodes back to the same value (round-trip on the golden input).
+        assert_eq!(decode(&encode(&a)).unwrap(), a);
     }
 
     #[test]

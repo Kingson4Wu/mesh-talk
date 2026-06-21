@@ -28,6 +28,12 @@ const NONCE_LEN: usize = 12;
 
 /// A recipient-sealed message: the sender's per-message ephemeral X25519 public
 /// key plus the AES-256-GCM ciphertext (including its 16-byte tag).
+///
+/// Wire-evolution policy: this is a SECURITY/sealed type, so [`open`] parses it
+/// strictly (`reject_trailing_bytes`) — a malleable parse that ignored trailing
+/// bytes would let an attacker mint distinct byte-strings that open to the same
+/// plaintext (a malleability/oracle foothold). It must STAY strict; evolution
+/// happens via a new framing/version, never by tolerating extra bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SealedEnvelope {
     pub ephemeral_pub: [u8; 32],
@@ -220,6 +226,27 @@ mod tests {
         assert_ne!(k1, k6);
         // Key and nonce are distinct derivations, not the same bytes copied twice.
         assert_ne!(&k1[..NONCE_LEN], &n1[..]);
+    }
+
+    #[test]
+    fn sealed_envelope_encodes_to_golden_bytes() {
+        // Pins the SealedEnvelope wire layout (default bincode: u64 length prefix on
+        // the ciphertext Vec). Reordering fields or changing the bincode config
+        // breaks this — which would break interop with already-deployed peers.
+        let env = SealedEnvelope {
+            ephemeral_pub: [8u8; 32],
+            ciphertext: vec![1, 2, 3, 4],
+        };
+        assert_eq!(
+            hex::encode(bincode::serialize(&env).unwrap()),
+            "0808080808080808080808080808080808080808080808080808080808080808\
+0400000000000000\
+01020304"
+        );
+        // Round-trip on the golden value.
+        let back: SealedEnvelope =
+            bincode::deserialize(&bincode::serialize(&env).unwrap()).unwrap();
+        assert_eq!(back, env);
     }
 
     #[test]

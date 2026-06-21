@@ -46,6 +46,11 @@ impl Header {
             .serialize(self)
             .expect("header serializes")
     }
+    /// Strict parse (`reject_trailing_bytes`): the header is AEAD associated data
+    /// on a security-critical ratchet message, so a malleable parse tolerating
+    /// trailing bytes would admit distinct encodings of the same header (an
+    /// oracle/malleability foothold). It must STAY strict; evolution is via a new
+    /// version, never by relaxing this.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         bincode::DefaultOptions::new()
             .with_fixint_encoding()
@@ -276,6 +281,9 @@ impl RatchetState {
     }
 
     /// Reconstruct a session from [`serialize`] output. `None` if malformed.
+    /// Strict parse (`reject_trailing_bytes`): the serialized session is secret
+    /// key material stored encrypted at rest; it must STAY strict, and grows only
+    /// via a new version, never by tolerating extra bytes.
     pub fn deserialize(bytes: &[u8]) -> Option<RatchetState> {
         let wire: RatchetWire = bincode::DefaultOptions::new()
             .with_fixint_encoding()
@@ -509,6 +517,25 @@ mod tests {
         let (h, c) = alice.ratchet_encrypt(b"once").unwrap();
         assert_eq!(bob.ratchet_decrypt(&h, &c).unwrap(), b"once");
         assert!(bob.ratchet_decrypt(&h, &c).is_err()); // no key to re-derive
+    }
+
+    #[test]
+    fn header_encodes_to_golden_bytes() {
+        // Pins the ratchet Header wire layout (fixint bincode). The header is AEAD
+        // AAD on every ratchet message, so a layout change would break decryption
+        // against deployed peers — fail loudly here if a field is reordered/resized.
+        let h = Header {
+            ratchet_pub: [5u8; 32],
+            pn: 3,
+            n: 9,
+        };
+        assert_eq!(
+            hex::encode(h.encode()),
+            "0505050505050505050505050505050505050505050505050505050505050505\
+03000000\
+09000000"
+        );
+        assert_eq!(Header::decode(&h.encode()).unwrap().n, 9);
     }
 
     #[test]

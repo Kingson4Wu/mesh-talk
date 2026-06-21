@@ -338,6 +338,44 @@ mod tests {
     }
 
     #[test]
+    fn event_log_record_plaintext_encodes_to_golden_bytes() {
+        // A log record is `[u32 len][nonce(12)][AES-GCM(ciphertext)]` where the
+        // ciphertext is `bincode(Event)` (default bincode). The framing's nonce/salt
+        // are random, so we pin the DETERMINISTIC inner layout — `bincode(Event)` —
+        // which is what survives encryption and must stay stable for re-ingest and
+        // cross-version reads. A field reorder/type change breaks this.
+        use crate::eventlog::event::{Author, Event, EventId, EventKind};
+        let e = Event {
+            id: EventId::new([0x11; 32]),
+            conversation_id: ConversationId::new([0x22; 32]),
+            author: Author::from_ed25519([0x33; 32]),
+            seq: 2,
+            parents: vec![EventId::new([0x44; 32])],
+            lamport: 3,
+            wall_clock: 4,
+            kind: EventKind::Message,
+            ciphertext: vec![0xAB, 0xCD],
+            sig: vec![0xEE; 64],
+        };
+        let golden = "1111111111111111111111111111111111111111111111111111111111111111\
+2222222222222222222222222222222222222222222222222222222222222222\
+3333333333333333333333333333333333333333333333333333333333333333\
+0200000000000000\
+0100000000000000\
+4444444444444444444444444444444444444444444444444444444444444444\
+0300000000000000\
+0400000000000000\
+00000000\
+0200000000000000abcd\
+4000000000000000\
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        assert_eq!(hex::encode(bincode::serialize(&e).unwrap()), golden);
+        // Round-trip on the golden value.
+        let back: Event = bincode::deserialize(&bincode::serialize(&e).unwrap()).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
     fn append_then_reopen_returns_records_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.log");

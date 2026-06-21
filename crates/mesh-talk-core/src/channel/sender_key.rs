@@ -80,8 +80,10 @@ impl SenderKey {
             .expect("sender key serializes")
     }
 
-    /// Reconstruct a sending chain from [`serialize`] output. `None` if malformed
-    /// (fail-closed: reject trailing bytes).
+    /// Reconstruct a sending chain from [`serialize`] output. `None` if malformed.
+    /// Strict parse (`reject_trailing_bytes`): the serialized sender key is secret
+    /// chain-key material stored encrypted at rest; it must STAY strict, and grows
+    /// only via a new version, never by tolerating extra bytes.
     pub fn deserialize(bytes: &[u8]) -> Option<SenderKey> {
         let wire: SenderKeyWire = bincode::DefaultOptions::new()
             .with_fixint_encoding()
@@ -116,6 +118,9 @@ impl SenderKeyDistribution {
             .serialize(self)
             .expect("skd serializes")
     }
+    /// Strict parse (`reject_trailing_bytes`): the distribution carries the secret
+    /// chain key sealed to members; it stays strict. As a bincode (positional) type
+    /// it cannot grow in place — evolution is via a new version, not trailing bytes.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         bincode::DefaultOptions::new()
             .with_fixint_encoding()
@@ -352,6 +357,34 @@ mod tests {
         let mut bytes = sk.serialize();
         bytes.push(0xAB);
         assert!(SenderKey::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn sender_key_formats_encode_to_golden_bytes() {
+        // Pins both sender-key wire layouts (fixint bincode). A field reorder/resize
+        // breaks interop with deployed peers and durable on-disk sender keys.
+        let skd = SenderKeyDistribution {
+            chain_key: [4u8; 32],
+            n: 5,
+        };
+        assert_eq!(
+            hex::encode(skd.encode()),
+            "0404040404040404040404040404040404040404040404040404040404040404\
+05000000"
+        );
+        assert_eq!(SenderKeyDistribution::decode(&skd.encode()), Some(skd));
+
+        // The (private) SenderKeyWire used by SenderKey::serialize.
+        let sk = SenderKey {
+            chain_key: [4u8; 32],
+            n: 7,
+        };
+        assert_eq!(
+            hex::encode(sk.serialize()),
+            "0404040404040404040404040404040404040404040404040404040404040404\
+07000000"
+        );
+        assert_eq!(SenderKey::deserialize(&sk.serialize()).unwrap().n, 7);
     }
 
     #[test]

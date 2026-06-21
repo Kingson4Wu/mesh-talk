@@ -30,6 +30,12 @@ impl FileManifest {
     }
 
     /// Parse a manifest, fail-closed (reject trailing bytes).
+    ///
+    /// This is a DESCRIPTIVE type. It is bincode (positional, no version field), so
+    /// it cannot grow a field in place without shifting every following byte and
+    /// breaking deployed peers — evolution is via a VERSION BUMP (a new magic+version
+    /// framing or a new event kind), NOT by tolerating trailing bytes. Trailing
+    /// bytes stay rejected purely to fail closed on corruption, not for forward-compat.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         bincode::DefaultOptions::new()
             .with_fixint_encoding()
@@ -94,6 +100,31 @@ mod tests {
             chunk_count: chunks.len() as u32,
         };
         (manifest, chunks)
+    }
+
+    #[test]
+    fn manifest_encodes_to_golden_bytes() {
+        // Pins the FileManifest wire layout (fixint bincode: u64 length-prefixed
+        // strings, then the fixed arrays / u32). A field reorder or type change
+        // breaks interop with already-deployed peers — fail loudly here.
+        let m = FileManifest {
+            name: "f.txt".into(),
+            size: 5,
+            mime: "text/plain".into(),
+            checksum: [1u8; 32],
+            file_key: [2u8; 32],
+            file_conv: ConversationId::new([3u8; 32]),
+            chunk_count: 1,
+        };
+        let golden = "0500000000000000662e747874\
+0500000000000000\
+0a00000000000000746578742f706c61696e\
+0101010101010101010101010101010101010101010101010101010101010101\
+0202020202020202020202020202020202020202020202020202020202020202\
+0303030303030303030303030303030303030303030303030303030303030303\
+01000000";
+        assert_eq!(hex::encode(m.encode()), golden);
+        assert_eq!(FileManifest::decode(&m.encode()), Some(m));
     }
 
     #[test]
