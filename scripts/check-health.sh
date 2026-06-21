@@ -189,26 +189,22 @@ if ! { cd src-tauri && cargo test --workspace; }; then
 fi
 cd ..
 
-# Check for security vulnerabilities (Rust)
+# Check for security vulnerabilities (Rust). BLOCKING: a known advisory must be fixed (or
+# explicitly ignored in deny.toml / via `cargo audit --ignore RUSTSEC-...`) before committing,
+# so a vulnerable dependency can't be introduced silently. (cargo-deny above also gates these.)
 print_status "success" "Checking for Rust security vulnerabilities..."
 if ! command_exists cargo-audit; then
     print_status "warning" "cargo-audit not found. Installing..."
-    if cargo install cargo-audit; then
-        print_status "success" "cargo-audit installed successfully"
-        if ! { cd src-tauri && cargo audit; }; then
-            print_status "warning" "Security vulnerabilities found in Rust dependencies."
-        fi
-        cd ..
-    else
+    if ! cargo install cargo-audit; then
         print_status "error" "Failed to install cargo-audit"
         exit 1
     fi
-else
-    if ! { cd src-tauri && cargo audit; }; then
-        print_status "warning" "Security vulnerabilities found in Rust dependencies."
-    fi
-    cd ..
 fi
+if ! { cd src-tauri && cargo audit; }; then
+    print_status "error" "Security vulnerabilities found in Rust dependencies. Fix them, or ignore a known/unfixable advisory (deny.toml or 'cargo audit --ignore RUSTSEC-XXXX')."
+    exit 1
+fi
+cd ..
 
 # Check for security vulnerabilities (Node.js)
 print_status "success" "Checking for Node.js security vulnerabilities..."
@@ -217,11 +213,14 @@ if ! command_exists npx; then
     exit 1
 fi
 
-# Ensure audit-ci is installed
-if ! { cd frontend && npx audit-ci --config audit-ci.json; }; then
-    print_status "warning" "Security vulnerabilities found in Node.js dependencies or audit-ci.json not found."
+# BLOCKING: audit-ci fails on high/critical npm advisories (threshold + allowlist in
+# frontend/audit-ci.json), so a vulnerable dependency can't be introduced silently. Fix the
+# dependency or allowlist a known/unfixable advisory in audit-ci.json before committing.
+if ! { cd frontend && npx --yes audit-ci --config audit-ci.json; }; then
+    print_status "error" "Security vulnerabilities (high/critical) found in Node.js dependencies. Fix them or allowlist a known advisory in frontend/audit-ci.json."
+    exit 1
 fi
-cd .. || true
+cd ..
 
 # Build the project
 print_status "success" "Building the project..."
