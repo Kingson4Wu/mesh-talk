@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { chat } from "@/lib/api";
+import { errorMessage } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
 import type {
   AccountInfo,
@@ -276,7 +277,7 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await sendFileFor(c, path);
     } catch (e) {
-      set({ error: `Couldn't send file: ${String(e)}` });
+      set({ error: `Couldn't send file: ${errorMessage(e)}` });
       return;
     }
     if (get().active && convKey(get().active!) === convKey(c)) await get().reload();
@@ -297,7 +298,7 @@ export const useChat = create<ChatState>((set, get) => ({
       await reactFor(c, target, emoji, Boolean(mine));
       await get().reload();
     } catch (e) {
-      set({ error: `Couldn't update reaction: ${String(e)}` });
+      set({ error: `Couldn't update reaction: ${errorMessage(e)}` });
     }
   },
 

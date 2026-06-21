@@ -6,8 +6,12 @@ use crate::services::auth_service::AuthError;
 use crate::services::user::User;
 use crate::state::AppState;
 
-/// Represents possible errors that can occur in command execution.
-#[derive(Debug)]
+/// An IPC command error, serialized to the frontend as a tagged `{ kind, message }` object
+/// so the UI can branch on the kind (e.g. route an `authentication` failure to the login
+/// screen) instead of string-matching. The `kind` is snake_case: `validation`,
+/// `authentication`, `authorization`, `service`, `network`.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum CommandError {
     Validation(String),
     Authentication(String),
@@ -30,7 +34,21 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
-type CommandResult<T> = Result<T, CommandError>;
+/// A bare string error (e.g. "node not started") is an operational/service failure.
+impl From<String> for CommandError {
+    fn from(msg: String) -> Self {
+        CommandError::Service(msg)
+    }
+}
+
+/// A node operation failure surfaces as a service error.
+impl From<mesh_talk_core::node::NodeError> for CommandError {
+    fn from(e: mesh_talk_core::node::NodeError) -> Self {
+        CommandError::Service(e.to_string())
+    }
+}
+
+pub type CommandResult<T> = Result<T, CommandError>;
 
 #[derive(serde::Serialize)]
 pub struct UserInfo {
@@ -79,9 +97,8 @@ pub async fn login(
     password: String,
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
-) -> Result<LoginResult, String> {
-    let result =
-        login_impl(username, password.clone(), app_state.inner()).map_err(|e| e.to_string())?;
+) -> Result<LoginResult, CommandError> {
+    let result = login_impl(username, password.clone(), app_state.inner())?;
 
     if result.success {
         // Start the node: per-account stores under ~/.mesh-talk/accounts/<user_id>/.
@@ -147,10 +164,10 @@ fn login_impl(
 pub async fn logout(
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
-) -> Result<LogoutResult, String> {
+) -> Result<LogoutResult, CommandError> {
     // Stop and drop the node runtime (Drop aborts its background tasks).
     node_state.0.lock().await.take();
-    logout_impl(app_state.inner()).map_err(|e| e.to_string())
+    logout_impl(app_state.inner())
 }
 
 fn logout_impl(app_state: &AppState) -> CommandResult<LogoutResult> {
@@ -168,8 +185,8 @@ pub async fn register(
     username: String,
     password: String,
     app_state: tauri::State<'_, AppState>,
-) -> Result<RegisterResult, String> {
-    register_impl(username, password, app_state.inner()).map_err(|e| e.to_string())
+) -> Result<RegisterResult, CommandError> {
+    register_impl(username, password, app_state.inner())
 }
 
 fn register_impl(

@@ -1,12 +1,7 @@
 import { create } from "zustand";
 import { auth } from "@/lib/api";
+import { errorMessage as errMsg } from "@/lib/error";
 import type { UserInfo } from "@/lib/types";
-
-function errMsg(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e instanceof Error) return e.message;
-  return "Something went wrong";
-}
 
 interface AuthState {
   user: UserInfo | null;
