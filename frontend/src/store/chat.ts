@@ -33,6 +33,7 @@ export interface ChatMessage {
   replyTo: string | null;
   pending?: boolean;
   failed?: boolean; // a send that errored — kept visible (not silently dropped)
+  clientId?: string; // stable id for an optimistic bubble (survives a concurrent reload)
   file?: { name: string; size: number; fileConv: string } | null;
 }
 
@@ -44,6 +45,13 @@ export interface IncomingFile {
 }
 
 export const convKey = (c: Conversation) => `${c.kind}:${c.id}`;
+
+let clientIdCounter = 0;
+/** A process-unique id for an optimistic message bubble. */
+function nextClientId(): string {
+  clientIdCounter += 1;
+  return `c${clientIdCounter}`;
+}
 
 function fromHistory(h: HistoryItem): ChatMessage {
   return {
@@ -141,6 +149,7 @@ export const useChat = create<ChatState>((set, get) => ({
 
   start: () => {
     // Fresh slate per login (the store survives logout/login of a different account).
+    lastUnknownSenderRefresh = 0;
     set({
       ready: false,
       error: null,
@@ -241,6 +250,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const c = get().active;
     if (!c || !text.trim()) return;
     const key = convKey(c);
+    const clientId = nextClientId();
     const optimistic: ChatMessage = {
       id: null,
       fromMe: true,
@@ -249,6 +259,7 @@ export const useChat = create<ChatState>((set, get) => ({
       wallClock: Date.now(),
       replyTo,
       pending: true,
+      clientId,
     };
     set((s) => ({
       messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), optimistic] },
@@ -256,15 +267,17 @@ export const useChat = create<ChatState>((set, get) => ({
     try {
       await sendTextFor(c, text, replyTo);
     } catch {
-      // Keep the bubble (marked failed) instead of silently dropping it on reload.
-      set((s) => ({
-        messages: {
-          ...s.messages,
-          [key]: (s.messages[key] ?? []).map((m) =>
-            m === optimistic ? { ...m, pending: false, failed: true } : m,
-          ),
-        },
-      }));
+      // Keep the bubble visible, marked failed, instead of silently dropping it. Match by
+      // clientId (not object identity), and re-append if a concurrent reload() already
+      // replaced the array — so an inbound message mid-send can't make the failure vanish.
+      set((s) => {
+        const arr = s.messages[key] ?? [];
+        const failed = { ...optimistic, pending: false, failed: true };
+        const next = arr.some((m) => m.clientId === clientId)
+          ? arr.map((m) => (m.clientId === clientId ? failed : m))
+          : [...arr, failed];
+        return { messages: { ...s.messages, [key]: next } };
+      });
       return;
     }
     // Success: re-sync from the log so the message gets its real id (needed for reactions).

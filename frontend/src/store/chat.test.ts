@@ -212,3 +212,45 @@ describe("incoming events", () => {
     stop();
   });
 });
+
+describe("send/action failures", () => {
+  const acct = { kind: "account" as const, id: "a1", name: "A" };
+
+  it("keeps the optimistic bubble (marked failed) when the send rejects", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "send_to_account")
+        return Promise.reject({ kind: "service", message: "node down" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct });
+    await useChat.getState().send("hi", null);
+
+    const msgs = useChat.getState().messages[convKey(acct)] ?? [];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("hi");
+    expect(msgs[0].failed).toBe(true);
+    expect(msgs[0].pending).toBe(false);
+  });
+
+  it("sets a structured error message when sendFile rejects", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "send_file_to_account")
+        return Promise.reject({ kind: "service", message: "disk full" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct, error: null });
+    await useChat.getState().sendFile("/tmp/x");
+    expect(useChat.getState().error).toContain("disk full");
+  });
+
+  it("sets a structured error message when toggleReaction rejects", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "react_account")
+        return Promise.reject({ kind: "service", message: "no peer" });
+      return Promise.resolve([]);
+    });
+    useChat.setState({ active: acct, error: null });
+    await useChat.getState().toggleReaction("e1", "👍");
+    expect(useChat.getState().error).toContain("no peer");
+  });
+});

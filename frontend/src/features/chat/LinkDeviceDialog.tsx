@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { auth, chat } from "@/lib/api";
+import { errorMessage } from "@/lib/error";
 import { shortId } from "@/lib/format";
 import { useChat } from "@/store/chat";
 
@@ -40,7 +41,7 @@ export function LinkDeviceDialog() {
     try {
       setCode(await chat.startLinking());
     } catch (e) {
-      setMsg(String(e));
+      setMsg(errorMessage(e));
     }
   };
 
@@ -54,7 +55,7 @@ export function LinkDeviceDialog() {
       setMsg("Linked! This device now shares that account.");
       setJoinCode("");
     } catch (e) {
-      setMsg(`Link failed: ${e}`);
+      setMsg(`Link failed: ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
@@ -67,7 +68,7 @@ export function LinkDeviceDialog() {
       const id = await chat.rekeyAccount();
       setMsg(`Re-keyed. New account: ${shortId(id, 12)}…`);
     } catch (e) {
-      setMsg(`Re-key failed: ${e}`);
+      setMsg(`Re-key failed: ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
