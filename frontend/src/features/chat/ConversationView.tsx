@@ -43,8 +43,12 @@ export function ConversationView() {
   const myAccountId = useChat((s) => s.myAccountId);
   const members = useChat((s) => s.members);
   const key = active ? convKey(active) : "";
-  const messages = useChat((s) => (active ? (s.messages[key] ?? NO_MESSAGES) : NO_MESSAGES));
-  const reactions = useChat((s) => (active ? (s.reactions[key] ?? NO_REACTIONS) : NO_REACTIONS));
+  const messages = useChat((s) =>
+    active ? (s.messages[key] ?? NO_MESSAGES) : NO_MESSAGES,
+  );
+  const reactions = useChat((s) =>
+    active ? (s.reactions[key] ?? NO_REACTIONS) : NO_REACTIONS,
+  );
   const loading = useChat((s) => s.loading);
   const myName = useAuth((s) => s.user?.username ?? "");
 

@@ -117,6 +117,7 @@ pub fn run_tauri() {
             crate::chat_commands::send_file_dm,
             crate::chat_commands::send_file_channel,
             crate::chat_commands::save_file,
+            crate::chat_commands::read_file,
             crate::chat_commands::react_dm,
             crate::chat_commands::react_channel,
             crate::chat_commands::reactions,

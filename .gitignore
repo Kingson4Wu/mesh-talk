@@ -71,3 +71,7 @@ test_data_*
 lcov.info
 *.info
 coverage/
+
+# Playwright
+frontend/playwright-report/
+frontend/test-results/

@@ -161,10 +161,10 @@ impl Node {
         Ok((manifest, file_conv))
     }
 
-    /// Save a received file (identified by its per-file conversation id) to `dest`:
-    /// gather the chunk events, reassemble, verify the checksum, and write. Errors if
-    /// the manifest is unknown, not all chunks have synced yet, or verification fails.
-    pub fn save_file(&self, file_conv: ConversationId, dest: &Path) -> Result<(), NodeError> {
+    /// Reassemble + verify a received file (identified by its per-file conversation id) into
+    /// its decrypted bytes. Errors if the manifest is unknown, not all chunks have synced yet,
+    /// or verification fails. Shared by `save_file` (write to disk) and the inline-preview path.
+    pub fn read_file(&self, file_conv: ConversationId) -> Result<Vec<u8>, NodeError> {
         let manifest = self
             .files
             .lock()
@@ -187,8 +187,13 @@ impl Node {
                 manifest.chunk_count
             )));
         }
-        let data = reassemble_and_verify(&manifest, &chunks)
-            .map_err(|e| NodeError::File(format!("reassemble: {e}")))?;
+        reassemble_and_verify(&manifest, &chunks)
+            .map_err(|e| NodeError::File(format!("reassemble: {e}")))
+    }
+
+    /// Save a received file to `dest`: reassemble + verify (see [`Node::read_file`]) then write.
+    pub fn save_file(&self, file_conv: ConversationId, dest: &Path) -> Result<(), NodeError> {
+        let data = self.read_file(file_conv)?;
         std::fs::write(dest, data).map_err(|e| NodeError::File(format!("write file: {e}")))?;
         Ok(())
     }

@@ -1,24 +1,38 @@
 import { describe, it, expect } from "vitest";
-import { mentionSegments, mentionsName } from "./mentions";
+import { messageSegments, mentionsName } from "./mentions";
 
-describe("mentionSegments", () => {
+describe("messageSegments", () => {
   it("splits a mention out of surrounding text", () => {
-    expect(mentionSegments("hi @alice there")).toEqual([
-      { text: "hi ", mention: false },
-      { text: "@alice", mention: true },
-      { text: " there", mention: false },
+    expect(messageSegments("hi @alice there")).toEqual([
+      { text: "hi ", kind: "plain" },
+      { text: "@alice", kind: "mention" },
+      { text: " there", kind: "plain" },
     ]);
   });
-  it("plain text is one non-mention segment", () => {
-    expect(mentionSegments("just text")).toEqual([
-      { text: "just text", mention: false },
+  it("plain text is one plain segment", () => {
+    expect(messageSegments("just text")).toEqual([
+      { text: "just text", kind: "plain" },
     ]);
   });
   it("handles adjacent mentions without empty segments", () => {
-    expect(mentionSegments("@a @b")).toEqual([
-      { text: "@a", mention: true },
-      { text: " ", mention: false },
-      { text: "@b", mention: true },
+    expect(messageSegments("@a @b")).toEqual([
+      { text: "@a", kind: "mention" },
+      { text: " ", kind: "plain" },
+      { text: "@b", kind: "mention" },
+    ]);
+  });
+  it("detects a URL as a link segment", () => {
+    expect(messageSegments("see https://example.com/x now")).toEqual([
+      { text: "see ", kind: "plain" },
+      { text: "https://example.com/x", kind: "link" },
+      { text: " now", kind: "plain" },
+    ]);
+  });
+  it("handles a mention and a link together", () => {
+    expect(messageSegments("@bob http://a.io")).toEqual([
+      { text: "@bob", kind: "mention" },
+      { text: " ", kind: "plain" },
+      { text: "http://a.io", kind: "link" },
     ]);
   });
 });

@@ -1,8 +1,58 @@
 import { useMemo, useRef, useState } from "react";
-import { SendHorizontal, X, CornerUpLeft, Paperclip } from "lucide-react";
+import {
+  SendHorizontal,
+  X,
+  CornerUpLeft,
+  Paperclip,
+  Smile,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store/chat";
+
+// A small curated palette — enough for everyday chat without pulling in a heavy emoji library.
+const EMOJIS = [
+  "😀",
+  "😂",
+  "🙂",
+  "😉",
+  "😍",
+  "😎",
+  "🤔",
+  "😅",
+  "😭",
+  "😡",
+  "👍",
+  "👎",
+  "🙏",
+  "👏",
+  "🙌",
+  "💪",
+  "👀",
+  "👋",
+  "🤝",
+  "🤙",
+  "🔥",
+  "🎉",
+  "✨",
+  "⭐",
+  "❤️",
+  "💯",
+  "✅",
+  "❌",
+  "🚀",
+  "💡",
+  "☕",
+  "🍻",
+  "🥳",
+  "🤯",
+  "🙈",
+  "😴",
+  "🎯",
+  "📎",
+  "💀",
+  "🤗",
+];
 
 export function Composer({
   onSend,
@@ -22,6 +72,19 @@ export function Composer({
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [showEmoji, setShowEmoji] = useState(false);
+
+  const insertEmoji = (emoji: string) => {
+    const el = ref.current;
+    const caret = el?.selectionStart ?? text.length;
+    setText(text.slice(0, caret) + emoji + text.slice(caret));
+    setShowEmoji(false);
+    queueMicrotask(() => {
+      el?.focus();
+      const pos = caret + emoji.length;
+      el?.setSelectionRange(pos, pos);
+    });
+  };
 
   const suggestions = useMemo(() => {
     if (mentionQuery === null) return [];
@@ -112,6 +175,24 @@ export function Composer({
           </div>
         )}
 
+        {showEmoji && (
+          <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl border bg-popover p-2 shadow-xl">
+            <div className="grid grid-cols-10 gap-0.5">
+              {EMOJIS.map((e) => (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => insertEmoji(e)}
+                  className="rounded-md p-1 text-lg leading-none hover:bg-accent"
+                  aria-label={`Insert ${e}`}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex items-end gap-2 rounded-2xl border bg-background p-2 focus-within:ring-2 focus-within:ring-ring">
           {onAttach && (
             <Button
@@ -124,6 +205,16 @@ export function Composer({
               <Paperclip className="h-4 w-4" />
             </Button>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
+            title="Emoji"
+            aria-label="Emoji"
+            onClick={() => setShowEmoji((v) => !v)}
+          >
+            <Smile className="h-4 w-4" />
+          </Button>
           <textarea
             ref={ref}
             rows={1}

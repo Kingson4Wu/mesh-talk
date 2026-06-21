@@ -95,6 +95,8 @@ export const chat = {
   // Files + search + device linking
   saveFile: (fileConv: string, dest: string) =>
     invoke<void>("save_file", { fileConv, dest }),
+  readFile: (fileConv: string) =>
+    invoke<ArrayBuffer>("read_file", { fileConv }),
   search: (query: string) => invoke<SearchHitInfo[]>("search", { query }),
   startLinking: () => invoke<string>("start_linking"),
   stopLinking: () => invoke<void>("stop_linking"),

@@ -506,6 +506,26 @@ pub async fn save_file(
         .map_err(CommandError::from)
 }
 
+/// Return a received file's decrypted bytes (for inline preview, e.g. images). Returned as a
+/// raw IPC response (ArrayBuffer in JS) to avoid the overhead of a JSON number array.
+#[tauri::command]
+pub async fn read_file(
+    state: tauri::State<'_, NodeState>,
+    file_conv: String,
+) -> Result<tauri::ipc::Response, CommandError> {
+    let id = parse_channel_id(&file_conv)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(|| NOT_STARTED.to_string())?;
+        rt.handle()
+    };
+    let bytes = tokio::task::spawn_blocking(move || node.read_file(id))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+        .map_err(CommandError::from)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub async fn channel_history(
     state: tauri::State<'_, NodeState>,

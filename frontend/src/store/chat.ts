@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { chat } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
+import { notifyInbound } from "@/lib/notify";
 import type {
   AccountInfo,
   ChannelInfo,
@@ -435,6 +436,7 @@ function get_handleDm(set: Set, get: Get, e: DmReceivedEvent) {
   const isActive = get().active != null && convKey(get().active!) === key;
   if (isActive) void get().reload();
   bump(set, key, isActive);
+  void notifyInbound(conv.name || "New message", e.text, isActive);
 }
 
 function get_handleChannel(set: Set, get: Get, e: ChannelMessageEvent) {
@@ -447,7 +449,7 @@ function get_handleChannel(set: Set, get: Get, e: ChannelMessageEvent) {
   const isActive = get().active != null && convKey(get().active!) === key;
   if (isActive) void get().reload();
   bump(set, key, isActive);
-  void get().refreshRoster();
+  void notifyInbound(e.channel_name, e.text, isActive);
 }
 
 function get_handleFile(set: Set, get: Get, e: FileReceivedEvent) {

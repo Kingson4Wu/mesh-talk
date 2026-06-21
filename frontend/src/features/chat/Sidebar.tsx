@@ -1,9 +1,10 @@
-import { Hash, LogOut, MessagesSquare, Users } from "lucide-react";
+import { Hash, LogOut, MessagesSquare, Moon, Sun, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortId } from "@/lib/format";
+import { useTheme } from "@/lib/theme";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 import { SearchDialog } from "./SearchDialog";
 import { FilesTray } from "./FilesTray";
@@ -81,6 +82,8 @@ export function Sidebar() {
   const retryBoot = useChat((s) => s.retryBoot);
   const username = useAuth((s) => s.user?.username ?? "");
   const logout = useAuth((s) => s.logout);
+  const theme = useTheme((s) => s.theme);
+  const toggleTheme = useTheme((s) => s.toggle);
 
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r bg-card/40">
@@ -114,6 +117,19 @@ export function Sidebar() {
           <FilesTray />
           <LinkDeviceDialog />
           <div className="flex-1" />
+          <Button
+            variant="ghost"
+            size="icon"
+            title={theme === "dark" ? "Light mode" : "Dark mode"}
+            aria-label="Toggle theme"
+            onClick={() => toggleTheme()}
+          >
+            {theme === "dark" ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </Button>
           <Button
             variant="ghost"
             size="icon"
