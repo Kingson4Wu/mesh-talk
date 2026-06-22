@@ -82,6 +82,16 @@ impl SentLog {
         v
     }
 
+    /// Borrow this conversation's entries WITHOUT cloning (in insertion order — callers
+    /// that need them sorted use [`Self::entries`]). For read-only scans (e.g. search)
+    /// that would otherwise clone every plaintext.
+    pub fn entries_ref(&self, conversation: &ConversationId) -> &[SentEntry] {
+        self.by_conversation
+            .get(conversation)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// The conversation ids this log holds entries for.
     pub fn conversations(&self) -> Vec<ConversationId> {
         self.by_conversation.keys().copied().collect()

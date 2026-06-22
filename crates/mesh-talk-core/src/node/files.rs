@@ -15,6 +15,7 @@ use crate::node::conversation::dm_conversation_id;
 use sha2::{Digest, Sha256};
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Progress of a file transfer: `done`/`total` chunks. The terminal callback always
 /// has `done == total`.
@@ -30,7 +31,7 @@ impl Node {
     /// event into the DM conversation, and distributes both. Returns the per-file
     /// conversation id (the handle for the recipient to save).
     pub async fn send_file_dm(
-        &self,
+        self: &Arc<Self>,
         recipient: &str,
         path: &Path,
     ) -> Result<ConversationId, NodeError> {
@@ -39,10 +40,10 @@ impl Node {
 
     /// [`Node::send_file_dm`] with a progress callback invoked as chunks are sealed.
     pub async fn send_file_dm_progress(
-        &self,
+        self: &Arc<Self>,
         recipient: &str,
         path: &Path,
-        on_progress: impl FnMut(FileProgress),
+        on_progress: impl FnMut(FileProgress) + Send + 'static,
     ) -> Result<ConversationId, NodeError> {
         let peer = self
             .roster
@@ -52,7 +53,7 @@ impl Node {
             .cloned()
             .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
 
-        let (manifest, file_conv) = self.stage_file(path, on_progress)?;
+        let (manifest, file_conv) = self.stage_file_blocking(path, on_progress).await?;
         let sealed = crate::dm::seal(&self.identity, &peer.public.x25519_pub, &manifest.encode())
             .map_err(NodeError::Seal)?;
         let dm_conv = dm_conversation_id(&self.identity.public(), &peer.public);
@@ -69,7 +70,7 @@ impl Node {
     /// the manifest to every known device of `target_account_id` AND our own other
     /// devices (self-sync), delivering the file + manifest to each.
     pub async fn send_file_to_account(
-        &self,
+        self: &Arc<Self>,
         target_account_id: &str,
         path: &Path,
     ) -> Result<ConversationId, NodeError> {
@@ -79,10 +80,10 @@ impl Node {
 
     /// [`Node::send_file_to_account`] with a progress callback.
     pub async fn send_file_to_account_progress(
-        &self,
+        self: &Arc<Self>,
         target_account_id: &str,
         path: &Path,
-        on_progress: impl FnMut(FileProgress),
+        on_progress: impl FnMut(FileProgress) + Send + 'static,
     ) -> Result<ConversationId, NodeError> {
         let dests = self.account_fanout_targets(target_account_id);
         if !dests
@@ -92,7 +93,7 @@ impl Node {
             return Err(NodeError::UnknownPeer(target_account_id.to_string()));
         }
 
-        let (manifest, file_conv) = self.stage_file(path, on_progress)?;
+        let (manifest, file_conv) = self.stage_file_blocking(path, on_progress).await?;
         let manifest_bytes = manifest.encode();
         for peer in &dests {
             let sealed =
@@ -117,7 +118,7 @@ impl Node {
 
     /// Send the file at `path` to a channel we hold the key for.
     pub async fn send_file_channel(
-        &self,
+        self: &Arc<Self>,
         channel: ConversationId,
         path: &Path,
     ) -> Result<ConversationId, NodeError> {
@@ -126,12 +127,12 @@ impl Node {
 
     /// [`Node::send_file_channel`] with a progress callback.
     pub async fn send_file_channel_progress(
-        &self,
+        self: &Arc<Self>,
         channel: ConversationId,
         path: &Path,
-        on_progress: impl FnMut(FileProgress),
+        on_progress: impl FnMut(FileProgress) + Send + 'static,
     ) -> Result<ConversationId, NodeError> {
-        let (manifest, file_conv) = self.stage_file(path, on_progress)?;
+        let (manifest, file_conv) = self.stage_file_blocking(path, on_progress).await?;
         // Publish our sender-key distribution before the first seal (see
         // `send_channel_message_reply`).
         let (members, already_distributed) = {
@@ -160,6 +161,22 @@ impl Node {
         self.distribute_channel(file_conv, &members).await;
         self.distribute_channel(channel, &members).await;
         Ok(file_conv)
+    }
+
+    /// Off-reactor wrapper around [`Node::stage_file`]: staging is a synchronous burst of
+    /// disk reads + per-chunk AEAD + per-chunk encrypted-log appends/flushes, so run it on
+    /// the blocking pool to keep it off a tokio worker (the receive/save path is offloaded
+    /// the same way). The result is identical — just executed on a blocking thread.
+    async fn stage_file_blocking(
+        self: &Arc<Self>,
+        path: &Path,
+        on_progress: impl FnMut(FileProgress) + Send + 'static,
+    ) -> Result<(FileManifestV2, ConversationId), NodeError> {
+        let node = Arc::clone(self);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || node.stage_file(&path, on_progress))
+            .await
+            .map_err(|e| NodeError::File(format!("stage join error: {e}")))?
     }
 
     /// Stream `path` from disk, sealing each `CHUNK_SIZE` piece (deterministic-nonce v2
@@ -357,8 +374,12 @@ impl Node {
             return Ok(());
         }
 
-        // v2: stream each verified chunk straight to a temp .part file.
+        // v2: stream each verified chunk straight to a temp .part file. Guard the temp so
+        // ANY early-return error path (chunk open, write/flush IO error, checksum mismatch,
+        // even the final rename) removes it instead of orphaning a `.part` on disk; the
+        // guard is disarmed only once the file is committed into place.
         let part = part_path(dest);
+        let mut part_guard = PartFileGuard::new(part.clone());
         let mut whole = Sha256::new();
         {
             let f = std::fs::File::create(&part)
@@ -386,11 +407,12 @@ impl Node {
         };
         let actual: [u8; 32] = whole.finalize().into();
         if actual != expected {
-            let _ = std::fs::remove_file(&part);
             return Err(NodeError::File("whole-file checksum mismatch".into()));
         }
         std::fs::rename(&part, dest)
             .map_err(|e| NodeError::File(format!("finalize rename: {e}")))?;
+        // Committed into place: don't let the guard delete the now-renamed file.
+        part_guard.disarm();
         // The file is fully reassembled + verified on disk: reclaim its chunk events.
         self.prune_file_chunks(file_conv);
         Ok(())
@@ -439,4 +461,63 @@ fn part_path(dest: &Path) -> std::path::PathBuf {
     let mut s = dest.as_os_str().to_os_string();
     s.push(".part");
     std::path::PathBuf::from(s)
+}
+
+/// Removes a half-written `.part` temp on drop unless [`Self::disarm`]ed. Ensures every
+/// error return from a streaming save (chunk open, write/flush failure, checksum mismatch,
+/// rename failure) cleans up its temp instead of orphaning it.
+struct PartFileGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl PartFileGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Stop the guard from deleting the temp (call once it's been committed into place).
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod part_guard_tests {
+    use super::PartFileGuard;
+
+    #[test]
+    fn armed_guard_removes_the_part_on_drop() {
+        // An error path drops the guard while still armed → the temp must be gone (no
+        // orphaned `.part` left behind on any failed save).
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("file.bin.part");
+        std::fs::write(&part, b"half-written").unwrap();
+        {
+            let _guard = PartFileGuard::new(part.clone());
+            assert!(part.exists());
+        }
+        assert!(!part.exists(), "armed guard must remove the .part on drop");
+    }
+
+    #[test]
+    fn disarmed_guard_keeps_the_file() {
+        // The success path disarms after the atomic rename → the committed file survives.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("file.bin.part");
+        std::fs::write(&part, b"committed").unwrap();
+        {
+            let mut guard = PartFileGuard::new(part.clone());
+            guard.disarm();
+        }
+        assert!(part.exists(), "disarmed guard must NOT remove the file");
+    }
 }

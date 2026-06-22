@@ -189,7 +189,7 @@ pub async fn login(
     app_state: tauri::State<'_, AppState>,
     node_state: tauri::State<'_, crate::chat_commands::NodeState>,
 ) -> Result<LoginResult, CommandError> {
-    let result = login_impl(username, password.clone(), app_state.inner())?;
+    let result = login_impl(username, password.clone(), app_state.inner()).await?;
 
     if result.success {
         // Start the node: per-account stores under ~/.mesh-talk/accounts/<user_id>/.
@@ -212,7 +212,7 @@ pub async fn login(
     Ok(result)
 }
 
-fn login_impl(
+async fn login_impl(
     username: String,
     password: String,
     app_state: &AppState,
@@ -226,10 +226,21 @@ fn login_impl(
     let normalized_username = username.trim().to_string();
     let normalized_password = password.trim().to_string();
 
-    match app_state
-        .auth_service()
-        .login(normalized_username.clone(), normalized_password.clone())
-    {
+    // The Argon2 password KDF inside auth_service.login is CPU-bound and would pin a tokio
+    // worker for its full duration. Run it on the blocking pool (AuthService is Arc-cloneable);
+    // only the cheap session mutation stays on the reactor.
+    let auth_service = app_state.auth_service().clone();
+    let auth_result = {
+        let normalized_username = normalized_username.clone();
+        let normalized_password = normalized_password.clone();
+        tokio::task::spawn_blocking(move || {
+            auth_service.login(normalized_username, normalized_password)
+        })
+        .await
+        .map_err(|e| CommandError::Service(format!("join error: {e}")))?
+    };
+
+    match auth_result {
         Ok((user, token)) => {
             app_state
                 .session()
@@ -285,10 +296,10 @@ pub async fn register(
     password: String,
     app_state: tauri::State<'_, AppState>,
 ) -> Result<RegisterResult, CommandError> {
-    register_impl(username, password, app_state.inner())
+    register_impl(username, password, app_state.inner()).await
 }
 
-fn register_impl(
+async fn register_impl(
     username: String,
     password: String,
     app_state: &AppState,
@@ -306,11 +317,16 @@ fn register_impl(
         ));
     }
 
-    let user = match app_state.auth_service().register(
-        username.clone(),
-        normalized_password,
-        "127.0.0.1:7000".into(),
-    ) {
+    // The Argon2 password KDF inside auth_service.register is CPU-bound; run it on the
+    // blocking pool so it doesn't pin a tokio worker (AuthService is Arc-cloneable).
+    let auth_service = app_state.auth_service().clone();
+    let register_result = tokio::task::spawn_blocking(move || {
+        auth_service.register(username, normalized_password, "127.0.0.1:7000".into())
+    })
+    .await
+    .map_err(|e| CommandError::Service(format!("join error: {e}")))?;
+
+    let user = match register_result {
         Ok(user) => user,
         Err(AuthError::UserAlreadyExists) => {
             return Err(CommandError::Validation("Username already exists".into()))

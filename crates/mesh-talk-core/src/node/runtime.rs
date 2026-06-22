@@ -96,12 +96,24 @@ impl NodeRuntime {
         let dir = base_dir.join("accounts").join(account_id);
         std::fs::create_dir_all(&dir)?;
 
-        let identity = keystore::load_or_create(&dir.join("identity.keystore"), password)
-            .map_err(|e| RuntimeError::Open(e.into()))?;
+        // The two keystore unlocks run sequential 600k-PBKDF2/Argon2 KDFs (~seconds of CPU,
+        // the bulk of cold start). Offload them to the blocking pool so they don't monopolize
+        // a tokio worker; the result is identical (same files, same ordering).
+        let (identity, account) = {
+            let identity_path = dir.join("identity.keystore");
+            let account_path = dir.join("account.keystore");
+            let password = password.to_string();
+            tokio::task::spawn_blocking(move || {
+                let identity = keystore::load_or_create(&identity_path, &password)
+                    .map_err(|e| RuntimeError::Open(e.into()))?;
+                let account = account_keystore::load_or_create(&account_path, &password)
+                    .map_err(|e| RuntimeError::Open(e.into()))?;
+                Ok::<_, RuntimeError>((identity, account))
+            })
+            .await
+            .map_err(|e| RuntimeError::Io(std::io::Error::other(format!("join error: {e}"))))??
+        };
         let self_uid = identity.public().user_id();
-
-        let account = account_keystore::load_or_create(&dir.join("account.keystore"), password)
-            .map_err(|e| RuntimeError::Open(e.into()))?;
         let account_id = account.account_id();
 
         // Dual-stack TCP listener (IPv6 + IPv4-mapped, falling back to IPv4) so the node is
@@ -119,17 +131,31 @@ impl NodeRuntime {
             mpsc::unbounded_channel::<crate::node::channel::ReceivedChannelMessage>();
         let (file_tx, mut file_rx) =
             mpsc::unbounded_channel::<crate::node::filebook::ReceivedFile>();
-        let node = Node::open_with_account(
-            identity,
-            account,
-            Arc::clone(&roster),
-            incoming_tx,
-            channel_tx,
-            file_tx,
-            &dir.join("messages.log"),
-            &dir.join("sent.log"),
-            password,
-        )?;
+        // Opening the node runs several more password KDFs (one per durable store). Offload
+        // to the blocking pool so it doesn't monopolize a tokio worker during cold start;
+        // `open_with_account` internally parallelizes those KDFs across scoped threads, so
+        // the behavior (and result) is identical — just off the reactor.
+        let node = {
+            let roster = Arc::clone(&roster);
+            let messages_log = dir.join("messages.log");
+            let sent_log = dir.join("sent.log");
+            let password = password.to_string();
+            tokio::task::spawn_blocking(move || {
+                Node::open_with_account(
+                    identity,
+                    account,
+                    roster,
+                    incoming_tx,
+                    channel_tx,
+                    file_tx,
+                    &messages_log,
+                    &sent_log,
+                    &password,
+                )
+            })
+            .await
+            .map_err(|e| RuntimeError::Io(std::io::Error::other(format!("join error: {e}"))))??
+        };
 
         let socket = Arc::new(discovery_socket(discovery_port)?);
 

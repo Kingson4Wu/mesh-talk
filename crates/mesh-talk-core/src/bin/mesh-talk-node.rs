@@ -82,9 +82,102 @@ fn emit(line: &str) {
     let _ = out.flush();
 }
 
+/// An advisory lock on a node's data directory: an `O_EXCL` lockfile created on startup
+/// and removed on exit. The GUI is protected from two instances by single_instance; the
+/// CLI is not, so two nodes sharing one keystore dir would both append to one
+/// messages.log/sent.log and clobber records. This makes a second node sharing the dir
+/// fail fast with a clear message instead of silently corrupting the logs.
+struct DataDirLock {
+    path: std::path::PathBuf,
+}
+
+impl DataDirLock {
+    /// Acquire the lock for `data_dir`, failing if another LIVE node already holds it.
+    /// The lockfile records the holder's PID; a lock left by a crashed/killed process
+    /// (whose Drop never ran) is detected as stale and reclaimed, so a restart of the
+    /// same node isn't blocked by its own previous instance.
+    fn acquire(data_dir: &std::path::Path) -> std::io::Result<DataDirLock> {
+        use std::io::Write;
+        std::fs::create_dir_all(data_dir)?;
+        let path = data_dir.join("node.lock");
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    let _ = write!(f, "{}", std::process::id());
+                    return Ok(DataDirLock { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Someone holds (or held) the lock. If the recorded PID is no longer
+                    // alive, the holder crashed/was killed before cleaning up — reclaim
+                    // the stale lock and retry. Otherwise a live node owns it: fail fast.
+                    let holder = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok());
+                    if holder.is_none_or(|pid| !pid_is_alive(pid)) {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!(
+                            "data dir {} is locked by another mesh-talk-node (pid {}); \
+                             remove {} if no node is running",
+                            data_dir.display(),
+                            holder.expect("checked Some above"),
+                            path.display()
+                        ),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+/// Whether a process with `pid` is currently alive (signal 0 probe). Used only to decide
+/// if a leftover lockfile is stale. On the rare PID-reuse race this can over-report
+/// "alive" and refuse the lock — a safe (conservative) failure, never silent corruption.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: `kill` with signal 0 performs no signal delivery — it only checks whether the
+    // process exists / is permitted to be signalled. No memory is touched.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true; // exists and signallable
+    }
+    // Only ESRCH (no such process) proves it's gone; EPERM means it exists but isn't ours.
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// Non-unix fallback: assume any recorded holder is alive (no cheap PID probe), so the
+/// lock is strict. A leftover lockfile must then be removed by hand — surfaced in the
+/// error message.
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    true
+}
+
+impl Drop for DataDirLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Fail fast if another CLI node is already using this keystore's data dir (the GUI is
+    // guarded by single_instance; the CLI isn't). Held for the process lifetime via Drop.
+    let data_dir = std::path::Path::new(&args.keystore)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let _data_dir_lock = DataDirLock::acquire(&data_dir)?;
 
     if args.post_office {
         return run_post_office(args).await;

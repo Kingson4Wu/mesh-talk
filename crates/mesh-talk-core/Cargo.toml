@@ -45,6 +45,12 @@ socket2 = { workspace = true }
 if-addrs = { workspace = true }
 clap = { workspace = true }
 
+# Unix-only: a `kill(pid, 0)` liveness probe so the CLI's data-dir lockfile can detect a
+# lock left by a crashed/killed node and reclaim it. Already in the build graph transitively
+# (via socket2/snow), so this adds no new compilation.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 rand_chacha = "0.3" # seeded CSPRNG for deterministic property tests (rand_core 0.6 SeedableRng)

@@ -447,7 +447,7 @@ pub async fn send_file_dm(
     // (it relabels on the resolved promise). Use the path-derived label up front.
     let mut prog = crate::events::ProgressThrottle::new(app, recipient.clone(), "send");
     let id = node
-        .send_file_dm_progress(&recipient, std::path::Path::new(&path), |p| {
+        .send_file_dm_progress(&recipient, std::path::Path::new(&path), move |p| {
             prog.emit(p.done, p.total)
         })
         .await
@@ -469,7 +469,7 @@ pub async fn send_file_to_account(
     };
     let mut prog = crate::events::ProgressThrottle::new(app, account.clone(), "send");
     let id = node
-        .send_file_to_account_progress(&account, std::path::Path::new(&path), |p| {
+        .send_file_to_account_progress(&account, std::path::Path::new(&path), move |p| {
             prog.emit(p.done, p.total)
         })
         .await
@@ -492,7 +492,7 @@ pub async fn send_file_channel(
     };
     let mut prog = crate::events::ProgressThrottle::new(app, channel_id.clone(), "send");
     let file_conv = node
-        .send_file_channel_progress(id, std::path::Path::new(&path), |p| {
+        .send_file_channel_progress(id, std::path::Path::new(&path), move |p| {
             prog.emit(p.done, p.total)
         })
         .await
@@ -766,10 +766,18 @@ pub async fn search(
     state: tauri::State<'_, NodeState>,
     query: String,
 ) -> Result<Vec<SearchHitInfo>, CommandError> {
-    let guard = state.0.lock().await;
-    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
-    Ok(rt
-        .search(&query)
+    // Snapshot the node handle and DROP the state lock before the scan, so a search can't
+    // serialize all other node IPC behind the synchronous scan; run the scan on the
+    // blocking pool (it reads/decrypts every conversation's stores).
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
+        rt.handle()
+    };
+    let hits = tokio::task::spawn_blocking(move || node.search(&query))
+        .await
+        .map_err(|e| format!("join error: {e}"))?;
+    Ok(hits
         .into_iter()
         .map(|h| SearchHitInfo {
             is_channel: h.is_channel,
