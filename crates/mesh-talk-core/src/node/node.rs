@@ -168,6 +168,13 @@ pub struct Node {
     pub(in crate::node) emitted: Mutex<HashSet<EventId>>,
     pub(in crate::node) file_incoming: mpsc::UnboundedSender<ReceivedFile>,
     pub(in crate::node) files: Mutex<FileBook>,
+    /// Per-file conversations we've seen a manifest for but don't yet hold all chunks of —
+    /// surfaced this session and awaiting their data. A background task pulls these DIRECTLY
+    /// from peers (the post-office drain only covers files when a PO exists; on a plain
+    /// peer-to-peer LAN the sender's one-shot push is otherwise the only delivery, so a
+    /// missed push would strand the file at 0 chunks). Cleared once a file completes; not
+    /// seeded from saved files (whose chunks are pruned), so we never re-pull a saved file.
+    pub(in crate::node) pending_files: Mutex<HashSet<ConversationId>>,
     /// Per-peer Double Ratchet sessions (forward-secret DM crypto), encrypted on disk.
     pub(in crate::node) dm_ratchet: Mutex<DmRatchet>,
     /// Decrypted received-message plaintext, for serving history after the wire key is gone.
@@ -330,6 +337,7 @@ impl Node {
             emitted: Mutex::new(emitted),
             file_incoming,
             files: Mutex::new(files),
+            pending_files: Mutex::new(HashSet::new()),
             dm_ratchet: Mutex::new(dm_ratchet),
             received: Mutex::new(received),
             received_files: Mutex::new(received_files),

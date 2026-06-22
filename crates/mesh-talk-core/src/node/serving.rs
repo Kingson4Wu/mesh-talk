@@ -253,7 +253,67 @@ impl Node {
             surfaced.push(received);
         }
         for rf in surfaced {
+            // We have the manifest; if its chunks haven't all arrived, queue a direct pull
+            // from peers (the sender's one-shot push may have raced our discovery, and on a
+            // PO-less LAN nothing else fetches them). Cleared once the file completes.
+            let fc = rf.file_conv;
+            if matches!(self.file_progress(fc), Some(p) if p.done < p.total) {
+                self.pending_files
+                    .lock()
+                    .expect("pending_files mutex not poisoned")
+                    .insert(fc);
+            }
             let _ = self.file_incoming.send(rf);
+        }
+    }
+
+    /// Fetch chunks for any file we've surfaced a manifest for but don't fully hold yet,
+    /// pulling DIRECTLY from connected peers. The post-office drain covers file convs only
+    /// when a post office exists; on a plain peer-to-peer LAN the sender's one-shot push is
+    /// otherwise the only delivery, so a push that missed (discovery race) would leave the
+    /// recipient stuck at 0 chunks. Best-effort + idempotent: a complete file is dropped
+    /// from the pending set; an unreachable peer is just skipped and retried next tick.
+    pub async fn pull_pending_files(&self) {
+        let pending: Vec<ConversationId> = {
+            let set = self
+                .pending_files
+                .lock()
+                .expect("pending_files mutex not poisoned");
+            set.iter().copied().collect()
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let peers: Vec<PeerRecord> = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster
+                .peers()
+                .into_iter()
+                .filter(|p| !p.post_office)
+                .collect()
+        };
+        for fc in pending {
+            // Already complete (e.g. the push did land, or a prior tick finished it)? Drop it.
+            if matches!(self.file_progress(fc), Some(p) if p.done >= p.total) {
+                self.pending_files
+                    .lock()
+                    .expect("pending_files mutex not poisoned")
+                    .remove(&fc);
+                continue;
+            }
+            for peer in &peers {
+                if let Ok(mut channel) = dial(peer.addr, &self.identity, Some(&peer.public)).await {
+                    let _ = request_round(&mut channel, &self.log, fc).await;
+                }
+                // Stop dialing more peers the moment this file is whole.
+                if matches!(self.file_progress(fc), Some(p) if p.done >= p.total) {
+                    self.pending_files
+                        .lock()
+                        .expect("pending_files mutex not poisoned")
+                        .remove(&fc);
+                    break;
+                }
+            }
         }
     }
 

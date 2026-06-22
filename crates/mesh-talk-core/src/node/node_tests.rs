@@ -1158,6 +1158,101 @@ async fn two_nodes_transfer_a_file_over_loopback_tcp() {
     assert_eq!(std::fs::read(&dest).unwrap(), payload);
 }
 
+// Regression: when the sender's one-shot chunk push misses (the recipient wasn't reachable
+// at send time — the discovery race) and there is NO post office, the recipient still gets
+// the manifest but 0 chunks. It must then PULL the chunks directly from peers and converge.
+#[tokio::test]
+async fn recipient_pulls_file_chunks_directly_when_push_missed() {
+    let alice = DeviceIdentity::generate();
+    let bob = DeviceIdentity::generate();
+    let alice_public = alice.public();
+    let bob_public = bob.public();
+    let dir = tempfile::tempdir().unwrap();
+
+    // ALICE listens — Bob will pull from her. Alice's roster has Bob at a DEAD port, so her
+    // send-time push to Bob misses (simulating the race); the file stays only in Alice's log.
+    let alice_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let alice_addr = alice_listener.local_addr().unwrap();
+    let alice_roster = seed_roster(&bob, "Bob", 1, &alice.public().user_id());
+    let bob_roster = seed_roster(&alice, "Alice", alice_addr.port(), &bob.public().user_id());
+
+    let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+    let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+    let (a_f, _a_f_r) = mpsc::unbounded_channel();
+    let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+    let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+    let (b_f, _b_f_r) = mpsc::unbounded_channel();
+
+    let alice_node = Node::open(
+        alice,
+        alice_roster,
+        a_dm,
+        a_ch,
+        a_f,
+        &dir.path().join("a.log"),
+        &dir.path().join("a-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let bob_node = Node::open(
+        bob,
+        bob_roster,
+        b_dm,
+        b_ch,
+        b_f,
+        &dir.path().join("b.log"),
+        &dir.path().join("b-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    tokio::spawn(Arc::clone(&alice_node).run_accept_loop(alice_listener));
+
+    let payload = vec![0xCDu8; crate::file::CHUNK_SIZE + 999];
+    let src = dir.path().join("doc.bin");
+    std::fs::write(&src, &payload).unwrap();
+    let bob_uid = bob_node.user_id();
+    // Alice sends; her push to Bob (dead port) misses, but the file is now in Alice's log.
+    let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
+
+    // Bob gets the MANIFEST by syncing the DM conversation from Alice (the reliable path:
+    // the DM conv is one Bob pulls), then surfaces it — which queues a pending file pull.
+    let dm_conv = dm_conversation_id(&alice_public, &bob_public);
+    let alice_peer = bob_node
+        .roster
+        .lock()
+        .unwrap()
+        .peers()
+        .into_iter()
+        .find(|p| p.public.user_id() == alice_public.user_id())
+        .unwrap();
+    bob_node.deliver_direct(&alice_peer, dm_conv).await.unwrap();
+    bob_node.process_file_events(dm_conv);
+
+    // Manifest known, but the chunks are NOT here (the push missed): strictly incomplete.
+    let prog = bob_node.file_progress(file_conv).expect("manifest known");
+    assert!(
+        prog.done < prog.total,
+        "chunks must be missing before the direct pull ({}/{})",
+        prog.done,
+        prog.total
+    );
+
+    // The fix: the recipient pulls the chunks DIRECTLY from peers (no post office) and saves.
+    let dest = dir.path().join("got.bin");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            bob_node.pull_pending_files().await;
+            if bob_node.save_file(file_conv, &dest).is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("bob pulled the chunks directly + saved within 5s");
+    assert_eq!(std::fs::read(&dest).unwrap(), payload);
+}
+
 #[tokio::test]
 async fn two_nodes_transfer_a_multi_chunk_file_over_loopback_tcp() {
     let alice = DeviceIdentity::generate();

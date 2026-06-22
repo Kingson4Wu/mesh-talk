@@ -20,6 +20,11 @@ use tokio::task::JoinHandle;
 /// How often the desktop node drains held DMs from the elected post office.
 const DRAIN_INTERVAL_SECS: u64 = 3;
 
+/// How often the node tries to pull chunks for files it has a manifest for but hasn't
+/// fully received yet — directly from peers (covers PO-less LANs where the sender's
+/// one-shot push is the only other delivery). A no-op when nothing is pending.
+const FILE_PULL_INTERVAL_SECS: u64 = 3;
+
 /// Errors starting the node runtime.
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -176,6 +181,15 @@ impl NodeRuntime {
                 loop {
                     node.drain_from_post_office().await;
                     tokio::time::sleep(Duration::from_secs(DRAIN_INTERVAL_SECS)).await;
+                }
+            }));
+        }
+        {
+            let node = Arc::clone(&node);
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    node.pull_pending_files().await;
+                    tokio::time::sleep(Duration::from_secs(FILE_PULL_INTERVAL_SECS)).await;
                 }
             }));
         }
