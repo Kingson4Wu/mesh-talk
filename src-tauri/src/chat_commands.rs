@@ -878,6 +878,17 @@ pub struct PresenceInfo {
     pub last_seen_secs: Option<u64>,
 }
 
+/// Fold per-device "seconds since last seen" values into a [`PresenceInfo`]: the freshest
+/// (minimum) device wins, and the conversation is online if that freshest sighting is
+/// strictly within [`PRESENCE_TTL_SECS`]. An empty iterator yields offline / never-seen.
+fn presence_from_seen(secs: impl Iterator<Item = u64>) -> PresenceInfo {
+    let best = secs.min();
+    PresenceInfo {
+        online: best.is_some_and(|s| s < PRESENCE_TTL_SECS),
+        last_seen_secs: best,
+    }
+}
+
 /// A snapshot of presence for every account + channel conversation, keyed by id.
 ///
 /// Online = the account (DM) has ≥1 device currently in the roster seen within the TTL;
@@ -900,17 +911,6 @@ pub async fn get_presence(
         .map(|p| (p.public.user_id(), p.last_seen.elapsed().as_secs()))
         .collect();
 
-    let fold = |secs_iter: &mut dyn Iterator<Item = u64>| -> PresenceInfo {
-        let mut best: Option<u64> = None;
-        for s in secs_iter {
-            best = Some(best.map_or(s, |b| b.min(s)));
-        }
-        PresenceInfo {
-            online: best.is_some_and(|s| s < PRESENCE_TTL_SECS),
-            last_seen_secs: best,
-        }
-    };
-
     let mut out: HashMap<String, PresenceInfo> = HashMap::new();
 
     // Per-account presence: the freshest of the account's known devices.
@@ -924,7 +924,7 @@ pub async fn get_presence(
         }
     }
     for (acct, secs) in by_account {
-        out.insert(acct, fold(&mut secs.iter().copied()));
+        out.insert(acct, presence_from_seen(secs.into_iter()));
     }
 
     // Per-channel presence: the freshest of any known member device currently in roster.
@@ -936,7 +936,7 @@ pub async fn get_presence(
             .collect();
         out.insert(
             hex::encode(c.id.as_bytes()),
-            fold(&mut secs.iter().copied()),
+            presence_from_seen(secs.into_iter()),
         );
     }
 
@@ -973,5 +973,47 @@ mod tests {
         );
         assert!(parse_event_id(&"cd".repeat(10)).is_err()); // too short
         assert!(parse_event_id(&"gg".repeat(32)).is_err()); // not hex
+    }
+
+    #[test]
+    fn presence_fresh_device_is_online() {
+        let p = presence_from_seen([5u64].into_iter());
+        assert!(p.online);
+        assert_eq!(p.last_seen_secs, Some(5));
+    }
+
+    #[test]
+    fn presence_all_stale_is_offline_with_freshest_last_seen() {
+        let p = presence_from_seen([60u64, 45, 90].into_iter());
+        assert!(!p.online);
+        assert_eq!(p.last_seen_secs, Some(45)); // freshest (min), still > TTL
+    }
+
+    #[test]
+    fn presence_empty_is_offline_never_seen() {
+        let p = presence_from_seen(std::iter::empty());
+        assert!(!p.online);
+        assert_eq!(p.last_seen_secs, None);
+    }
+
+    #[test]
+    fn presence_uses_freshest_of_many_devices() {
+        // One fresh device among stale ones makes the conversation online,
+        // and last_seen reflects the freshest (min).
+        let p = presence_from_seen([100u64, 3, 50].into_iter());
+        assert!(p.online);
+        assert_eq!(p.last_seen_secs, Some(3));
+    }
+
+    #[test]
+    fn presence_ttl_boundary_is_strict() {
+        // Exactly TTL is offline (strict `<`); one second under is online.
+        let at = presence_from_seen([PRESENCE_TTL_SECS].into_iter());
+        assert!(!at.online);
+        assert_eq!(at.last_seen_secs, Some(PRESENCE_TTL_SECS));
+
+        let under = presence_from_seen([PRESENCE_TTL_SECS - 1].into_iter());
+        assert!(under.online);
+        assert_eq!(under.last_seen_secs, Some(PRESENCE_TTL_SECS - 1));
     }
 }

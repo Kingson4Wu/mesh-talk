@@ -66,6 +66,62 @@ fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, file: &TrustFile) {
     config_store::save(app, TRUST_FILE, "trust table", file);
 }
 
+/// Pure TOFU evaluation over the trust table. On first sight of `account_id`, pins
+/// `current_fingerprint` as the first-seen value (mutating `file`) and returns
+/// `known: false`. On a known account, reports `fingerprint_changed` against the pinned
+/// value without ever overwriting it. Returns `(info, pinned_now)` where `pinned_now` is
+/// true exactly when this call performed the first-sight pin (so the caller can persist).
+fn evaluate(
+    file: &mut TrustFile,
+    account_id: String,
+    current_fingerprint: String,
+) -> (TrustInfo, bool) {
+    match file.contacts.get(&account_id).cloned() {
+        Some(rec) => (
+            TrustInfo {
+                account_id,
+                fingerprint_changed: rec.first_seen_fingerprint != current_fingerprint,
+                first_seen_fingerprint: rec.first_seen_fingerprint,
+                verified: rec.verified,
+                known: true,
+            },
+            false,
+        ),
+        None => {
+            // First use: pin the current fingerprint.
+            file.contacts.insert(
+                account_id.clone(),
+                TrustRecord {
+                    first_seen_fingerprint: current_fingerprint.clone(),
+                    verified: false,
+                },
+            );
+            (
+                TrustInfo {
+                    account_id,
+                    first_seen_fingerprint: current_fingerprint,
+                    verified: false,
+                    fingerprint_changed: false,
+                    // Brand-new contact: no record existed before this call.
+                    known: false,
+                },
+                true,
+            )
+        }
+    }
+}
+
+/// Pure: (re-)pin `fingerprint` as the trusted first-seen value and mark verified.
+fn set_verified(file: &mut TrustFile, account_id: String, fingerprint: String) {
+    file.contacts.insert(
+        account_id,
+        TrustRecord {
+            first_seen_fingerprint: fingerprint,
+            verified: true,
+        },
+    );
+}
+
 /// Fetch trust state for a contact account, given its CURRENT device fingerprint.
 ///
 /// TOFU: if we have never seen this account, we pin `current_fingerprint` as the
@@ -79,35 +135,13 @@ pub fn get_trust(
     current_fingerprint: String,
 ) -> Result<TrustInfo, CommandError> {
     let mut file = state.0.lock().unwrap();
-    match file.contacts.get(&account_id).cloned() {
-        Some(rec) => Ok(TrustInfo {
-            account_id,
-            fingerprint_changed: rec.first_seen_fingerprint != current_fingerprint,
-            first_seen_fingerprint: rec.first_seen_fingerprint,
-            verified: rec.verified,
-            known: true,
-        }),
-        None => {
-            // First use: pin the current fingerprint.
-            file.contacts.insert(
-                account_id.clone(),
-                TrustRecord {
-                    first_seen_fingerprint: current_fingerprint.clone(),
-                    verified: false,
-                },
-            );
-            let snapshot = file.clone();
-            drop(file);
-            save(&app, &snapshot);
-            Ok(TrustInfo {
-                account_id,
-                first_seen_fingerprint: current_fingerprint,
-                verified: false,
-                fingerprint_changed: false,
-                known: true,
-            })
-        }
+    let (info, pinned_now) = evaluate(&mut file, account_id, current_fingerprint);
+    if pinned_now {
+        let snapshot = file.clone();
+        drop(file);
+        save(&app, &snapshot);
     }
+    Ok(info)
 }
 
 /// Mark a contact verified. The user is asserting they compared the safety number
@@ -122,15 +156,77 @@ pub fn mark_verified(
 ) -> Result<(), CommandError> {
     let snapshot = {
         let mut file = state.0.lock().unwrap();
-        file.contacts.insert(
-            account_id,
-            TrustRecord {
-                first_seen_fingerprint: fingerprint,
-                verified: true,
-            },
-        );
+        set_verified(&mut file, account_id, fingerprint);
         file.clone()
     };
     save(&app, &snapshot);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_sight_pins_fingerprint_and_is_unknown() {
+        let mut file = TrustFile::default();
+        let (info, pinned) = evaluate(&mut file, "acct".into(), "fp1".into());
+        assert!(pinned);
+        assert!(!info.known); // brand-new contact (documented behavior)
+        assert!(!info.verified);
+        assert!(!info.fingerprint_changed);
+        assert_eq!(info.first_seen_fingerprint, "fp1");
+        // The fingerprint is now pinned in the table.
+        assert_eq!(
+            file.contacts.get("acct").unwrap().first_seen_fingerprint,
+            "fp1"
+        );
+    }
+
+    #[test]
+    fn second_sight_same_fingerprint_is_known_unchanged() {
+        let mut file = TrustFile::default();
+        evaluate(&mut file, "acct".into(), "fp1".into());
+        let (info, pinned) = evaluate(&mut file, "acct".into(), "fp1".into());
+        assert!(!pinned);
+        assert!(info.known);
+        assert!(!info.fingerprint_changed);
+        assert_eq!(info.first_seen_fingerprint, "fp1");
+    }
+
+    #[test]
+    fn second_sight_different_fingerprint_flags_change_keeps_pin() {
+        let mut file = TrustFile::default();
+        evaluate(&mut file, "acct".into(), "fp1".into());
+        let (info, pinned) = evaluate(&mut file, "acct".into(), "fp2".into());
+        assert!(!pinned);
+        assert!(info.known);
+        assert!(info.fingerprint_changed);
+        // The pinned first-seen value is never silently overwritten.
+        assert_eq!(info.first_seen_fingerprint, "fp1");
+        assert_eq!(
+            file.contacts.get("acct").unwrap().first_seen_fingerprint,
+            "fp1"
+        );
+    }
+
+    #[test]
+    fn mark_verified_then_evaluate_reports_verified() {
+        let mut file = TrustFile::default();
+        set_verified(&mut file, "acct".into(), "fp1".into());
+        let (info, pinned) = evaluate(&mut file, "acct".into(), "fp1".into());
+        assert!(!pinned);
+        assert!(info.known);
+        assert!(info.verified);
+    }
+
+    #[test]
+    fn verified_persists_across_reevaluate_same_fingerprint() {
+        let mut file = TrustFile::default();
+        set_verified(&mut file, "acct".into(), "fp1".into());
+        evaluate(&mut file, "acct".into(), "fp1".into());
+        let (info, _) = evaluate(&mut file, "acct".into(), "fp1".into());
+        assert!(info.verified);
+        assert!(!info.fingerprint_changed);
+    }
 }

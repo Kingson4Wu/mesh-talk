@@ -18,7 +18,7 @@ test:
 # by default (real UDP-multicast discovery + node cold starts), so run them explicitly here. Serial
 # (--test-threads=1) to avoid discovery-port / CPU contention between the heavy processes.
 e2e:
-	nice -n 10 cargo test -p mesh-talk-core --test two_node_cli --test persistent_history --test post_office_offline -- --ignored --test-threads=1
+	nice -n 10 cargo test -p mesh-talk-core --test two_node_cli --test persistent_history --test post_office_offline --test channel_and_file_cli -- --ignored --test-threads=1
 
 clean:
 	cd src-tauri && cargo clean

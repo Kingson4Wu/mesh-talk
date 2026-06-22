@@ -1,7 +1,10 @@
 //! `mesh-talk-node`: a thin CLI over the `node` API — loads a
 //! persistent identity, runs signed-announce LAN discovery and a TCP listener,
-//! and drives 1:1 DMs from a line-based REPL (`/peers`, `/msg <prefix> <text>`,
-//! `/quit`), printing inbound DMs as they arrive.
+//! and drives 1:1 DMs, channels, and file transfers from a line-based REPL
+//! (`/peers`, `/msg <prefix> <text>`, `/history <prefix>`,
+//! `/channel-new <name> <member-prefix>`, `/channel-msg <chan-id-prefix> <text>`,
+//! `/sendfile <peer-prefix> <path>`, `/quit`), printing inbound DMs, channel
+//! messages, and files as they arrive.
 
 use clap::Parser;
 use mesh_talk_core::discovery::{Announce, PeerRecord, Roster, UserId};
@@ -113,9 +116,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shared roster (discovery writes it; the node + REPL read it) and the node.
     let roster: Arc<Mutex<Roster>> = Arc::new(Mutex::new(Roster::default()));
     let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<ReceivedDm>();
-    let (channel_tx, _channel_rx) =
+    let (channel_tx, mut channel_rx) =
         mpsc::unbounded_channel::<mesh_talk_core::node::ReceivedChannelMessage>();
-    let (file_tx, _file_rx) = mpsc::unbounded_channel::<mesh_talk_core::node::ReceivedFile>();
+    let (file_tx, mut file_rx) = mpsc::unbounded_channel::<mesh_talk_core::node::ReceivedFile>();
     // Derive log paths from the keystore path (sibling files, same directory).
     let keystore_path = std::path::Path::new(&args.keystore);
     let data_dir = keystore_path.parent().unwrap_or(std::path::Path::new("."));
@@ -155,6 +158,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             emit(&format!("from {} ({}): {}", dm.from, dm.from_name, text));
         }
     });
+
+    // Print inbound channel messages as they arrive.
+    tokio::spawn(async move {
+        while let Some(m) = channel_rx.recv().await {
+            // Channel messages are text-only in this CLI; lossy decode is safe here.
+            let text = String::from_utf8_lossy(&m.text);
+            emit(&format!(
+                "channel {} from {}: {}",
+                hex::encode(m.channel_id.as_bytes()),
+                m.from,
+                text
+            ));
+        }
+    });
+
+    // Print inbound files as they arrive, saving them into the node's data dir.
+    {
+        let node = Arc::clone(&node);
+        let data_dir = data_dir.to_path_buf();
+        tokio::spawn(async move {
+            while let Some(f) = file_rx.recv().await {
+                // Save into a trusted dir; the manifest name is never trusted to escape it.
+                match node.save_file_into_dir(f.file_conv, &data_dir) {
+                    Ok(path) => emit(&format!(
+                        "file from {}: {} ({} bytes) saved {}",
+                        f.from,
+                        f.name,
+                        f.size,
+                        path.display()
+                    )),
+                    Err(e) => emit(&format!(
+                        "file from {}: {} ({} bytes) save failed: {e}",
+                        f.from, f.name, f.size
+                    )),
+                }
+            }
+        });
+    }
 
     // Periodically pull DMs held for us by the elected post office (delivered
     // while we were offline / unreachable). Runs once now, then every interval.
@@ -199,8 +240,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handle_history(&node, &roster, rest);
         } else if line == "/history" {
             emit("usage: /history <user_id-prefix> [n]");
+        } else if let Some(rest) = line.strip_prefix("/channel-new ") {
+            handle_channel_new(&node, &roster, rest);
+        } else if let Some(rest) = line.strip_prefix("/channel-msg ") {
+            handle_channel_msg(&node, rest);
+        } else if let Some(rest) = line.strip_prefix("/sendfile ") {
+            handle_sendfile(&node, &roster, rest);
         } else if !line.is_empty() {
-            emit("commands: /peers, /msg <user_id-prefix> <text>, /history <user_id-prefix> [n], /quit");
+            emit("commands: /peers, /msg <user_id-prefix> <text>, /history <user_id-prefix> [n], /channel-new <name> <member-prefix>, /channel-msg <chan-id-prefix> <text>, /sendfile <peer-prefix> <path>, /quit");
         }
     }
     Ok(())
@@ -339,6 +386,114 @@ fn handle_history(node: &Arc<Node>, roster: &Arc<Mutex<Roster>>, rest: &str) {
     for e in entries {
         let text = String::from_utf8_lossy(&e.text);
         emit(&format!("[{}] {}: {text}", e.wall_clock, e.who));
+    }
+}
+
+/// Parse and dispatch `/channel-new <name> <member-prefix>`: resolve one peer to
+/// include as a member, create the channel (the creator is added automatically),
+/// then print the new channel id (hex). Runs on a spawned task (create distributes
+/// sender keys to members over the network).
+fn handle_channel_new(node: &Arc<Node>, roster: &Arc<Mutex<Roster>>, rest: &str) {
+    let mut parts = rest.split_whitespace();
+    let name = parts.next().unwrap_or("").to_string();
+    let prefix = parts.next().unwrap_or("").to_string();
+    if name.is_empty() || prefix.is_empty() {
+        emit("usage: /channel-new <name> <member-prefix>");
+        return;
+    }
+    // Resolve the member under the roster lock, then DROP it before the async call
+    // (the node locks the roster again; std Mutex is not reentrant).
+    let member = {
+        let roster = roster.lock().expect("roster mutex not poisoned");
+        let peers = roster.peers();
+        match resolve_recipient(&peers, &prefix) {
+            Ok(uid) => roster.get(&uid).map(|p| p.public.clone()),
+            Err(ResolveError::NotFound) => {
+                emit(&format!("no peer matches prefix '{prefix}'"));
+                return;
+            }
+            Err(ResolveError::Ambiguous(n)) => {
+                emit(&format!("'{prefix}' matches {n} peers; be more specific"));
+                return;
+            }
+        }
+    };
+    let Some(member) = member else {
+        emit("peer vanished from roster");
+        return;
+    };
+    let node = Arc::clone(node);
+    tokio::spawn(async move {
+        match node.create_channel(&name, vec![member]).await {
+            Ok(id) => emit(&format!("channel {} created", hex::encode(id.as_bytes()))),
+            Err(e) => emit(&format!("channel create failed: {e}")),
+        }
+    });
+}
+
+/// Parse and dispatch `/channel-msg <chan-id-prefix> <text>`: resolve the channel by a
+/// hex-id prefix against the node's known channels, then send the message on a spawned
+/// task so the REPL stays responsive while distribution runs.
+fn handle_channel_msg(node: &Arc<Node>, rest: &str) {
+    let mut parts = rest.splitn(2, ' ');
+    let prefix = parts.next().unwrap_or("").trim().to_string();
+    let text = parts.next().unwrap_or("").to_string();
+    if prefix.is_empty() || text.is_empty() {
+        emit("usage: /channel-msg <chan-id-prefix> <text>");
+        return;
+    }
+    let matches: Vec<_> = node
+        .list_channels()
+        .into_iter()
+        .filter(|c| hex::encode(c.id.as_bytes()).starts_with(&prefix))
+        .map(|c| c.id)
+        .collect();
+    let channel = match matches.len() {
+        0 => {
+            emit(&format!("no channel matches prefix '{prefix}'"));
+            return;
+        }
+        1 => matches[0],
+        n => {
+            emit(&format!(
+                "'{prefix}' matches {n} channels; be more specific"
+            ));
+            return;
+        }
+    };
+    let node = Arc::clone(node);
+    tokio::spawn(async move {
+        if let Err(e) = node.send_channel_message(channel, text.as_bytes()).await {
+            emit(&format!("channel send failed: {e}"));
+        }
+    });
+}
+
+/// Parse and dispatch `/sendfile <peer-prefix> <path>`: resolve the recipient and send
+/// the file at `path` on a spawned task (streamed seal + dial + sync round).
+fn handle_sendfile(node: &Arc<Node>, roster: &Arc<Mutex<Roster>>, rest: &str) {
+    let mut parts = rest.splitn(2, ' ');
+    let prefix = parts.next().unwrap_or("").trim().to_string();
+    let path = parts.next().unwrap_or("").trim().to_string();
+    if prefix.is_empty() || path.is_empty() {
+        emit("usage: /sendfile <peer-prefix> <path>");
+        return;
+    }
+    let peers = roster.lock().expect("roster mutex not poisoned").peers();
+    match resolve_recipient(&peers, &prefix) {
+        Ok(uid) => {
+            let node = Arc::clone(node);
+            tokio::spawn(async move {
+                match node.send_file_dm(&uid, std::path::Path::new(&path)).await {
+                    Ok(_) => emit(&format!("file sent to {uid}")),
+                    Err(e) => emit(&format!("file send failed: {e}")),
+                }
+            });
+        }
+        Err(ResolveError::NotFound) => emit(&format!("no peer matches prefix '{prefix}'")),
+        Err(ResolveError::Ambiguous(n)) => {
+            emit(&format!("'{prefix}' matches {n} peers; be more specific"))
+        }
     }
 }
 
