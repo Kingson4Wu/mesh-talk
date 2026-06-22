@@ -811,6 +811,9 @@ async fn adding_a_channel_member_lets_them_receive_new_messages() {
     let bob = DeviceIdentity::generate();
     let carol = DeviceIdentity::generate();
     let bob_pub = bob.public();
+    // A second copy of Bob's public for the later non-owner add-member attempt (the first
+    // is moved into Alice's create_channel call).
+    let bob_pub2 = bob.public();
     let carol_pub = carol.public();
     let alice_uid = alice.public().user_id();
     let bob_uid = bob.public().user_id();
@@ -931,6 +934,45 @@ async fn adding_a_channel_member_lets_them_receive_new_messages() {
     assert!(
         c_ch_r.try_recv().is_err(),
         "carol must not receive the pre-join epoch-0 message"
+    );
+
+    // Owner-only membership: Bob is a member but NOT the owner. His attempts to change
+    // membership are refused locally (and would be ignored by every node anyway).
+    let bob_remove = bob_node.remove_channel_member(channel, &carol_uid).await;
+    assert!(
+        matches!(bob_remove, Err(NodeError::Channel(_))),
+        "a non-owner member cannot remove anyone"
+    );
+    let bob_add = bob_node.add_channel_member(channel, bob_pub2).await;
+    assert!(
+        matches!(bob_add, Err(NodeError::Channel(_))),
+        "a non-owner member cannot add anyone"
+    );
+    // Carol is still a member of the channel on every node (Bob's kick was a no-op).
+    for node in [&alice_node, &bob_node, &carol_node] {
+        assert!(
+            node.channel_members(channel)
+                .iter()
+                .any(|m| m.user_id() == carol_uid),
+            "the victim must remain a member after a non-owner's kick attempt",
+        );
+    }
+    // The owner reaches everyone via channel_owner: it is Alice on every node.
+    for node in [&alice_node, &bob_node, &carol_node] {
+        assert_eq!(node.channel_owner(channel), alice_uid);
+    }
+
+    // The OWNER can remove Carol and it converges (legit owner-authored change).
+    alice_node
+        .remove_channel_member(channel, &carol_uid)
+        .await
+        .unwrap();
+    assert!(
+        !alice_node
+            .channel_members(channel)
+            .iter()
+            .any(|m| m.user_id() == carol_uid),
+        "the owner can remove a member",
     );
 }
 

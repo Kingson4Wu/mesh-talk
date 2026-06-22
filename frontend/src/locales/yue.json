@@ -271,7 +271,8 @@
     "trigger": "成員",
     "title": "成員",
     "description": "呢個頻道入面所有人。",
-    "addPeer": "加個對方"
+    "addPeer": "加個對方",
+    "owner": "群主"
   },
   "createChannel": {
     "trigger": "開新頻道",

@@ -422,6 +422,11 @@ impl NodeRuntime {
         self.node.channel_members(channel)
     }
 
+    /// The owner (creator) of a channel — the only principal allowed to change membership.
+    pub fn channel_owner(&self, channel: crate::eventlog::event::ConversationId) -> String {
+        self.node.channel_owner(channel)
+    }
+
     /// History of a channel (all senders).
     pub fn channel_history(
         &self,

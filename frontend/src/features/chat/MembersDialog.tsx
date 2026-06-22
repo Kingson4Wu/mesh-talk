@@ -25,6 +25,7 @@ export function MembersDialog() {
   const { t } = useTranslation();
   const motionOK = useMotionOK();
   const members = useChat((s) => s.members);
+  const channelOwner = useChat((s) => s.channelOwner);
   const peers = useChat((s) => s.peers);
   const myId = useChat((s) => s.myId);
   const myAccountId = useChat((s) => s.myAccountId);
@@ -40,6 +41,9 @@ export function MembersDialog() {
 
   const memberIds = new Set(members.map((m) => m.user_id));
   const addable = peers.filter((p) => !memberIds.has(p.user_id));
+  // Only the channel owner may change membership — the core enforces this (a non-owner's
+  // add/remove is rejected by every node), so a non-owner only ever sees a read-only list.
+  const isOwner = channelOwner !== "" && channelOwner === myId;
 
   // A member's account id (and so its presence) comes from the discovery roster.
   const accountOf = (userId: string) =>
@@ -85,6 +89,7 @@ export function MembersDialog() {
               ? SELF_ONLINE
               : statusFor(accountOf(m.user_id));
             const crestId = isSelf ? myAccountId || m.user_id : m.user_id;
+            const memberIsOwner = m.user_id === channelOwner;
             return (
               <motion.div
                 key={m.user_id}
@@ -99,22 +104,33 @@ export function MembersDialog() {
                     variant="compact"
                   />
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                  title={t("common.remove")}
-                  aria-label={t("common.remove")}
-                  onClick={() => removeMember(m.user_id)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
+                {memberIsOwner && (
+                  <span
+                    className="shrink-0 rounded-full bg-signal/15 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-signal"
+                    data-testid="member-owner-badge"
+                  >
+                    {t("members.owner")}
+                  </span>
+                )}
+                {/* Only the owner may remove members — the core rejects a non-owner's kick. */}
+                {isOwner && !memberIsOwner && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                    title={t("common.remove")}
+                    aria-label={t("common.remove")}
+                    onClick={() => removeMember(m.user_id)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
               </motion.div>
             );
           })}
         </motion.div>
 
-        {addable.length > 0 && (
+        {isOwner && addable.length > 0 && (
           <div className="space-y-1.5">
             <div className="font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               {t("members.addPeer")}

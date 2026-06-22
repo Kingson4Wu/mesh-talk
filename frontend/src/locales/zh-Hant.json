@@ -271,7 +271,8 @@
     "trigger": "成員",
     "title": "成員",
     "description": "此頻道中的所有成員。",
-    "addPeer": "新增對方"
+    "addPeer": "新增對方",
+    "owner": "群主"
   },
   "createChannel": {
     "trigger": "新增頻道",

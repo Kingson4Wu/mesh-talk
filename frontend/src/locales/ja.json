@@ -271,7 +271,8 @@
     "trigger": "メンバー",
     "title": "メンバー",
     "description": "このチャンネルの全員。",
-    "addPeer": "相手を追加"
+    "addPeer": "相手を追加",
+    "owner": "オーナー"
   },
   "createChannel": {
     "trigger": "新しいチャンネル",

@@ -102,6 +102,15 @@ pub struct ChannelMemberInfo {
     pub name: String,
 }
 
+/// A channel's membership plus its owner. The owner is the only principal allowed to
+/// change membership (enforced in core); the UI uses it to show the owner badge and to
+/// reveal the add/remove controls only to the owner.
+#[derive(Serialize)]
+pub struct ChannelMembersInfo {
+    pub owner: String,
+    pub members: Vec<ChannelMemberInfo>,
+}
+
 #[tauri::command]
 pub async fn my_id(state: tauri::State<'_, NodeState>) -> Result<String, CommandError> {
     let guard = state.0.lock().await;
@@ -373,7 +382,7 @@ pub async fn list_channels(
 pub async fn channel_members(
     state: tauri::State<'_, NodeState>,
     channel_id: String,
-) -> Result<Vec<ChannelMemberInfo>, CommandError> {
+) -> Result<ChannelMembersInfo, CommandError> {
     let channel = parse_channel_id(&channel_id)?;
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
@@ -387,7 +396,7 @@ pub async fn channel_members(
     // We are never in our own discovery roster, so add ourselves explicitly — otherwise
     // the self member falls back to its raw user_id (hex) instead of our display name.
     names.insert(rt.user_id().to_string(), rt.display_name().to_string());
-    Ok(rt
+    let members = rt
         .channel_members(channel)
         .into_iter()
         .map(|p| {
@@ -398,7 +407,11 @@ pub async fn channel_members(
                 .unwrap_or_else(|| user_id.clone());
             ChannelMemberInfo { user_id, name }
         })
-        .collect())
+        .collect();
+    Ok(ChannelMembersInfo {
+        owner: rt.channel_owner(channel),
+        members,
+    })
 }
 
 #[tauri::command]

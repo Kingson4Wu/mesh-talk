@@ -458,6 +458,15 @@ impl Node {
             .unwrap_or_default()
     }
 
+    /// The owner (creator) of `channel` — the only principal allowed to change
+    /// membership. Empty if the channel is unknown.
+    pub fn channel_owner(&self, channel: ConversationId) -> String {
+        let book = self.channels.lock().expect("channels mutex not poisoned");
+        book.state(&channel)
+            .map(|s| s.owner().to_string())
+            .unwrap_or_default()
+    }
+
     /// Append a channel event, sequencing it from the channel's log position. Returns
     /// the event's `seq` (its position in our own per-author chain), used to index the
     /// sent sidecar for channel history.

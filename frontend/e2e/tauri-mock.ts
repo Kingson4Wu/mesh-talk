@@ -265,7 +265,12 @@ export const test = base.extend({
           list_peers: () => peers,
           list_accounts: () => accounts,
           list_channels: () => channels,
-          channel_members: () => channelMembers,
+          // The test user (SELF) is the channel owner, so the member-management controls
+          // (add/remove) stay visible to the existing e2e flow.
+          channel_members: () => ({
+            owner: SELF.device,
+            members: channelMembers,
+          }),
 
           // history
           history: (a) => msgs[`dm:${a.peer}`] ?? [],

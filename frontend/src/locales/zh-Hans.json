@@ -271,7 +271,8 @@
     "trigger": "成员",
     "title": "成员",
     "description": "此频道中的所有成员。",
-    "addPeer": "添加对端"
+    "addPeer": "添加对端",
+    "owner": "群主"
   },
   "createChannel": {
     "trigger": "新建频道",

@@ -211,6 +211,8 @@ interface ChatState {
   // Not read by any component selector — purely internal LRU bookkeeping.
   cacheOrder: string[];
   members: ChannelMemberInfo[];
+  // The active channel's owner (device user_id). Only the owner may change membership.
+  channelOwner: string;
   incomingFiles: IncomingFile[];
   // Per-contact UI prefs (pin + custom alias), keyed by account_id/channel_id. Persisted
   // on the Rust side; mirrored here so the sidebar can sort/rename without a roundtrip.
@@ -253,6 +255,7 @@ export const useChat = create<ChatState>((set, get) => ({
   unread: {},
   cacheOrder: [],
   members: [],
+  channelOwner: "",
   incomingFiles: [],
   favorites: NO_FAVORITES,
   loading: false,
@@ -357,6 +360,7 @@ export const useChat = create<ChatState>((set, get) => ({
       unread: {},
       cacheOrder: [],
       members: [],
+      channelOwner: "",
       incomingFiles: [],
       favorites: NO_FAVORITES,
     });
@@ -416,6 +420,7 @@ export const useChat = create<ChatState>((set, get) => ({
         active: c,
         unread: { ...s.unread, [key]: 0 },
         members: [],
+        channelOwner: "",
         messages: trimmed.messages,
         reactions: trimmed.reactions,
         cacheOrder: trimmed.order,
@@ -424,7 +429,8 @@ export const useChat = create<ChatState>((set, get) => ({
     await get().reload();
     if (c.kind === "channel") {
       try {
-        set({ members: await chat.channelMembers(c.id) });
+        const info = await chat.channelMembers(c.id);
+        set({ members: info.members, channelOwner: info.owner });
       } catch {
         /* ignore */
       }
@@ -550,7 +556,8 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!c || c.kind !== "channel") return;
     try {
       await chat.addChannelMember(c.id, memberId);
-      set({ members: await chat.channelMembers(c.id) });
+      const info = await chat.channelMembers(c.id);
+      set({ members: info.members, channelOwner: info.owner });
       void get().refreshRoster();
     } catch (e) {
       set({ error: `Couldn't add member: ${errorMessage(e)}` });
@@ -562,7 +569,8 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!c || c.kind !== "channel") return;
     try {
       await chat.removeChannelMember(c.id, memberId);
-      set({ members: await chat.channelMembers(c.id) });
+      const info = await chat.channelMembers(c.id);
+      set({ members: info.members, channelOwner: info.owner });
       void get().refreshRoster();
     } catch (e) {
       set({ error: `Couldn't remove member: ${errorMessage(e)}` });

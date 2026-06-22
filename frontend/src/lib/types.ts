@@ -57,6 +57,14 @@ export interface ChannelMemberInfo {
   name: string;
 }
 
+// A channel's membership plus its owner. The owner is the only principal allowed to
+// change membership (enforced in core) — the UI shows the owner badge and reveals the
+// add/remove controls only to the owner.
+export interface ChannelMembersInfo {
+  owner: string;
+  members: ChannelMemberInfo[];
+}
+
 export interface AccountInfo {
   account_id: string;
   device_count: number;

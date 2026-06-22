@@ -271,7 +271,8 @@
     "trigger": "Members",
     "title": "Members",
     "description": "Everyone in this channel.",
-    "addPeer": "Add a peer"
+    "addPeer": "Add a peer",
+    "owner": "Owner"
   },
   "createChannel": {
     "trigger": "New channel",

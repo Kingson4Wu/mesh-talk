@@ -271,7 +271,8 @@
     "trigger": "Miembros",
     "title": "Miembros",
     "description": "Todos los del canal.",
-    "addPeer": "Añadir un contacto"
+    "addPeer": "Añadir un contacto",
+    "owner": "Propietario"
   },
   "createChannel": {
     "trigger": "Nuevo canal",

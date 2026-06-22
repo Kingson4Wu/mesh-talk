@@ -8,7 +8,7 @@ import type {
   AccountInfo,
   AppSettings,
   ChannelInfo,
-  ChannelMemberInfo,
+  ChannelMembersInfo,
   DiagNetworkInfo,
   DiagPeerInfo,
   EnvInfo,
@@ -87,7 +87,7 @@ export const chat = {
   createChannel: (name: string, memberIds: string[]) =>
     invoke<string>("create_channel", { name, memberIds }),
   channelMembers: (channelId: string) =>
-    invoke<ChannelMemberInfo[]>("channel_members", { channelId }),
+    invoke<ChannelMembersInfo>("channel_members", { channelId }),
   addChannelMember: (channelId: string, memberId: string) =>
     invoke<void>("add_channel_member", { channelId, memberId }),
   removeChannelMember: (channelId: string, memberId: string) =>

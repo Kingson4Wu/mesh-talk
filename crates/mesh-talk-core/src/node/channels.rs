@@ -33,7 +33,8 @@ impl Node {
         mut members: Vec<PublicIdentity>,
     ) -> Result<ConversationId, NodeError> {
         let me = self.identity.public();
-        if !members.iter().any(|m| m.user_id() == me.user_id()) {
+        let owner = me.user_id();
+        if !members.iter().any(|m| m.user_id() == owner) {
             members.push(me);
         }
         let members = canonical_members(members);
@@ -42,6 +43,9 @@ impl Node {
             name: name.to_string(),
             members: members.clone(),
             epoch: 0,
+            // The creator is the channel owner — the only principal allowed to change
+            // membership thereafter. Immutable for the life of the channel.
+            owner: owner.clone(),
         };
 
         self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
@@ -107,7 +111,7 @@ impl Node {
         channel: ConversationId,
         new_member: PublicIdentity,
     ) -> Result<(), NodeError> {
-        let (name, mut new_members, new_epoch) = {
+        let (name, mut new_members, new_epoch, owner) = {
             let book = self.channels.lock().expect("channels mutex not poisoned");
             let state = book
                 .state(&channel)
@@ -116,8 +120,16 @@ impl Node {
                 state.name().to_string(),
                 state.members().to_vec(),
                 state.epoch() + 1,
+                state.owner().to_string(),
             )
         };
+        // Only the owner may change membership — a non-owner's event would be rejected by
+        // every node's `process`, so refuse it locally too (no useless event/epoch bump).
+        if self.user_id() != owner {
+            return Err(NodeError::Channel(
+                "only the channel owner can change membership".into(),
+            ));
+        }
         // Already a member → no-op. Don't bump the epoch / force a re-key for nothing.
         if new_members
             .iter()
@@ -131,6 +143,7 @@ impl Node {
             name,
             members: new_members.clone(),
             epoch: new_epoch,
+            owner,
         };
         self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
         self.process_channel(channel);
@@ -148,7 +161,7 @@ impl Node {
         channel: ConversationId,
         member_user_id: &str,
     ) -> Result<(), NodeError> {
-        let (name, mut new_members, new_epoch) = {
+        let (name, mut new_members, new_epoch, owner) = {
             let book = self.channels.lock().expect("channels mutex not poisoned");
             let state = book
                 .state(&channel)
@@ -157,8 +170,16 @@ impl Node {
                 state.name().to_string(),
                 state.members().to_vec(),
                 state.epoch() + 1,
+                state.owner().to_string(),
             )
         };
+        // Only the owner may change membership — reject a non-owner's removal locally
+        // (every node would reject the resulting event anyway).
+        if self.user_id() != owner {
+            return Err(NodeError::Channel(
+                "only the channel owner can change membership".into(),
+            ));
+        }
         // Not a member → no-op (don't bump the epoch / re-key for nothing).
         if !new_members.iter().any(|m| m.user_id() == member_user_id) {
             return Ok(());
@@ -175,6 +196,7 @@ impl Node {
             name,
             members: new_members.clone(),
             epoch: new_epoch,
+            owner,
         };
         self.append_event(channel, EventKind::MembershipChange, meta.encode())?;
         self.process_channel(channel);

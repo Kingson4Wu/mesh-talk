@@ -25,6 +25,12 @@ pub struct ChannelMeta {
     pub name: String,
     pub members: Vec<PublicIdentity>,
     pub epoch: u64,
+    /// The channel owner's device `user_id` (the creator). The owner is the ONLY
+    /// principal allowed to change membership: every node accepts a `MembershipChange`
+    /// only when its event author equals this `owner` (see `ChannelBook::process`), so a
+    /// non-owner cannot add/remove members on any node. Fixed at genesis — a later
+    /// snapshot that names a different owner is rejected (no ownership hijack).
+    pub owner: String,
 }
 
 impl ChannelMeta {
@@ -93,6 +99,7 @@ pub struct ChannelState {
     name: String,
     members: Vec<PublicIdentity>,
     epoch: u64,
+    owner: String,
     my_user_id: Option<String>,
     my_sender: HashMap<u64, SenderKey>,
     sender_chains: HashMap<(String, u64), SenderChain>,
@@ -106,6 +113,7 @@ impl ChannelState {
             name: meta.name,
             members: meta.members,
             epoch: meta.epoch,
+            owner: meta.owner,
             my_user_id: None,
             my_sender: HashMap::new(),
             sender_chains: HashMap::new(),
@@ -115,8 +123,18 @@ impl ChannelState {
     /// Adopt a (possibly newer) membership snapshot: if it advances the epoch, take
     /// its name/members/epoch. Older or equal snapshots are ignored — idempotent
     /// replay regardless of event arrival order.
+    ///
+    /// Owner authorization is enforced at the call site in `ChannelBook::process`
+    /// (the event author must equal the owner). This snapshot's `owner` is additionally
+    /// pinned to the genesis owner: a snapshot naming a DIFFERENT owner is rejected here
+    /// outright, so even an owner-authored event cannot reassign ownership and a higher
+    /// epoch can never hijack the channel.
     pub fn apply_meta(&mut self, meta: ChannelMeta) {
         use std::cmp::Ordering;
+        // Owner is immutable: never adopt a snapshot that renames the owner.
+        if meta.owner != self.owner {
+            return;
+        }
         let take = match meta.epoch.cmp(&self.epoch) {
             Ordering::Greater => true,
             // Two concurrent membership changes can mint the SAME epoch with different
@@ -128,6 +146,7 @@ impl ChannelState {
                     name: self.name.clone(),
                     members: self.members.clone(),
                     epoch: self.epoch,
+                    owner: self.owner.clone(),
                 };
                 meta.encode() > current.encode()
             }
@@ -148,6 +167,10 @@ impl ChannelState {
     }
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+    /// The channel owner's device `user_id` — the only principal allowed to change membership.
+    pub fn owner(&self) -> &str {
+        &self.owner
     }
     pub fn members(&self) -> &[PublicIdentity] {
         &self.members
@@ -263,10 +286,16 @@ mod tests {
     use crate::identity::device::DeviceIdentity;
 
     fn meta(name: &str, members: &[&DeviceIdentity], epoch: u64) -> ChannelMeta {
+        // The first member is treated as the owner for these state-level tests.
+        let owner = members
+            .first()
+            .map(|d| d.public().user_id())
+            .unwrap_or_default();
         ChannelMeta {
             name: name.to_string(),
             members: members.iter().map(|d| d.public()).collect(),
             epoch,
+            owner,
         }
     }
 
@@ -331,6 +360,29 @@ mod tests {
         let m1: Vec<String> = s1.members().iter().map(|p| p.user_id()).collect();
         let m2: Vec<String> = s2.members().iter().map(|p| p.user_id()).collect();
         assert_eq!(m1, m2, "concurrent same-epoch membership must converge");
+    }
+
+    #[test]
+    fn apply_meta_rejects_owner_change_even_at_higher_epoch() {
+        // The owner is pinned at genesis. A snapshot naming a DIFFERENT owner — even at a
+        // higher epoch — must be ignored, so ownership cannot be hijacked.
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let id = new_channel_id();
+        let mut state = ChannelState::from_meta(id, meta("general", &[&a, &b], 0));
+        assert_eq!(state.owner(), a.public().user_id());
+
+        // b tries to seize ownership at a higher epoch.
+        let hijack = ChannelMeta {
+            name: "general".into(),
+            members: vec![b.public()],
+            epoch: 99,
+            owner: b.public().user_id(),
+        };
+        state.apply_meta(hijack);
+        assert_eq!(state.epoch(), 0, "owner-changing snapshot must be ignored");
+        assert_eq!(state.owner(), a.public().user_id());
+        assert!(state.is_member(&a.public().user_id()));
     }
 
     // --- sender-key path ---
