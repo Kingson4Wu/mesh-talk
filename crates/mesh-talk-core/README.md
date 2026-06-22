@@ -1,6 +1,6 @@
 # mesh-talk-core
 
-The UI-free protocol core of [Mesh-Talk](https://github.com/Kingson4Wu/mesh-talk) — a
+The UI-free protocol core of [Mesh-Talk](https://github.com/OctopusGarage/mesh-talk) — a
 **serverless, end-to-end-encrypted, LAN-first messenger**. This crate is the foundation an
 SDK is built on: it has **no UI and no Tauri dependency**, so it can be embedded in a CLI,
 a daemon, a desktop shell (as the Mesh-Talk app does), or any other Rust program.
@@ -36,7 +36,7 @@ This crate is not published to crates.io; depend on it by git (or path, within t
 
 ```toml
 [dependencies]
-mesh-talk-core = { git = "https://github.com/Kingson4Wu/mesh-talk" }
+mesh-talk-core = { git = "https://github.com/OctopusGarage/mesh-talk" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -132,7 +132,7 @@ This is research-grade software; it has not had an independent security audit.
 
 ## License
 
-MIT. Part of the [Mesh-Talk](https://github.com/Kingson4Wu/mesh-talk) workspace; see
+MIT. Part of the [Mesh-Talk](https://github.com/OctopusGarage/mesh-talk) workspace; see
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for the full design.
 
 [`identity`]: src/identity

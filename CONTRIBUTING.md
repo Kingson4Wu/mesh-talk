@@ -8,7 +8,7 @@ the GUI. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
 ## Development setup
 
 ```bash
-git clone https://github.com/Kingson4Wu/mesh-talk.git
+git clone https://github.com/OctopusGarage/mesh-talk.git
 cd mesh-talk
 make dev            # installs Rust + Node deps and sets up git hooks
 ```
@@ -93,6 +93,6 @@ discovery, reconnection) should mirror the docs under `specifications/`.
 
 ## Reporting issues
 
-- 🐛 [Report a bug](https://github.com/Kingson4Wu/mesh-talk/issues/new?template=bug_report.yml)
-- ✨ [Request a feature](https://github.com/Kingson4Wu/mesh-talk/issues/new?template=feature_request.yml)
+- 🐛 [Report a bug](https://github.com/OctopusGarage/mesh-talk/issues/new?template=bug_report.yml)
+- ✨ [Request a feature](https://github.com/OctopusGarage/mesh-talk/issues/new?template=feature_request.yml)
 - 🔒 Security: see [`SECURITY.md`](SECURITY.md) — do **not** open a public issue.

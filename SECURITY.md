@@ -4,7 +4,7 @@
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Use [GitHub Private Vulnerability Reporting](https://github.com/Kingson4Wu/mesh-talk/security/advisories/new)
+Use [GitHub Private Vulnerability Reporting](https://github.com/OctopusGarage/mesh-talk/security/advisories/new)
 to submit a report privately. We will acknowledge the report within 7 days and
 keep you informed as we work on a fix.
 
@@ -67,12 +67,12 @@ the SBOM, then verify:
    cosign verify-blob \
      --bundle "mesh-talk_<ver>_<os>_<arch>.zip.bundle" \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     --certificate-identity-regexp '^https://github.com/Kingson4Wu/mesh-talk/.github/workflows/release.yml@.*$' \
+     --certificate-identity-regexp '^https://github.com/OctopusGarage/mesh-talk/.github/workflows/release.yml@.*$' \
      "mesh-talk_<ver>_<os>_<arch>.zip"
    ```
 3. **SLSA build provenance** (GitHub-native attestation of where/how it was built):
    ```bash
-   gh attestation verify "mesh-talk_<ver>_<os>_<arch>.zip" --repo Kingson4Wu/mesh-talk
+   gh attestation verify "mesh-talk_<ver>_<os>_<arch>.zip" --repo OctopusGarage/mesh-talk
    ```
 4. **SBOM** — a CycloneDX `mesh-talk.cdx.json` (full dependency inventory) is attached to
    each tagged release for auditing the supply chain.

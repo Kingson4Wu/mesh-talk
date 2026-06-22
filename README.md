@@ -2,23 +2,23 @@
 
 # Mesh-Talk
 
-[![CI](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml)
-[![UI E2E](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-ui.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-ui.yml)
-[![Backend E2E](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-backend.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-backend.yml)
-[![Sanitizers](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/sanitizers.yml)
-[![Fuzz](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml)
-[![Mutants](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml)
-[![Gitleaks](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml)
-[![Scorecard](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/scorecard.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/scorecard.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Kingson4Wu/mesh-talk/badge)](https://scorecard.dev/viewer/?uri=github.com/Kingson4Wu/mesh-talk)
-[![codecov](https://codecov.io/gh/Kingson4Wu/mesh-talk/branch/main/graph/badge.svg)](https://codecov.io/gh/Kingson4Wu/mesh-talk)
+[![CI](https://github.com/OctopusGarage/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/ci.yml)
+[![UI E2E](https://github.com/OctopusGarage/mesh-talk/actions/workflows/e2e-ui.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/e2e-ui.yml)
+[![Backend E2E](https://github.com/OctopusGarage/mesh-talk/actions/workflows/e2e-backend.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/e2e-backend.yml)
+[![Sanitizers](https://github.com/OctopusGarage/mesh-talk/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/sanitizers.yml)
+[![Fuzz](https://github.com/OctopusGarage/mesh-talk/actions/workflows/fuzz.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/fuzz.yml)
+[![Mutants](https://github.com/OctopusGarage/mesh-talk/actions/workflows/mutants.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/mutants.yml)
+[![Gitleaks](https://github.com/OctopusGarage/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/gitleaks.yml)
+[![Scorecard](https://github.com/OctopusGarage/mesh-talk/actions/workflows/scorecard.yml/badge.svg)](https://github.com/OctopusGarage/mesh-talk/actions/workflows/scorecard.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/OctopusGarage/mesh-talk/badge)](https://scorecard.dev/viewer/?uri=github.com/OctopusGarage/mesh-talk)
+[![codecov](https://codecov.io/gh/OctopusGarage/mesh-talk/branch/main/graph/badge.svg)](https://codecov.io/gh/OctopusGarage/mesh-talk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#build-from-source)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/Kingson4Wu/mesh-talk)
-[![Release](https://img.shields.io/github/v/release/Kingson4Wu/mesh-talk?sort=semver)](https://github.com/Kingson4Wu/mesh-talk/releases)
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/OctopusGarage/mesh-talk)
+[![Release](https://img.shields.io/github/v/release/OctopusGarage/mesh-talk?sort=semver)](https://github.com/OctopusGarage/mesh-talk/releases)
 
 **A serverless, end-to-end-encrypted messenger for your local network.** Mesh-Talk peers find
 each other on the LAN and talk directly — no account, no cloud, no server in the middle. Your
@@ -29,9 +29,9 @@ messages and files never leave the network, and they stay encrypted the whole wa
   ·
   <a href="docs/ARCHITECTURE.md">Architecture</a>
   ·
-  <a href="https://github.com/Kingson4Wu/mesh-talk/issues/new?template=bug_report.yml">Report Bug</a>
+  <a href="https://github.com/OctopusGarage/mesh-talk/issues/new?template=bug_report.yml">Report Bug</a>
   ·
-  <a href="https://github.com/Kingson4Wu/mesh-talk/issues/new?template=feature_request.yml">Request Feature</a>
+  <a href="https://github.com/OctopusGarage/mesh-talk/issues/new?template=feature_request.yml">Request Feature</a>
 </p>
 
 ---
@@ -90,7 +90,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 ## Download & first run
 
-Grab the `.zip` for your OS/arch from the [**Releases**](https://github.com/Kingson4Wu/mesh-talk/releases)
+Grab the `.zip` for your OS/arch from the [**Releases**](https://github.com/OctopusGarage/mesh-talk/releases)
 page (e.g. `mesh-talk_vX.Y.Z_macos_arm64.zip`) and **unzip it** — inside are the installer(s) for
 your platform plus a `SHA256SUMS` file. The builds are **free and unsigned** (no paid Apple/Windows
 code-signing certificate), so macOS and Windows show a one-time "unidentified developer" /
@@ -131,7 +131,7 @@ Windows); Linux is always prompt-free.
 ### Desktop app
 
 ```bash
-git clone https://github.com/Kingson4Wu/mesh-talk.git
+git clone https://github.com/OctopusGarage/mesh-talk.git
 cd mesh-talk
 make dev          # install Rust + Node deps + git hooks (first run is slow)
 make tauri-dev    # run the app in dev mode (hot-reload frontend)

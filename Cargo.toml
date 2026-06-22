@@ -12,7 +12,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/Kingson4Wu/mesh-talk"
+repository = "https://github.com/OctopusGarage/mesh-talk"
 
 # Lint guardrails shared by both crates (each opts in with `[lints] workspace = true`).
 # These are enforced by `cargo clippy` locally (make lint / pre-commit) and in CI.

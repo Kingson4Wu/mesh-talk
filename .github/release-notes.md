@@ -31,14 +31,14 @@ independently verifiable. Replace `<os>_<arch>` with your platform (e.g. `macos_
 ```sh
 cosign verify-blob \
   --bundle mesh-talk___TAG___<os>_<arch>.zip.bundle \
-  --certificate-identity-regexp 'https://github.com/Kingson4Wu/mesh-talk/.*' \
+  --certificate-identity-regexp 'https://github.com/OctopusGarage/mesh-talk/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   mesh-talk___TAG___<os>_<arch>.zip
 ```
 
 **3. SLSA build provenance** (proves it was built by this repo's CI from tag `__TAG__`):
 ```sh
-gh attestation verify mesh-talk___TAG___<os>_<arch>.zip --repo Kingson4Wu/mesh-talk
+gh attestation verify mesh-talk___TAG___<os>_<arch>.zip --repo OctopusGarage/mesh-talk
 ```
 
 **4. SBOM** — `mesh-talk.cdx.json` is the full CycloneDX dependency inventory for auditing.
@@ -67,6 +67,6 @@ mesh-talk-node --post-office
 
 The post office only ever stores **ciphertext** — it cannot read messages.
 
-Full documentation: [README](https://github.com/Kingson4Wu/mesh-talk#readme) ·
-[ARCHITECTURE](https://github.com/Kingson4Wu/mesh-talk/blob/main/docs/ARCHITECTURE.md) ·
-[SECURITY](https://github.com/Kingson4Wu/mesh-talk/blob/main/SECURITY.md)
+Full documentation: [README](https://github.com/OctopusGarage/mesh-talk#readme) ·
+[ARCHITECTURE](https://github.com/OctopusGarage/mesh-talk/blob/main/docs/ARCHITECTURE.md) ·
+[SECURITY](https://github.com/OctopusGarage/mesh-talk/blob/main/SECURITY.md)

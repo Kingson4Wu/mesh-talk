@@ -14,8 +14,9 @@ import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { obs } from "@/lib/api";
 
-const REPO_URL = "https://github.com/Kingson4Wu/mesh-talk";
-const LICENSE_URL = "https://github.com/Kingson4Wu/mesh-talk/blob/main/LICENSE";
+const REPO_URL = "https://github.com/OctopusGarage/mesh-talk";
+const LICENSE_URL =
+  "https://github.com/OctopusGarage/mesh-talk/blob/main/LICENSE";
 
 /** A minimal About surface: app name + version, one-line description, source/license
  * links, and a shortcut into the Diagnostics dialog. Version comes from `env_info`. */
