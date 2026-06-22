@@ -137,6 +137,19 @@
     background: transparent;
   }
 
+  /* macOS overlay title bar (tauri `titleBarStyle: "Overlay"`): the native traffic-lights
+     float over the top-left of our content. `data-os="macos"` is set on <html> only inside
+     the Tauri webview on a Mac (see lib/platform.ts), so Windows/Linux/browser get nothing.
+     Push the sidebar header's content down/right so the self-identity crest clears the
+     red/yellow/green buttons (~x 12–76, y ~8–28). The conversation header sits to the right
+     of the sidebar, so it only needs the matching top offset for visual alignment. */
+  html[data-os="macos"] [data-titlebar-inset] {
+    padding-top: 1.75rem;
+  }
+  html[data-os="macos"] [data-titlebar-inset="left"] {
+    padding-left: 4.75rem;
+  }
+
   /* Respect the OS "reduce motion" preference: neutralize animations & transitions
      globally (covers Radix/shadcn dialog/popover enter-exit animations, spinners,
      hover transitions, smooth scrolling, and the presence breathing pulse). JS-driven

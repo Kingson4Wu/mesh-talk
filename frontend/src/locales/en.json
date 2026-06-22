@@ -65,7 +65,9 @@
     "signOut": "Sign out",
     "lightMode": "Light mode",
     "darkMode": "Dark mode",
-    "toggleTheme": "Toggle theme"
+    "toggleTheme": "Toggle theme",
+    "moreActions": "More",
+    "resize": "Resize sidebar"
   },
   "conversation": {
     "noneSelectedTitle": "No conversation selected",

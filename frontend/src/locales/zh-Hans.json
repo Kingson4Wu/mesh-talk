@@ -65,7 +65,9 @@
     "signOut": "退出登录",
     "lightMode": "浅色模式",
     "darkMode": "深色模式",
-    "toggleTheme": "切换主题"
+    "toggleTheme": "切换主题",
+    "moreActions": "更多",
+    "resize": "调整侧边栏宽度"
   },
   "conversation": {
     "noneSelectedTitle": "未选择会话",

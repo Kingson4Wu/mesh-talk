@@ -65,7 +65,9 @@
     "signOut": "登出",
     "lightMode": "淺色模式",
     "darkMode": "深色模式",
-    "toggleTheme": "切換主題"
+    "toggleTheme": "切換主題",
+    "moreActions": "更多",
+    "resize": "調整側邊欄闊度"
   },
   "conversation": {
     "noneSelectedTitle": "仲未揀對話",

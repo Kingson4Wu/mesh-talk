@@ -65,7 +65,9 @@
     "signOut": "Cerrar sesión",
     "lightMode": "Modo claro",
     "darkMode": "Modo oscuro",
-    "toggleTheme": "Cambiar tema"
+    "toggleTheme": "Cambiar tema",
+    "moreActions": "Más",
+    "resize": "Redimensionar barra lateral"
   },
   "conversation": {
     "noneSelectedTitle": "Ninguna conversación seleccionada",

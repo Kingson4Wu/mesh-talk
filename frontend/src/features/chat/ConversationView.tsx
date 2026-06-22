@@ -341,6 +341,8 @@ export function ConversationView() {
       )}
       <header
         data-testid="conversation-header"
+        data-tauri-drag-region
+        data-titlebar-inset
         className="flex items-center gap-3 border-b px-5 py-3"
       >
         {isChannel ? (

@@ -222,6 +222,7 @@ test.describe("Mesh-Talk UI flow", () => {
 
   test("Files tray opens", async ({ page }) => {
     await enterChat(page);
+    await page.getByTestId("sidebar-overflow").click();
     await page.getByTestId("sidebar-action-files").click();
     await expect(page.getByTestId("files-tray")).toBeVisible();
     await expect(page.getByText("Nothing received yet.")).toBeVisible();
@@ -244,6 +245,7 @@ test.describe("Mesh-Talk UI flow", () => {
     // App boots dark.
     await expect(page.locator("html")).toHaveClass(/dark/);
 
+    await page.getByTestId("sidebar-overflow").click();
     await page.getByTestId("sidebar-action-settings").click();
     await expect(page.getByTestId("settings-dialog")).toBeVisible();
     const theme = page.getByTestId("settings-theme-select");
@@ -260,6 +262,7 @@ test.describe("Mesh-Talk UI flow", () => {
     await enterChat(page);
     await expect(page.getByText("Direct messages")).toBeVisible();
 
+    await page.getByTestId("sidebar-overflow").click();
     await page.getByTestId("sidebar-action-settings").click();
     const lang = page.getByTestId("settings-language-select");
     await lang.selectOption("zh-Hans");
@@ -274,6 +277,7 @@ test.describe("Mesh-Talk UI flow", () => {
     page,
   }) => {
     await enterChat(page);
+    await page.getByTestId("sidebar-overflow").click();
     await page.getByTestId("sidebar-action-diagnostics").click();
     await expect(page.getByTestId("diagnostics-dialog")).toBeVisible();
     // Overview (default tab) shows the environment facts.
@@ -299,6 +303,7 @@ test.describe("Mesh-Talk UI flow", () => {
 
   test("Link-device dialog opens", async ({ page }) => {
     await enterChat(page);
+    await page.getByTestId("sidebar-overflow").click();
     await page.getByTestId("sidebar-action-link").click();
     await expect(page.getByTestId("link-device-dialog")).toBeVisible();
     await expect(page.getByText("Add another of your devices")).toBeVisible();
@@ -340,6 +345,7 @@ test.describe("Mesh-Talk UI flow", () => {
 
   test("sign out returns to the login screen", async ({ page }) => {
     await enterChat(page);
+    await page.getByTestId("sidebar-overflow").click();
     await page.getByTestId("sidebar-sign-out").click();
     await expect(page.getByTestId("login-form")).toBeVisible();
     await expect(page.getByTestId("login-submit")).toBeVisible();

@@ -1,5 +1,14 @@
-import { useMemo, useRef, useState } from "react";
-import { LogOut, Moon, Network, Pencil, Pin, PinOff, Sun } from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  LogOut,
+  MoreHorizontal,
+  Moon,
+  Network,
+  Pencil,
+  Pin,
+  PinOff,
+  Sun,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +19,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   AvatarEditMenu,
   IdentityGlyph,
@@ -184,6 +198,149 @@ function SectionLabel({
   );
 }
 
+// Sidebar width: user-resizable via the right-edge drag handle, persisted to localStorage,
+// clamped to a sensible range, double-click to reset. Default mirrors the old `w-72`.
+const WIDTH_KEY = "mesh-talk-sidebar-width";
+const DEFAULT_WIDTH = 288; // w-72
+const MIN_WIDTH = 230;
+const MAX_WIDTH = 460;
+
+const clampWidth = (w: number) =>
+  Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(w)));
+
+function readWidth(): number {
+  if (typeof localStorage === "undefined") return DEFAULT_WIDTH;
+  const v = Number(localStorage.getItem(WIDTH_KEY));
+  return Number.isFinite(v) && v > 0 ? clampWidth(v) : DEFAULT_WIDTH;
+}
+
+function useSidebarWidth() {
+  const [width, setWidth] = useState(readWidth);
+  const dragging = useRef(false);
+
+  const persist = useCallback((w: number) => {
+    setWidth(w);
+    if (typeof localStorage !== "undefined")
+      localStorage.setItem(WIDTH_KEY, String(w));
+  }, []);
+
+  // Drag-to-resize: track pointer moves on the document so the cursor can leave the thin
+  // handle without dropping the drag. Width = pointer x relative to the sidebar's left edge.
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      dragging.current = true;
+      const aside = (e.currentTarget as HTMLElement).parentElement;
+      const left = aside?.getBoundingClientRect().left ?? 0;
+      const prevCursor = document.body.style.cursor;
+      const prevSelect = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      const onMove = (ev: PointerEvent) => {
+        if (!dragging.current) return;
+        persist(clampWidth(ev.clientX - left));
+      };
+      const onUp = () => {
+        dragging.current = false;
+        document.body.style.cursor = prevCursor;
+        document.body.style.userSelect = prevSelect;
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [persist],
+  );
+
+  const reset = useCallback(() => persist(DEFAULT_WIDTH), [persist]);
+
+  // Keyboard resize for accessibility (focus the handle, arrow to nudge).
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "ArrowLeft") persist(clampWidth(width - 16));
+      else if (e.key === "ArrowRight") persist(clampWidth(width + 16));
+      else return;
+      e.preventDefault();
+    },
+    [persist, width],
+  );
+
+  return { width, onPointerDown, reset, onKeyDown };
+}
+
+/** A tidy popover collecting the secondary/utility actions (files, link-device,
+ *  diagnostics, settings, about, theme toggle, sign-out). Keeps the top clean; the
+ *  primary Search stays up top. Each action keeps its existing `data-testid`. */
+function UtilityMenu() {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const theme = useTheme((s) => s.theme);
+  const toggleTheme = useTheme((s) => s.toggle);
+  const logout = useAuth((s) => s.logout);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="sidebar-overflow"
+          title={t("sidebar.moreActions")}
+          aria-label={t("sidebar.moreActions")}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="top"
+        className="w-auto p-1.5"
+        data-testid="sidebar-overflow-menu"
+      >
+        {/* The dialog/popover trigger buttons keep their own testids + render their own
+            icon and open their dialog; collected here as a quiet utility toolbar. */}
+        <div className="grid gap-0.5">
+          <div className="flex items-center gap-0.5">
+            <FilesTray />
+            <LinkDeviceDialog />
+            <DiagnosticsDialog />
+            <SettingsDialog />
+            <AboutDialog />
+          </div>
+          <div className="my-1 h-px bg-border" />
+          <button
+            type="button"
+            data-testid="sidebar-theme-toggle"
+            onClick={() => toggleTheme()}
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+          >
+            {theme === "light" ? (
+              <Moon className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <Sun className="h-4 w-4 text-muted-foreground" />
+            )}
+            <span>
+              {theme === "light"
+                ? t("sidebar.darkMode")
+                : t("sidebar.lightMode")}
+            </span>
+          </button>
+          <button
+            type="button"
+            data-testid="sidebar-sign-out"
+            onClick={() => logout()}
+            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-destructive/10"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>{t("sidebar.signOut")}</span>
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function Sidebar() {
   const { t } = useTranslation();
   const accounts = useChat((s) => s.accounts);
@@ -197,9 +354,7 @@ export function Sidebar() {
   const bootFailed = useChat((s) => s.bootFailed);
   const retryBoot = useChat((s) => s.retryBoot);
   const username = useAuth((s) => s.user?.username ?? "");
-  const logout = useAuth((s) => s.logout);
-  const theme = useTheme((s) => s.theme);
-  const toggleTheme = useTheme((s) => s.toggle);
+  const { width, onPointerDown, reset, onKeyDown } = useSidebarWidth();
 
   // Inline rename dialog state (a contact id + a draft alias). Kept local/primitive.
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -293,11 +448,19 @@ export function Sidebar() {
   return (
     <aside
       data-testid="sidebar"
-      className="flex w-72 shrink-0 flex-col border-r bg-card/40"
+      style={{ width }}
+      className="relative flex shrink-0 flex-col border-r bg-card/40"
     >
-      {/* Identity header — own glyph + name (display) + own short mono id, then a tidy
-          action cluster. The signature is the identity; the controls stay quiet. */}
-      <div className="border-b px-4 py-3" data-testid="self-identity">
+      {/* Identity header — own glyph + name (display) + own short mono id, plus the one
+          primary action (Search). `data-tauri-drag-region` makes the strip a window-drag
+          handle (interactive controls inside opt out via their own pointer handling);
+          `data-titlebar-inset` clears the macOS traffic-lights (no-op elsewhere). */}
+      <div
+        className="border-b px-4 py-3"
+        data-testid="self-identity"
+        data-tauri-drag-region
+        data-titlebar-inset="left"
+      >
         <div className="flex items-center gap-3">
           <div className="relative shrink-0">
             <AvatarEditMenu
@@ -338,39 +501,9 @@ export function Sidebar() {
             </div>
           </div>
         </div>
-        <div className="mt-2.5 flex items-center gap-0.5">
+        {/* Primary action only: Search. Utilities live in the bottom-left overflow menu. */}
+        <div className="mt-2.5 flex items-center">
           <SearchDialog />
-          <FilesTray />
-          <LinkDeviceDialog />
-          <DiagnosticsDialog />
-          <SettingsDialog />
-          <AboutDialog />
-          <div className="flex-1" />
-          <Button
-            variant="ghost"
-            size="icon"
-            data-testid="sidebar-theme-toggle"
-            title={
-              theme === "light" ? t("sidebar.darkMode") : t("sidebar.lightMode")
-            }
-            aria-label={t("sidebar.toggleTheme")}
-            onClick={() => toggleTheme()}
-          >
-            {theme === "light" ? (
-              <Moon className="h-4 w-4" />
-            ) : (
-              <Sun className="h-4 w-4" />
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            data-testid="sidebar-sign-out"
-            title={t("sidebar.signOut")}
-            onClick={() => logout()}
-          >
-            <LogOut className="h-4 w-4" />
-          </Button>
         </div>
       </div>
 
@@ -448,14 +581,40 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="flex items-center gap-2 border-t px-4 py-2 text-xs text-muted-foreground">
-        <Network className="h-3.5 w-3.5 text-signal" />
-        <span className="flex-1">
+      {/* Bottom-left footer: the utility overflow menu (settings/diagnostics/etc.) sits
+          first so the top stays clean, then the LAN status + brand mark. */}
+      <div className="flex items-center gap-1.5 border-t px-2 py-2 text-xs text-muted-foreground">
+        <UtilityMenu />
+        <Network className="h-3.5 w-3.5 shrink-0 text-signal" />
+        <span className="flex-1 truncate">
           {t("sidebar.contactsOnLan", { count: accounts.length })}
         </span>
         {/* App brand mark — quiet, in the status footer (distinct from the user's
             IdentityGlyph in the header above). */}
-        <Logo size={16} className="opacity-80" title="Mesh-Talk" />
+        <Logo
+          size={16}
+          className="mr-1.5 shrink-0 opacity-80"
+          title="Mesh-Talk"
+        />
+      </div>
+
+      {/* Right-edge resize handle: drag to resize (persisted), double-click to reset. The
+          hit area is a few px wide; a hairline highlights in the signal accent on hover. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t("sidebar.resize")}
+        tabIndex={0}
+        data-testid="sidebar-resize-handle"
+        onPointerDown={onPointerDown}
+        onDoubleClick={reset}
+        onKeyDown={onKeyDown}
+        className="group absolute inset-y-0 right-0 z-20 w-1.5 translate-x-1/2 cursor-col-resize outline-none"
+      >
+        <span
+          aria-hidden
+          className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-signal group-focus-visible:bg-signal"
+        />
       </div>
 
       <Dialog

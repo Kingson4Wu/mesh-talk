@@ -65,7 +65,9 @@
     "signOut": "サインアウト",
     "lightMode": "ライトモード",
     "darkMode": "ダークモード",
-    "toggleTheme": "テーマを切り替え"
+    "toggleTheme": "テーマを切り替え",
+    "moreActions": "その他",
+    "resize": "サイドバーをリサイズ"
   },
   "conversation": {
     "noneSelectedTitle": "会話が選択されていません",
