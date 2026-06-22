@@ -16,6 +16,7 @@ pub(crate) mod dm_ratchet;
 pub(crate) mod filebook;
 pub(crate) mod files;
 pub(crate) mod linking;
+pub(crate) mod media_store;
 pub(crate) mod message;
 pub(crate) mod node;
 pub(crate) mod pairing;

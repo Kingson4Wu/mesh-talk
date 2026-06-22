@@ -264,6 +264,10 @@ impl Node {
                     .lock()
                     .expect("pending_files mutex not poisoned")
                     .insert(fc);
+            } else {
+                // All chunks already arrived with the manifest (the push landed): if this is
+                // a media file, persist it into the durable store now (and prune its chunks).
+                self.persist_media_if_complete(fc);
             }
             let _ = self.file_incoming.send(rf);
         }
@@ -295,24 +299,31 @@ impl Node {
                 .collect()
         };
         for fc in pending {
-            // Already complete (e.g. the push did land, or a prior tick finished it)? Drop it.
+            // Already complete (e.g. the push did land, or a prior tick finished it)? Persist
+            // media (no-op for attachments / already-stored) and drop it from the pending set.
             if matches!(self.file_progress(fc), Some(p) if p.done >= p.total) {
-                self.pending_files
-                    .lock()
-                    .expect("pending_files mutex not poisoned")
-                    .remove(&fc);
+                if !self.persist_media_if_complete(fc) {
+                    self.pending_files
+                        .lock()
+                        .expect("pending_files mutex not poisoned")
+                        .remove(&fc);
+                }
                 continue;
             }
             for peer in &peers {
                 if let Ok(mut channel) = dial(peer.addr, &self.identity, Some(&peer.public)).await {
                     let _ = request_round(&mut channel, &self.log, fc).await;
                 }
-                // Stop dialing more peers the moment this file is whole.
+                // Stop dialing more peers the moment this file is whole. Persist media into
+                // the durable store (which also prunes its chunks + clears it from pending);
+                // an attachment just drops out of the pending set.
                 if matches!(self.file_progress(fc), Some(p) if p.done >= p.total) {
-                    self.pending_files
-                        .lock()
-                        .expect("pending_files mutex not poisoned")
-                        .remove(&fc);
+                    if !self.persist_media_if_complete(fc) {
+                        self.pending_files
+                            .lock()
+                            .expect("pending_files mutex not poisoned")
+                            .remove(&fc);
+                    }
                     break;
                 }
             }
@@ -397,6 +408,8 @@ impl Node {
             if request_round(&mut channel, &self.log, fc).await.is_err() {
                 return;
             }
+            // Drained all chunks for a media file from the PO? Persist it durably + prune.
+            self.persist_media_if_complete(fc);
         }
     }
 

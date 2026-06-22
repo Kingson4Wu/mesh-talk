@@ -58,14 +58,23 @@ export function useFileObjectUrl(
     if (!enabled) return;
     let alive = true;
     let objectUrl: string | null = null;
+    const show = (buf: ArrayBuffer) => {
+      if (!alive) return;
+      objectUrl = URL.createObjectURL(new Blob([buf]));
+      setUrl(objectUrl);
+    };
+    // Load from the DURABLE chat-media store first (survives chunk prune + restart); fall
+    // back to reassembling the transient chunks only if the store has no copy yet (a
+    // just-arrived media file before its receive-complete persist, or legacy history).
     chat
-      .readFile(fileConv)
-      .then((buf) => {
-        if (!alive) return;
-        objectUrl = URL.createObjectURL(new Blob([buf]));
-        setUrl(objectUrl);
-      })
-      .catch(() => {});
+      .readMedia(fileConv)
+      .then(show)
+      .catch(() =>
+        chat
+          .readFile(fileConv)
+          .then(show)
+          .catch(() => {}),
+      );
     return () => {
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);

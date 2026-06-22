@@ -241,6 +241,16 @@ impl Node {
             });
         }
 
+        // MEDIA vs ATTACHMENT split (storage side): an image/screenshot/video is ALSO copied
+        // into the durable chat-media store keyed by its file_conv, so the inline preview
+        // loads from there (surviving chunk prune + restart) instead of the transient chunks.
+        // A generic attachment is NOT written here — it keeps the chunks + manual-save flow.
+        if crate::node::media_store::is_media_name(&name) {
+            // Best-effort: a media-store write failure must not fail the send (the chunked
+            // transfer is the source of truth on the wire); we just lose the durable preview.
+            let _ = self.media.store_from_path(file_conv, &name, path);
+        }
+
         let manifest = FileManifestV2 {
             name,
             size,
@@ -304,6 +314,63 @@ impl Node {
         let mut files = self.files.lock().expect("files mutex not poisoned");
         files.mark_emitted(event_id);
         files.record(AnyManifest::V2(manifest.clone()));
+    }
+
+    /// Read durable chat-media bytes for `file_conv` from the media store, for inline
+    /// display. Returns `None` if no media is stored (e.g. a generic attachment, or media
+    /// not yet received-complete). This is the DURABLE display path — distinct from
+    /// [`Node::read_file`], which reassembles the transient chunks (gone after prune).
+    pub fn read_media(&self, file_conv: ConversationId) -> Option<Vec<u8>> {
+        self.media.read(file_conv)
+    }
+
+    /// Whether durable media bytes for `file_conv` exist (drives the UI's store-vs-chunk
+    /// fallback). True only for media files that have been received-complete (or sent).
+    pub fn has_media(&self, file_conv: ConversationId) -> bool {
+        self.media.contains(file_conv)
+    }
+
+    /// Receive-complete persist for MEDIA: if `file_conv` is a media file (image/video by
+    /// name) we hold ALL chunks of but haven't yet copied into the durable media store,
+    /// reassemble + verify it (`read_file`) and write the bytes into the store. After this
+    /// the media is durable, so its transient chunks are safe to prune. A no-op for a
+    /// generic attachment (never stored), an incomplete file, or one already stored.
+    /// Returns true iff it newly persisted media. Best-effort — failures are swallowed and
+    /// retried on the next sync tick.
+    pub(in crate::node) fn persist_media_if_complete(&self, file_conv: ConversationId) -> bool {
+        // Resolve the (manifest) name to decide media-vs-attachment + skip if already stored.
+        let name = {
+            let files = self.files.lock().expect("files mutex not poisoned");
+            match files.manifest(&file_conv) {
+                Some(m) => m.name().to_string(),
+                None => return false,
+            }
+        };
+        if !crate::node::media_store::is_media_name(&name) {
+            return false; // generic attachment — never written to the media store
+        }
+        if self.media.contains(file_conv) {
+            return false; // already durable
+        }
+        // Need all chunks present; `read_file` enforces completeness + verifies integrity.
+        match self.read_file(file_conv) {
+            Ok(bytes) => {
+                if self.media.store_bytes(file_conv, &name, &bytes).is_ok() {
+                    // The durable media copy now exists, so the transient chunks are
+                    // reclaimable — mirror save_file's prune (history still shows the bubble
+                    // from the FileBook + received_files; the preview loads from the store).
+                    self.prune_file_chunks(file_conv);
+                    self.pending_files
+                        .lock()
+                        .expect("pending_files mutex not poisoned")
+                        .remove(&file_conv);
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false, // not all chunks yet (or verify failed) — retry next tick
+        }
     }
 
     /// How many chunks of `file_conv` we hold vs. how many the manifest expects.

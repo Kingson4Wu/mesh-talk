@@ -1053,6 +1053,150 @@ async fn list_channels_reports_created_channels() {
     assert_eq!(channels[0].member_count, 1); // just the creator
 }
 
+// A sent/received IMAGE is persisted to the durable chat-media store and is readable from
+// THERE after the transient chunks are pruned AND after the node is reopened (durable). A
+// generic (non-media) attachment creates NO media-store entry. This is the storage/display
+// separation: media lives durably in the store; attachments stay chunk+manual-save only.
+#[tokio::test]
+async fn media_lands_in_durable_store_survives_prune_and_restart() {
+    let alice = DeviceIdentity::generate();
+    let bob = DeviceIdentity::generate();
+    // Capture Bob's secret bytes up front (the identity is moved into the node) so the restart
+    // can reopen the SAME device against the same on-disk stores + media dir.
+    let bob_secrets = bob.secret_bytes();
+    let bob_roster_reopen = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
+    let dir = tempfile::tempdir().unwrap();
+    // Per-account dirs (as production does under `accounts/<id>/`), so Alice's send-side media
+    // store doesn't double as Bob's — the receiver must persist its OWN copy independently.
+    let adir = dir.path().join("alice");
+    let bdir = dir.path().join("bob");
+    std::fs::create_dir_all(&adir).unwrap();
+    std::fs::create_dir_all(&bdir).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bob_addr = listener.local_addr().unwrap();
+    let alice_roster = seed_roster(&bob, "Bob", bob_addr.port(), &alice.public().user_id());
+    let bob_roster = seed_roster(&alice, "Alice", 1, &bob.public().user_id());
+
+    let (a_dm, _a_dm_r) = mpsc::unbounded_channel();
+    let (a_ch, _a_ch_r) = mpsc::unbounded_channel();
+    let (a_f, _a_f_r) = mpsc::unbounded_channel();
+    let (b_dm, _b_dm_r) = mpsc::unbounded_channel();
+    let (b_ch, _b_ch_r) = mpsc::unbounded_channel();
+    let (b_f, mut b_f_r) = mpsc::unbounded_channel();
+
+    // Bob's paths live under `bdir`, so reopening with the same paths re-points at the same
+    // `<bdir>/media` store — proving durability across restart.
+    let b_log = bdir.join("b.log");
+    let b_sent = bdir.join("b-sent.log");
+
+    let alice_node = Node::open(
+        alice,
+        alice_roster,
+        a_dm,
+        a_ch,
+        a_f,
+        &adir.join("a.log"),
+        &adir.join("a-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let bob_node = Node::open(bob, bob_roster, b_dm, b_ch, b_f, &b_log, &b_sent, "pw").unwrap();
+    tokio::spawn(Arc::clone(&bob_node).run_accept_loop(listener));
+
+    // A multi-chunk IMAGE payload (the .png extension marks it as media).
+    let payload = vec![0x89u8; crate::file::CHUNK_SIZE + 4242];
+    let src = dir.path().join("shot.png");
+    std::fs::write(&src, &payload).unwrap();
+
+    let bob_uid = bob_node.user_id();
+    let file_conv = alice_node.send_file_dm(&bob_uid, &src).await.unwrap();
+
+    // SENDER: the image was copied into Alice's media store on send, readable from there.
+    assert!(
+        alice_node.has_media(file_conv),
+        "sender persists media on send"
+    );
+    assert_eq!(
+        alice_node.read_media(file_conv).as_deref(),
+        Some(&payload[..]),
+        "sender's stored media matches the source bytes"
+    );
+
+    // RECEIVER: surface the manifest, then let the chunk sync + media persist converge.
+    let rf = tokio::time::timeout(std::time::Duration::from_secs(5), b_f_r.recv())
+        .await
+        .expect("bob received the media file within 5s")
+        .expect("file stream open");
+    assert_eq!(rf.name, "shot.png");
+
+    // The receive-complete persist runs from a background tick in the real runtime; here we
+    // drive it directly (mirroring `pull_pending_files`) after the chunks have synced.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            // Pull any outstanding chunks from Alice, then try to persist the media.
+            bob_node.pull_pending_files().await;
+            if bob_node.persist_media_if_complete(file_conv) || bob_node.has_media(file_conv) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("bob persisted the media within 5s");
+
+    assert!(bob_node.has_media(file_conv));
+    assert_eq!(
+        bob_node.read_media(file_conv).as_deref(),
+        Some(&payload[..]),
+        "receiver's stored media matches"
+    );
+
+    // The transient chunks were pruned once the media was stored — but the durable copy
+    // still reads back (the whole point: display no longer depends on the chunks).
+    assert_eq!(bob_node.file_progress(file_conv).map(|p| p.done), Some(0));
+    assert_eq!(
+        bob_node.read_media(file_conv).as_deref(),
+        Some(&payload[..])
+    );
+
+    // A NON-MEDIA attachment must NOT create a media-store entry (storage-side separation).
+    let doc = dir.path().join("notes.bin");
+    std::fs::write(&doc, vec![0x11u8; 100]).unwrap();
+    let doc_conv = alice_node.send_file_dm(&bob_uid, &doc).await.unwrap();
+    assert!(
+        !alice_node.has_media(doc_conv),
+        "a generic attachment is NOT written to the media store"
+    );
+
+    // RESTART: reopen Bob on the same dir — the media store is on disk, so the image still
+    // reads back even though its chunks are gone and history was reloaded from the logs.
+    drop(bob_node);
+    let (b2_dm, _b2_dm_r) = mpsc::unbounded_channel();
+    let (b2_ch, _b2_ch_r) = mpsc::unbounded_channel();
+    let (b2_f, _b2_f_r) = mpsc::unbounded_channel();
+    let bob_node2 = Node::open(
+        DeviceIdentity::from_secret_bytes(bob_secrets.0, bob_secrets.1),
+        bob_roster_reopen,
+        b2_dm,
+        b2_ch,
+        b2_f,
+        &b_log,
+        &b_sent,
+        "pw",
+    )
+    .unwrap();
+    assert!(
+        bob_node2.has_media(file_conv),
+        "media survives a node restart"
+    );
+    assert_eq!(
+        bob_node2.read_media(file_conv).as_deref(),
+        Some(&payload[..]),
+        "stored media still reads back after restart, with no chunks"
+    );
+}
+
 #[tokio::test]
 async fn two_nodes_transfer_a_file_over_loopback_tcp() {
     let alice = DeviceIdentity::generate();

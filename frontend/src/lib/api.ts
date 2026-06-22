@@ -125,6 +125,10 @@ export const chat = {
     invoke<string>("save_file_to_dir", { fileConv, dir }),
   readFile: (fileConv: string) =>
     invoke<ArrayBuffer>("read_file", { fileConv }),
+  /** Read DURABLE media bytes (image/screenshot/video) from the chat-media store. Survives
+   * chunk prune + restart, unlike readFile (transient chunks). Rejects if none is stored. */
+  readMedia: (fileConv: string) =>
+    invoke<ArrayBuffer>("read_media", { fileConv }),
   /** Write pasted bytes to a temp file and return its path, to feed the file-send pipeline. */
   writeTempFile: (bytes: number[], ext: string) =>
     invoke<string>("write_temp_file", { bytes, ext }),

@@ -335,6 +335,11 @@ export const test = base.extend({
           save_file: ok,
           save_file_to_dir: () => "/home/tester/Downloads/file.bin",
           read_file: () => new ArrayBuffer(0),
+          // The durable chat-media store accessor. The mock has no store, so reject like the
+          // real "no stored media" path → the preview hook falls back to read_file.
+          read_media: () => {
+            throw new Error("no stored media for this file");
+          },
           write_temp_file: () => "/tmp/pasted.png",
           // A deterministic 1x1 PNG (decoded from a fixed base64). Returned as a number[]
           // (the byte array the real command yields) so the screenshot send path flows.

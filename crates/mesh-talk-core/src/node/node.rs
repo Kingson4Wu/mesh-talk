@@ -184,6 +184,11 @@ pub struct Node {
     /// missed push would strand the file at 0 chunks). Cleared once a file completes; not
     /// seeded from saved files (whose chunks are pruned), so we never re-pull a saved file.
     pub(in crate::node) pending_files: Mutex<HashSet<ConversationId>>,
+    /// Durable chat-media store under `<account_dir>/media`: the plaintext bytes of
+    /// image/screenshot/video messages, copied here on send + receive-complete so the
+    /// inline preview loads from a durable source that survives chunk prune + restart.
+    /// SEPARATE from the chunked attachment path (generic files are never written here).
+    pub(in crate::node) media: crate::node::media_store::MediaStore,
     /// Per-peer Double Ratchet sessions (forward-secret DM crypto), encrypted on disk.
     pub(in crate::node) dm_ratchet: Mutex<DmRatchet>,
     /// Decrypted received-message plaintext, for serving history after the wire key is gone.
@@ -360,6 +365,10 @@ impl Node {
                 files.mark_emitted(entry.event_id);
             }
         }
+        // Durable chat-media store under the per-account dir (sibling to the logs). Plaintext
+        // media bytes that survive chunk prune + restart; multi-account safe (per-account dir).
+        let media = crate::node::media_store::MediaStore::open(dir)
+            .map_err(|e| LogError::Io(std::io::Error::other(format!("media store open: {e}"))))?;
         let (profile_tx, profile_rx) = mpsc::unbounded_channel::<ReceivedProfile>();
         Ok(Arc::new(Self {
             identity,
@@ -381,6 +390,7 @@ impl Node {
             file_incoming,
             files: Mutex::new(files),
             pending_files: Mutex::new(HashSet::new()),
+            media,
             dm_ratchet: Mutex::new(dm_ratchet),
             received: Mutex::new(received),
             received_files: Mutex::new(received_files),

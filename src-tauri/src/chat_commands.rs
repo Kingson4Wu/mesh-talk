@@ -791,6 +791,29 @@ pub async fn read_file(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Return DURABLE chat-media bytes (image/screenshot/video) from the media store for inline
+/// preview. Distinct from `read_file`, which reassembles the transient chunks (gone after a
+/// save/prune): media is copied to the store on send + receive-complete, so this survives
+/// prune AND restart. Errors if no media is stored for `file_conv` (caller should not call
+/// it for a generic attachment). Returned as a raw IPC response (ArrayBuffer in JS).
+#[tauri::command]
+pub async fn read_media(
+    state: tauri::State<'_, NodeState>,
+    file_conv: String,
+) -> Result<tauri::ipc::Response, CommandError> {
+    let id = parse_channel_id(&file_conv)?;
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
+        rt.handle()
+    };
+    let bytes = tokio::task::spawn_blocking(move || node.read_media(id))
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+        .ok_or_else(|| CommandError::from("no stored media for this file".to_string()))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub async fn channel_history(
     state: tauri::State<'_, NodeState>,
