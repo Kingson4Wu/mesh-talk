@@ -176,6 +176,41 @@ pub async fn account_id(state: tauri::State<'_, NodeState>) -> Result<String, Co
     Ok(rt.account_id().to_string())
 }
 
+/// Publish (or clear) this user's OWN avatar to peers as a signed profile. Called by the
+/// frontend when the user sets/removes their own photo (the local `avatars.json` mirror is
+/// still written by `set_avatar` so the override-precedence logic is unchanged). `avatar`
+/// is the small data-URL string; `None` clears it (propagates a "no avatar"). The node
+/// bounds the size and signs it with the account key.
+#[tauri::command]
+pub async fn publish_avatar(
+    state: tauri::State<'_, NodeState>,
+    avatar: Option<String>,
+) -> Result<(), CommandError> {
+    let node = {
+        let guard = state.0.lock().await;
+        let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
+        rt.handle()
+    };
+    node.set_avatar(avatar.map(|s| s.into_bytes()))
+        .await
+        .map_err(CommandError::from)
+}
+
+/// Every avatar peers have propagated to us, as `account_id -> data-URL`. The frontend
+/// merges these into its avatars store on startup so received avatars survive a relaunch.
+#[tauri::command]
+pub async fn peer_avatars(
+    state: tauri::State<'_, NodeState>,
+) -> Result<std::collections::HashMap<String, String>, CommandError> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
+    Ok(rt
+        .peer_avatars()
+        .into_iter()
+        .map(|(id, bytes)| (id, String::from_utf8_lossy(&bytes).into_owned()))
+        .collect())
+}
+
 #[tauri::command]
 pub async fn send_to_account(
     state: tauri::State<'_, NodeState>,

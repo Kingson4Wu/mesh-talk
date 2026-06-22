@@ -61,6 +61,33 @@ pub const EVENT_CHANNEL_MESSAGE: &str = "channel-message";
 pub const EVENT_FILE_RECEIVED: &str = "file-received";
 /// Progress of an in-flight file send or save (throttled).
 pub const EVENT_FILE_PROGRESS: &str = "file-progress";
+/// A peer propagated their avatar (a signed profile) to us.
+pub const EVENT_PROFILE_RECEIVED: &str = "profile-received";
+
+#[derive(serde::Serialize, Clone)]
+pub struct ProfileReceivedEvent {
+    /// The sender's account id (the key the UI renders avatars by).
+    pub account_id: String,
+    /// The avatar data-URL, or `None` when the peer cleared their avatar.
+    pub avatar: Option<String>,
+}
+
+/// Emit a received peer profile (avatar update) to the frontend. The avatar bytes are the
+/// data-URL string the sender's UI produced; we pass them through verbatim (lossily UTF-8
+/// decoded — a data-URL is ASCII, so this is lossless in practice).
+pub fn emit_profile_received<R: Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    account_id: String,
+    avatar: Option<Vec<u8>>,
+) {
+    let event = ProfileReceivedEvent {
+        account_id,
+        avatar: avatar.map(|a| String::from_utf8_lossy(&a).into_owned()),
+    };
+    if let Err(e) = app_handle.emit(EVENT_PROFILE_RECEIVED, event) {
+        log::error!("Failed to emit profile event: {e}");
+    }
+}
 
 #[derive(serde::Serialize, Clone)]
 pub struct DmReceivedEvent {

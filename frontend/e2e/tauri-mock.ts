@@ -436,6 +436,9 @@ export const test = base.extend({
             else avatars[id] = String(a.data_url);
             return null;
           },
+          // avatars peers propagated to us (none in the mock); publishing is a no-op
+          peer_avatars: () => ({}),
+          publish_avatar: ok,
 
           // persistent login: no saved session in the mock → show the login screen
           auto_login: () => null,

@@ -109,6 +109,13 @@ impl Account {
         self.public().account_id()
     }
 
+    /// Sign an arbitrary (already domain-separated) message with the account key.
+    /// Used to authenticate account-level artifacts like the profile/avatar so a peer
+    /// device cannot forge another account's profile.
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.signing_key.sign(message).to_bytes()
+    }
+
     /// Certify a device: sign the device's Ed25519 public key with the account key.
     pub fn certify(&self, device_ed25519_pub: &[u8; 32]) -> DeviceCertificate {
         let account_pub = self.public().ed25519_pub;

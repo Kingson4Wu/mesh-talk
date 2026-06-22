@@ -177,11 +177,22 @@ export const favorites = {
 };
 
 export const avatars = {
-  /** Every custom avatar the user has set, as a map of `id -> data-URL`. */
+  /** Every custom avatar the user has set LOCALLY, as a map of `id -> data-URL`. */
   get: () => invoke<Record<string, string>>("get_avatars"),
-  /** Set (data-URL) or clear (null) a custom avatar for an identity by id. */
+  /** Set (data-URL) or clear (null) a LOCAL custom avatar for an identity by id. */
   set: (id: string, dataUrl: string | null) =>
     invoke<void>("set_avatar", { id, dataUrl }),
+  /**
+   * Every avatar peers PROPAGATED to us, as `account_id -> data-URL`. Merged under local
+   * overrides so a received avatar survives a relaunch (the node persists it).
+   */
+  peers: () => invoke<Record<string, string>>("peer_avatars"),
+  /**
+   * Publish (or clear with null) THIS user's own avatar to peers as a signed profile.
+   * Call when the user sets/removes their own photo; contacts then render it.
+   */
+  publish: (dataUrl: string | null) =>
+    invoke<void>("publish_avatar", { avatar: dataUrl }),
 };
 
 export const settings = {

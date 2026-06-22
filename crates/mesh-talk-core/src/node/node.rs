@@ -36,6 +36,15 @@ use tokio::sync::mpsc;
 /// ~9 GB; we cap at a conservative 4 GiB and reject only absurd sizes up front.
 pub(in crate::node) const MAX_FILE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
+/// A peer's avatar, propagated to us via a signed profile and surfaced to the app so the
+/// UI can render it keyed by the sender's ACCOUNT id. `avatar` is `None` when the peer
+/// CLEARED their avatar (the UI reverts that account to its glyph).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceivedProfile {
+    pub account_id: String,
+    pub avatar: Option<Vec<u8>>,
+}
+
 /// A received direct message, surfaced to the application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedDm {
@@ -183,6 +192,23 @@ pub struct Node {
     /// so the file book's emitted set + manifests survive restart without marking
     /// never-opened manifests as emitted (which would lose the file). See `Node::open`.
     pub(in crate::node) received_files: Mutex<ReceivedLog>,
+    /// Avatars peers PROPAGATED to us via signed profiles, keyed by account id (one per
+    /// account, newest-wins, durable). Read by `peer_avatar`/`peer_avatars` and surfaced
+    /// live on `profile_incoming`.
+    pub(in crate::node) profiles: Mutex<crate::node::profile_store::ProfileStore>,
+    /// Live stream of received peer profiles (avatar updates), surfaced to the app. The
+    /// node owns BOTH ends (created in `open_with_account`) so the constructor signature
+    /// is unchanged across its many call sites; the runtime claims the receiver once via
+    /// [`Node::take_profile_receiver`].
+    pub(in crate::node) profile_incoming: mpsc::UnboundedSender<ReceivedProfile>,
+    pub(in crate::node) profile_rx: Mutex<Option<mpsc::UnboundedReceiver<ReceivedProfile>>>,
+    /// Profile events we've already surfaced this session (dedup), so re-syncing a peer's
+    /// device-pair conversation doesn't re-emit a profile we already applied.
+    pub(in crate::node) profiles_emitted: Mutex<HashSet<EventId>>,
+    /// Our OWN current profile (the avatar we last set), held so we can re-publish it to a
+    /// peer the moment it's freshly discovered. `None` until the user sets/clears one this
+    /// session (or it's reloaded on open). Behind a mutex; cheap to clone for a send.
+    pub(in crate::node) my_profile: Mutex<Option<crate::node::profile::ProfilePayload>>,
     /// Own DM reactions: sealed to the peer so un-openable from our own log. Stored in
     /// memory (with the wall-clock we made each at) so `reactions` can merge them and
     /// resolve toggles by recency independent of merge order. Keyed by
@@ -245,29 +271,39 @@ impl Node {
         // Each store does its own slow, CPU-bound password KDF over an independent
         // file. Open them on scoped threads so the KDFs run in parallel: on a
         // multi-core machine the wall-clock cost collapses to roughly one KDF.
-        let (log_res, sent_res, sessions_res, received_res, csenders_res, recv_files_res) =
-            std::thread::scope(|s| {
-                let h_log = s.spawn(|| PersistentEventLog::open(log_path, password));
-                let h_sent = s.spawn(|| SentLog::open(sent_path, password));
-                let h_sess =
-                    s.spawn(|| RatchetSessions::open(&dir.join("ratchet.sessions"), password));
-                let h_recv = s.spawn(|| ReceivedLog::open(&dir.join("received.log"), password));
-                let h_csnd =
-                    s.spawn(|| ChannelSenderStore::open(&dir.join("channel.senders"), password));
-                // Durable record of surfaced file manifests (reuses the ReceivedLog format),
-                // so the file book's emitted set survives restart WITHOUT marking unopened
-                // manifests as emitted — see the seeding below.
-                let h_files =
-                    s.spawn(|| ReceivedLog::open(&dir.join("received_files.log"), password));
-                (
-                    h_log.join(),
-                    h_sent.join(),
-                    h_sess.join(),
-                    h_recv.join(),
-                    h_csnd.join(),
-                    h_files.join(),
-                )
+        let (
+            log_res,
+            sent_res,
+            sessions_res,
+            received_res,
+            csenders_res,
+            recv_files_res,
+            profiles_res,
+        ) = std::thread::scope(|s| {
+            let h_log = s.spawn(|| PersistentEventLog::open(log_path, password));
+            let h_sent = s.spawn(|| SentLog::open(sent_path, password));
+            let h_sess = s.spawn(|| RatchetSessions::open(&dir.join("ratchet.sessions"), password));
+            let h_recv = s.spawn(|| ReceivedLog::open(&dir.join("received.log"), password));
+            let h_csnd =
+                s.spawn(|| ChannelSenderStore::open(&dir.join("channel.senders"), password));
+            // Durable record of surfaced file manifests (reuses the ReceivedLog format),
+            // so the file book's emitted set survives restart WITHOUT marking unopened
+            // manifests as emitted — see the seeding below.
+            let h_files = s.spawn(|| ReceivedLog::open(&dir.join("received_files.log"), password));
+            // Durable store of avatars peers propagated to us (one per account, newest-wins).
+            let h_profiles = s.spawn(|| {
+                crate::node::profile_store::ProfileStore::open(&dir.join("profiles.log"), password)
             });
+            (
+                h_log.join(),
+                h_sent.join(),
+                h_sess.join(),
+                h_recv.join(),
+                h_csnd.join(),
+                h_files.join(),
+                h_profiles.join(),
+            )
+        });
         // A join() error means the opening thread panicked; re-raise the panic so it
         // is not silently swallowed. A normal open failure surfaces as the inner Err.
         let log = log_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
@@ -276,6 +312,7 @@ impl Node {
         let received = received_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let channel_senders = csenders_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let received_files = recv_files_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        let profiles = profiles_res.unwrap_or_else(|e| std::panic::resume_unwind(e))?;
         let dm_ratchet = DmRatchet::new(sessions);
         // Seed `emitted` with the events we have ALREADY recorded to the received store — NOT
         // every id in the log. An event that was ingested durably but never recorded (it
@@ -323,9 +360,15 @@ impl Node {
                 files.mark_emitted(entry.event_id);
             }
         }
+        let (profile_tx, profile_rx) = mpsc::unbounded_channel::<ReceivedProfile>();
         Ok(Arc::new(Self {
             identity,
             account,
+            profiles: Mutex::new(profiles),
+            profile_incoming: profile_tx,
+            profile_rx: Mutex::new(Some(profile_rx)),
+            profiles_emitted: Mutex::new(HashSet::new()),
+            my_profile: Mutex::new(None),
             pending_link: Mutex::new(None),
             log: Mutex::new(log),
             sentlog: Mutex::new(sentlog),
@@ -353,6 +396,33 @@ impl Node {
     /// This node's cryptographic account id (cross-device handle).
     pub fn account_id(&self) -> String {
         self.account.account_id()
+    }
+
+    /// Claim the receiver for live peer-profile (avatar) updates. Returns it once; later
+    /// calls return `None` (the runtime takes it exactly once at startup).
+    pub fn take_profile_receiver(&self) -> Option<mpsc::UnboundedReceiver<ReceivedProfile>> {
+        self.profile_rx
+            .lock()
+            .expect("profile_rx mutex not poisoned")
+            .take()
+    }
+
+    /// The avatar a peer ACCOUNT propagated to us (data-URL bytes), or `None` if unknown
+    /// or cleared. Durable across restart.
+    pub fn peer_avatar(&self, account_id: &str) -> Option<Vec<u8>> {
+        self.profiles
+            .lock()
+            .expect("profiles mutex not poisoned")
+            .avatar(account_id)
+    }
+
+    /// Every peer avatar we hold, as `account_id -> data-URL bytes`. For seeding the UI
+    /// on startup so received avatars survive a relaunch.
+    pub fn peer_avatars(&self) -> HashMap<String, Vec<u8>> {
+        self.profiles
+            .lock()
+            .expect("profiles mutex not poisoned")
+            .all()
     }
 
     /// Summaries of all channels this node is a member of.

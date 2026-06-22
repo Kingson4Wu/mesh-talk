@@ -25,6 +25,11 @@ const DRAIN_INTERVAL_SECS: u64 = 3;
 /// one-shot push is the only other delivery). A no-op when nothing is pending.
 const FILE_PULL_INTERVAL_SECS: u64 = 3;
 
+/// How often the node checks for freshly-discovered peers and re-publishes its current
+/// avatar to them (so a new contact sees the photo without waiting for the next change).
+/// A no-op when no new peers appeared and when we've never set an avatar.
+const PROFILE_REPUBLISH_INTERVAL_SECS: u64 = 3;
+
 /// Errors starting the node runtime.
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -97,6 +102,7 @@ impl NodeRuntime {
         on_dm: impl Fn(ReceivedDm) + Send + 'static,
         on_channel: impl Fn(crate::node::channel::ReceivedChannelMessage) + Send + 'static,
         on_file: impl Fn(crate::node::filebook::ReceivedFile) + Send + 'static,
+        on_profile: impl Fn(crate::node::ReceivedProfile) + Send + 'static,
     ) -> Result<NodeRuntime, RuntimeError> {
         let dir = base_dir.join("accounts").join(account_id);
         std::fs::create_dir_all(&dir)?;
@@ -208,6 +214,37 @@ impl NodeRuntime {
                 on_file(f);
             }
         }));
+        // Forward received peer profiles (avatar updates) to the host app.
+        if let Some(mut profile_rx) = node.take_profile_receiver() {
+            tasks.push(tokio::spawn(async move {
+                while let Some(p) = profile_rx.recv().await {
+                    on_profile(p);
+                }
+            }));
+        }
+        // Re-publish our avatar to freshly-discovered peers: poll the roster, and for any
+        // peer user-id we hadn't seen before, send our current profile (a no-op if we've
+        // set no avatar). Bounded — `seen` only tracks ids, and re-publish skips known peers.
+        {
+            let node = Arc::clone(&node);
+            let roster = Arc::clone(&roster);
+            tasks.push(tokio::spawn(async move {
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                loop {
+                    let newcomers: Vec<PeerRecord> = {
+                        let r = roster.lock().expect("roster mutex not poisoned");
+                        r.peers()
+                            .into_iter()
+                            .filter(|p| !p.post_office && seen.insert(p.public.user_id()))
+                            .collect()
+                    };
+                    for peer in newcomers {
+                        node.republish_profile_to(&peer).await;
+                    }
+                    tokio::time::sleep(Duration::from_secs(PROFILE_REPUBLISH_INTERVAL_SECS)).await;
+                }
+            }));
+        }
 
         Ok(NodeRuntime {
             node,
@@ -294,6 +331,21 @@ impl NodeRuntime {
     /// Account-level conversation history with `peer_account_id`.
     pub fn account_history(&self, peer_account_id: &str, limit: usize) -> Vec<HistoryEntry> {
         self.node.account_history(peer_account_id, limit)
+    }
+
+    /// Set (or clear) this user's own avatar and propagate it to peers as a signed profile.
+    pub async fn set_avatar(&self, avatar: Option<Vec<u8>>) -> Result<(), NodeError> {
+        self.node.set_avatar(avatar).await
+    }
+
+    /// The avatar a peer account propagated to us (data-URL bytes), or `None`.
+    pub fn peer_avatar(&self, account_id: &str) -> Option<Vec<u8>> {
+        self.node.peer_avatar(account_id)
+    }
+
+    /// Every peer avatar we hold, `account_id -> data-URL bytes` (for seeding the UI).
+    pub fn peer_avatars(&self) -> std::collections::HashMap<String, Vec<u8>> {
+        self.node.peer_avatars()
     }
 
     /// The session password held for re-encrypting the keystore — used only to
@@ -438,6 +490,7 @@ mod tests {
             |_dm| {},
             |_ch| {},
             |_f| {},
+            |_p| {},
         )
         .await
         .expect("runtime starts");
@@ -463,6 +516,7 @@ mod tests {
             |_dm| {},
             |_ch| {},
             |_f| {},
+            |_p| {},
         )
         .await
         .expect("runtime reopens");

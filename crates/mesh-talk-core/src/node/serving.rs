@@ -121,6 +121,7 @@ impl Node {
                 self.emit_new_messages(conv);
                 self.process_channel(conv);
                 self.process_file_events(conv);
+                self.process_profile_events(conv);
             }
             _ => return,
         }
@@ -131,6 +132,7 @@ impl Node {
                     self.emit_new_messages(conv);
                     self.process_channel(conv);
                     self.process_file_events(conv);
+                    self.process_profile_events(conv);
                 }
                 _ => break, // peer closed, error, or idle past the timeout
             }
@@ -371,6 +373,7 @@ impl Node {
             }
             self.emit_new_messages(conv);
             self.process_file_events(conv);
+            self.process_profile_events(conv);
         }
         // Drain known channel conversations as well.
         let channel_ids: Vec<ConversationId> = {

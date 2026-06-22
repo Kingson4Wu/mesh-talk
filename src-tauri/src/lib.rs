@@ -174,6 +174,8 @@ pub fn run_tauri() {
             crate::chat_commands::send_dm,
             crate::chat_commands::history,
             crate::chat_commands::account_id,
+            crate::chat_commands::publish_avatar,
+            crate::chat_commands::peer_avatars,
             crate::chat_commands::send_to_account,
             crate::chat_commands::account_history,
             crate::chat_commands::start_linking,

@@ -3,6 +3,7 @@ import { chat, favorites as favoritesApi } from "@/lib/api";
 import { errorMessage, sendFailReason, type SendFailReason } from "@/lib/error";
 import { subscribeNodeEvents } from "@/lib/events";
 import { notifyInbound } from "@/lib/notify";
+import { useAvatars } from "@/store/avatars";
 import { useTransfers } from "@/store/transfers";
 import type {
   AccountInfo,
@@ -130,6 +131,10 @@ async function pollUntilReady(
       const id = await chat.myId();
       const acct = await chat.accountId();
       set({ myId: id, myAccountId: acct, ready: true });
+      // Tell the avatars store who "we" are (so setting our own avatar publishes it) and
+      // pull avatars peers already propagated to us (durable across restart).
+      useAvatars.getState().setOwnId(acct);
+      void useAvatars.getState().loadPeers();
       await get().refreshRoster();
       return true;
     } catch {
@@ -376,6 +381,8 @@ export const useChat = create<ChatState>((set, get) => ({
       onChannelMessage: (e) => get_handleChannel(set, get, e),
       onFile: (e) => get_handleFile(set, get, e),
       onFileProgress: (e) => useTransfers.getState().applyProgress(e),
+      onProfile: (e) =>
+        useAvatars.getState().mergeReceived(e.account_id, e.avatar),
     });
 
     return () => {

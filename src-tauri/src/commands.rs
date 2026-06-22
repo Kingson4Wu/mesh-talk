@@ -460,6 +460,7 @@ pub(crate) fn spawn_node_runtime(
     let app_handle_for_dm = app_handle.clone();
     let app_handle_for_channel = app_handle.clone();
     let app_handle_for_file = app_handle.clone();
+    let app_handle_for_profile = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         // The base directory for node per-account data (the app's `~/.mesh-talk`).
         let base_dir = crate::data_dir();
@@ -497,6 +498,13 @@ pub(crate) fn spawn_node_runtime(
                     f.size,
                     f.mime,
                     hex::encode(f.file_conv.as_bytes()),
+                );
+            },
+            move |p: mesh_talk_core::node::ReceivedProfile| {
+                crate::events::emit_profile_received(
+                    &app_handle_for_profile,
+                    p.account_id,
+                    p.avatar,
                 );
             },
         )

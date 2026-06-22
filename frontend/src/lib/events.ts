@@ -4,6 +4,7 @@ import type {
   DmReceivedEvent,
   FileProgressEvent,
   FileReceivedEvent,
+  ProfileReceivedEvent,
 } from "./types";
 
 /** Subscribe to the node's inbound events. Returns a single unlisten function. */
@@ -12,6 +13,7 @@ export function subscribeNodeEvents(handlers: {
   onChannelMessage?: (e: ChannelMessageEvent) => void;
   onFile?: (e: FileReceivedEvent) => void;
   onFileProgress?: (e: FileProgressEvent) => void;
+  onProfile?: (e: ProfileReceivedEvent) => void;
 }): () => void {
   const unlisteners: Promise<UnlistenFn>[] = [];
   if (handlers.onDm) {
@@ -37,6 +39,13 @@ export function subscribeNodeEvents(handlers: {
     unlisteners.push(
       listen<FileProgressEvent>("file-progress", (e) =>
         handlers.onFileProgress!(e.payload),
+      ),
+    );
+  }
+  if (handlers.onProfile) {
+    unlisteners.push(
+      listen<ProfileReceivedEvent>("profile-received", (e) =>
+        handlers.onProfile!(e.payload),
       ),
     );
   }

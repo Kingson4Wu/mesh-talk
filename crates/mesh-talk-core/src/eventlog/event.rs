@@ -84,6 +84,7 @@ pub enum EventKind {
     MembershipChange = 5,
     KeyRotation = 6,
     FileManifest = 7,
+    Profile = 8,
 }
 
 /// A single, content-addressed, signed log event.
@@ -377,6 +378,7 @@ mod tests {
             (EventKind::MembershipChange, 5),
             (EventKind::KeyRotation, 6),
             (EventKind::FileManifest, 7),
+            (EventKind::Profile, 8),
         ];
         for (kind, index) in cases {
             assert_eq!(bincode::serialize(&kind).unwrap(), index.to_le_bytes());

@@ -20,6 +20,9 @@ pub(crate) mod message;
 pub(crate) mod node;
 pub(crate) mod pairing;
 pub(crate) mod postbox;
+pub(crate) mod profile;
+pub(crate) mod profile_io;
+pub(crate) mod profile_store;
 pub(crate) mod queries;
 pub(crate) mod ratchet_sessions;
 pub(crate) mod reaction;
@@ -43,10 +46,12 @@ pub use filebook::{FileBook, ReceivedFile};
 pub use files::FileProgress;
 pub use message::MessageBody;
 pub use node::{
-    ChannelSummary, HistoryEntry, LinkedAccount, Node, NodeError, ReceivedDm, SearchHit,
+    ChannelSummary, HistoryEntry, LinkedAccount, Node, NodeError, ReceivedDm, ReceivedProfile,
+    SearchHit,
 };
 pub use pairing::{BackfillRecord, PairingCode, PairingRequest, PairingResponse};
 pub use postbox::{elected_post_office, run_relay_accept_loop};
+pub use profile::{ProfilePayload, MAX_AVATAR_BYTES};
 pub use ratchet_sessions::RatchetSessions;
 pub use reaction::{aggregate, ReactionPayload, ReactionView};
 pub use received_log::{ReceivedEntry, ReceivedLog};

@@ -2772,3 +2772,145 @@ async fn account_history_backfills_to_a_linked_device() {
     assert!(hist[0].from_me, "it was sent by our (shared) account");
     assert_eq!(hist[0].text, b"old message");
 }
+
+// Avatar propagation: Alice sets a custom avatar; it must ride the reliable sync to Bob,
+// who ends up holding Alice's avatar bytes keyed by Alice's ACCOUNT id. Mirrors the
+// account-delivery rig.
+#[tokio::test]
+async fn setting_an_avatar_propagates_to_a_peer_account_over_loopback() {
+    use crate::identity::account::Account;
+    let alice = DeviceIdentity::generate();
+    let alice_acct = Account::generate();
+    let bob = DeviceIdentity::generate();
+    let bob_acct = Account::generate();
+    let alice_uid = alice.public().user_id();
+    let bob_uid = bob.public().user_id();
+    let dir = tempfile::tempdir().unwrap();
+
+    let bob_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bob_addr = bob_listener.local_addr().unwrap();
+
+    let alice_roster = Arc::new(Mutex::new(Roster::default()));
+    add_account_peer(
+        &alice_roster,
+        &bob,
+        &bob_acct,
+        "Bob",
+        bob_addr.port(),
+        &alice_uid,
+    );
+    let bob_roster = Arc::new(Mutex::new(Roster::default()));
+    add_account_peer(&bob_roster, &alice, &alice_acct, "Alice", 4000, &bob_uid);
+
+    let (a_dm, _a) = mpsc::unbounded_channel();
+    let (a_ch, _b) = mpsc::unbounded_channel();
+    let (a_f, _c) = mpsc::unbounded_channel();
+    let (b_dm, _d) = mpsc::unbounded_channel();
+    let (b_ch, _e) = mpsc::unbounded_channel();
+    let (b_f, _g) = mpsc::unbounded_channel();
+
+    let alice_node = Node::open_with_account(
+        alice,
+        Account::from_secret_bytes(alice_acct.secret_bytes()),
+        alice_roster,
+        a_dm,
+        a_ch,
+        a_f,
+        &dir.path().join("a.log"),
+        &dir.path().join("a-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let bob_node = Node::open_with_account(
+        bob,
+        Account::from_secret_bytes(bob_acct.secret_bytes()),
+        bob_roster,
+        b_dm,
+        b_ch,
+        b_f,
+        &dir.path().join("b.log"),
+        &dir.path().join("b-sent.log"),
+        "pw",
+    )
+    .unwrap();
+
+    tokio::spawn(Arc::clone(&bob_node).run_accept_loop(bob_listener));
+
+    let avatar = b"data:image/jpeg;base64,QUJD".to_vec();
+    alice_node.set_avatar(Some(avatar.clone())).await.unwrap();
+
+    // Bob ends up with Alice's avatar keyed by Alice's ACCOUNT id.
+    let mut got = None;
+    for _ in 0..50 {
+        got = bob_node.peer_avatar(&alice_acct.account_id());
+        if got.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(got, Some(avatar), "bob received alice's avatar");
+
+    // A STALE update (older updated_at) must NOT overwrite the newer one Bob holds.
+    let newer = b"data:image/jpeg;base64,WFla".to_vec();
+    alice_node.set_avatar(Some(newer.clone())).await.unwrap();
+    let mut converged = false;
+    for _ in 0..50 {
+        if bob_node.peer_avatar(&alice_acct.account_id()).as_deref() == Some(newer.as_slice()) {
+            converged = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(converged, "bob sees the newer avatar");
+
+    // Feed Bob a hand-built OLDER profile directly: newest-wins must keep the newer one.
+    let stale = crate::node::profile::ProfilePayload::new(
+        &Account::from_secret_bytes(alice_acct.secret_bytes()),
+        Some(b"data:image/jpeg;base64,T0xE".to_vec()),
+        1, // updated_at far in the past
+    );
+    let applied = bob_node
+        .profiles
+        .lock()
+        .unwrap()
+        .record(
+            &alice_acct.account_id(),
+            stale.updated_at,
+            stale.avatar.clone(),
+        )
+        .unwrap();
+    assert!(!applied, "a stale update must be rejected");
+    assert_eq!(
+        bob_node.peer_avatar(&alice_acct.account_id()),
+        Some(newer),
+        "the newer avatar is preserved"
+    );
+}
+
+// An oversized avatar is rejected at the publish boundary (never sealed/appended).
+#[tokio::test]
+async fn setting_an_oversized_avatar_is_rejected() {
+    let me = DeviceIdentity::generate();
+    let roster = Arc::new(Mutex::new(Roster::default()));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+    let (file_tx, _file_rx) = mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    let node = Node::open(
+        me,
+        roster,
+        tx,
+        ch_tx,
+        file_tx,
+        &dir.path().join("me.log"),
+        &dir.path().join("me-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let too_big = vec![0u8; crate::node::profile::MAX_AVATAR_BYTES + 1];
+    let err = node.set_avatar(Some(too_big)).await.unwrap_err();
+    assert!(
+        matches!(err, NodeError::Channel(_)),
+        "oversize must be rejected"
+    );
+}

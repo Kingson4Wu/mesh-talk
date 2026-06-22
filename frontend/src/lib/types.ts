@@ -201,3 +201,8 @@ export interface FileProgressEvent {
   done: number;
   total: number;
 }
+
+export interface ProfileReceivedEvent {
+  account_id: string;
+  avatar: string | null; // data-URL, or null when the peer cleared their avatar
+}
