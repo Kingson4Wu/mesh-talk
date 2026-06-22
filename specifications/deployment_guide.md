@@ -52,10 +52,9 @@ testing on a server and for running an always-on **post office** relay.
    cd mesh-talk
    ```
 
-2. Build the node binary:
+2. Build the node binary (the bin lives in the `mesh-talk-core` crate):
    ```bash
-   cd src-tauri
-   cargo build --release --bin mesh-talk-node
+   cargo build --release -p mesh-talk-core --bin mesh-talk-node
    ```
 
 3. The compiled binary will be located at:
@@ -76,9 +75,13 @@ Parameters:
 - `--password`: password that encrypts the keystore — **required**
 - `--name`: this node's display name on the LAN — **required**
 - `--port`: TCP port for peer connections (default: OS-assigned)
-- `--discovery-port`: UDP discovery port (must match across peers)
+- `--discovery-port`: UDP discovery port (default: 47474; must match across peers)
 - `--post-office`: run in relay mode (stores-and-forwards still-encrypted events for
   offline peers)
+
+Discovery uses signed UDP **multicast** (group `224.0.0.167`, port 47474 by default);
+peer connections are Noise-encrypted TCP on an OS-assigned (or `--port`) port. The host
+firewall must permit UDP 47474 (multicast 224.0.0.167) and the chosen TCP port.
 
 ### Installing the node system-wide
 
@@ -239,9 +242,11 @@ node --version  # Should be 16 or higher
 3. Check system logs for error messages
 
 #### Network Discovery Not Working
-1. Ensure UDP port 9999 is not blocked by firewall
-2. Check that all nodes are on the same local network
-3. Verify that broadcast is enabled on your network
+1. Ensure UDP port 47474 (multicast group 224.0.0.167) is not blocked by firewall
+2. Check that all nodes are on the same local network segment
+3. Verify that the network allows multicast/UDP between hosts (some guest/AP-isolated
+   Wi-Fi blocks it); on macOS the app ships the `com.apple.developer.networking.multicast`
+   entitlement so the OS permits multicast
 
 #### Local Storage Issues
 Mesh-Talk stores data as encrypted files under `~/.mesh-talk` (no database). If a store
@@ -276,4 +281,4 @@ For additional help, please:
 3. Create a new issue with detailed information about your problem
 
 Version: 0.1.0
-Last Updated: 2025-09-19
+Last Updated: 2026-06-22

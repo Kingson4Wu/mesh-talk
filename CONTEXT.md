@@ -42,7 +42,8 @@ Tauri app (`src-tauri/src/`) is a thin shell over it.
 
 ## What Mesh-Talk does NOT own
 
-- **No central server / directory** — discovery is signed broadcast, scoped to the LAN.
+- **No central server / directory** — discovery is signed UDP multicast, scoped to the LAN.
 - **No plaintext relay** — the post office forwards ciphertext only.
 
 > Full technical detail: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
+> All documentation is indexed in the **[documentation map](docs/README.md)**.

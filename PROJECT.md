@@ -8,7 +8,7 @@ and the process/convention docs linked below.
 ## Project Overview
 
 Mesh-Talk is a **serverless, end-to-end-encrypted desktop chat app** (Rust + Tauri 2 +
-React). Peers on the same LAN discover each other over Ed25519-signed UDP broadcasts,
+React). Peers on the same LAN discover each other over Ed25519-signed UDP multicast announces,
 connect directly over a Noise-encrypted channel, and store messages as an append-only,
 hash-linked event log that syncs CRDT-style. An elected "post office" peer stores-and-
 forwards (still-encrypted) events for offline recipients.

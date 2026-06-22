@@ -15,57 +15,77 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
-[![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#prerequisites)
+[![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#build-from-source)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/Kingson4Wu/mesh-talk)
 [![Release](https://img.shields.io/github/v/release/Kingson4Wu/mesh-talk?sort=semver)](https://github.com/Kingson4Wu/mesh-talk/releases)
 
-A local network chat tool written in Rust that enables users to communicate directly with others on the same network using UDP broadcast and TCP connections.
+**A serverless, end-to-end-encrypted messenger for your local network.** Mesh-Talk peers find
+each other on the LAN and talk directly — no account, no cloud, no server in the middle. Your
+messages and files never leave the network, and they stay encrypted the whole way.
 
 <p align="center">
-  <a href="CONTEXT.md"><strong>Domain & architecture »</strong></a>
+  <a href="docs/README.md"><strong>Documentation</strong></a>
+  ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
   ·
   <a href="https://github.com/Kingson4Wu/mesh-talk/issues/new?template=bug_report.yml">Report Bug</a>
   ·
   <a href="https://github.com/Kingson4Wu/mesh-talk/issues/new?template=feature_request.yml">Request Feature</a>
 </p>
 
+---
+
+## Overview
+
+Mesh-Talk is a desktop chat app ([Tauri](https://tauri.app/) v2 + React) for macOS, Windows, and
+Linux, built on a UI-free Rust protocol core (`mesh-talk-core`) that also runs headless as the
+`mesh-talk-node` CLI. Peers discover one another over signed UDP multicast, connect over a
+Noise-encrypted TCP channel, and converge by replicating a per-conversation append-only event
+log. Every message is end-to-end encrypted with forward secrecy; an optional store-and-forward
+relay (the "post office") delivers messages to peers that are temporarily offline.
+
 ## Features
 
-- Local network communication without a central server
-- Automatic peer discovery using UDP broadcast
-- Real-time messaging between connected peers via TCP
-- Command-line interface
-- Built with async Rust using Tokio
-- Modular architecture following professional Rust project structure
+**Messaging**
 
-## Project Structure
+- One-to-one DMs and group channels, addressed by identity (and fanned out across a user's linked devices)
+- Reactions, @mentions, replies/threads, and full-text search over local history
+- Large-file transfer (up to ~4 GiB) — chunked, encrypted per chunk, with progress and resume
+- Persistent, offline-capable history; a "post office" relay delivers to peers that are away
 
-```
-mesh-talk/
-├── crates/mesh-talk-core/  # UI-free protocol core / SDK foundation (no Tauri dep)
-│   ├── src/
-│   │   ├── lib.rs          # crate root (lib `mesh_talk_core`)
-│   │   ├── node/           # the serverless node: orchestration
-│   │   ├── identity/ transport/ discovery/ eventlog/ ratchet/ channel/ dm.rs file/ postoffice/
-│   │   ├── storage/        # at-rest encryption (PBKDF2 + AES-GCM)
-│   │   └── bin/mesh-talk-node.rs  # headless node CLI (--post-office relay mode)
-│   ├── tests/              # cross-process integration tests
-│   └── Cargo.toml
-├── src-tauri/              # Tauri desktop shell — a thin layer over mesh-talk-core
-│   ├── src/
-│   │   ├── main.rs         # `mesh-talk` desktop binary
-│   │   ├── lib.rs          # Tauri setup + IPC registration
-│   │   ├── commands.rs     # auth IPC (chat_commands.rs = messaging IPC)
-│   │   ├── events.rs tray.rs state.rs perf.rs
-│   │   └── services/       # auth only
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── frontend/               # React + TS + Tailwind frontend
-├── docs/ARCHITECTURE.md    # architecture reference
-├── specifications/         # overview + process/convention docs
-├── Makefile
-└── Cargo.toml              # workspace config + shared [workspace.dependencies]
-```
+**Security & privacy**
+
+- End-to-end encryption with **forward secrecy** — Double Ratchet for DMs, a sender-key ratchet for channels
+- Ed25519 device identities (your ID is your key fingerprint), X25519 key agreement, Noise-encrypted transport
+- Safety-number contact verification with trust-on-first-use and key-change warnings
+- Encrypted-at-rest keystores and message logs; no servers, no telemetry, no central account
+
+**Network**
+
+- Zero-config LAN discovery: signed UDP multicast announces + announce/response + a unicast subnet-scan fallback
+- Dual-stack IPv4/IPv6 direct TCP; self-healing discovery that re-announces and re-joins on network changes
+
+**Desktop experience**
+
+- Multi-device accounts with QR/code device linking
+- Live presence (online / last-seen), pinned contacts, and an in-app diagnostics panel
+- Tray icon, launch-at-login, native notifications, light / dark / OLED themes, and English / 中文
+
+## How it works
+
+1. **Discover** — each peer broadcasts a signed announce over UDP multicast (`224.0.0.167:47474`) on
+   every interface; peers verify the signature and record one another. A unicast subnet scan and
+   announce/response replies cover networks where multicast is flaky.
+2. **Connect** — peers dial each other over TCP and run a Noise handshake for an authenticated,
+   encrypted channel.
+3. **Sync** — conversations are append-only event logs; peers exchange only the events the other is
+   missing (bounded rounds), so history converges and survives restarts.
+4. **Encrypt** — message payloads are sealed with per-conversation ratchets (Double Ratchet / sender
+   key), so a compromised key can't decrypt past traffic.
+5. **Relay when offline** — if a recipient is away, an elected post-office node holds the encrypted
+   events and forwards them on reconnect. It never sees plaintext.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 ## Download & first run
 
@@ -89,10 +109,13 @@ commands** (`shasum -c`, `cosign verify-blob`, `gh attestation verify`). How to 
   PC" → click **More info → Run anyway** (only the first time). WebView2 is fetched automatically
   if missing.
 
-After the one-time approval it behaves like any installed app (Start-menu / Applications / app-menu
-shortcut, icon, double-click to launch). To remove the prompt entirely you'd need paid signing
-(Apple Developer ID for macOS, a code-signing cert or the Microsoft Store for Windows); Linux is
-always prompt-free.
+After the one-time approval it behaves like any installed app. To remove the prompt entirely you'd
+need paid signing (Apple Developer ID for macOS, a code-signing cert or the Microsoft Store for
+Windows); Linux is always prompt-free.
+
+> Two peers must be on the **same LAN** with the firewall allowing UDP `47474` (multicast
+> `224.0.0.167`) and the app's TCP port. If they can't see each other, the in-app **Diagnostics**
+> panel and the [troubleshooting guide](specifications/troubleshooting_guide.md) walk through it.
 
 ## Build from source
 
@@ -100,12 +123,11 @@ always prompt-free.
 
 - **Rust** (stable, edition 2021) + Cargo
 - **Node.js 20+** (frontend toolchain)
-- **protoc** — `brew install protobuf` (macOS) · `choco install protoc` (Windows) · `apt install protobuf-compiler` (Linux)
 - **Tauri CLI** — `cargo install tauri-cli`
 - **Linux only** — the GTK/WebKit stack:
   `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
 
-### Build & run the desktop app
+### Desktop app
 
 ```bash
 git clone https://github.com/Kingson4Wu/mesh-talk.git
@@ -117,7 +139,7 @@ make tauri-build  # or: produce a release bundle (.app / .dmg / .exe / .deb / ..
 
 ### Headless node (CLI / post-office relay)
 
-The same core runs without a UI as `mesh-talk-node` (also the offline-delivery relay):
+The same core runs without a UI as `mesh-talk-node` — also the offline-delivery relay:
 
 ```bash
 cargo run --bin mesh-talk-node -- --keystore alice.ks --password <pw> --name alice
@@ -129,89 +151,77 @@ cargo run --bin mesh-talk-node -- --keystore alice.ks --password <pw> --name ali
 | `--password <pw>` | password that encrypts the keystore (**required**) |
 | `--name <name>` | display name advertised to peers (**required**) |
 | `--port <n>` | TCP port to listen on (`0` = OS-assigned) |
-| `--discovery-port <n>` | UDP discovery port (**must match across peers**) |
+| `--discovery-port <n>` | UDP discovery port, default `47474` (**must match across peers**) |
 | `--post-office` | run as a store-and-forward relay for offline delivery (no chat REPL) |
 
 Each instance needs its **own** keystore path — two nodes sharing one clobber each other's data.
 In the chat REPL: `/msg <peer-id-prefix> <text>` to DM, `/history <peer-id-prefix>` to view a thread.
 
-## How It Works
+## Architecture
 
-1. The application creates a mesh network where each node can communicate directly with other nodes
-2. UDP broadcast is used for peer discovery on port 8888
-3. TCP connections are established between peers for reliable message delivery
-4. Messages are broadcast to all connected peers in the network
+Two Rust crates plus a React frontend, layered so the protocol is independent of the UI:
 
-## Technical Details
+```
+mesh-talk/
+├── crates/mesh-talk-core/   # UI-free protocol SDK (no Tauri dep)
+│   ├── src/
+│   │   ├── node/            # the serverless node: orchestration
+│   │   ├── identity/  transport/  discovery/  eventlog/
+│   │   ├── ratchet/  channel/  dm.rs  file/  postoffice/
+│   │   ├── storage/         # encrypted append-only logs + at-rest crypto
+│   │   ├── util/            # shared helpers (net, safety-number, …)
+│   │   └── bin/mesh-talk-node.rs   # headless node CLI (--post-office relay mode)
+│   └── tests/               # multi-process integration tests (real nodes over UDP/TCP)
+├── src-tauri/               # Tauri desktop shell — a thin bridge over mesh-talk-core
+├── frontend/                # React + TS + Tailwind + shadcn ("Ink & Signal" design)
+├── docs/                    # architecture + documentation map
+├── specifications/          # process, deployment, and convention docs
+└── Makefile                 # dev/build/test/e2e/lint shortcuts
+```
 
-- Uses Tokio for async runtime and networking
-- Implements UDP broadcast for peer discovery
-- TCP for reliable peer-to-peer communication
-- JSON serialization for message encoding
-- Thread-safe peer management using Arc and Mutex
-- Modular design with clear separation of concerns
+The frontend talks to the backend only through Tauri commands; the desktop crate holds no protocol
+or crypto logic. Wire formats are versioned `bincode` framed with a magic + version byte. Full
+reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Dependencies
+## Documentation
 
-- tokio: Async runtime and networking
-- serde: Serialization framework
-- serde_json: JSON serialization
-- clap: Command line argument parsing
+Everything is indexed in the **[documentation map](docs/README.md)** — start there. Highlights:
+
+- [Architecture](docs/ARCHITECTURE.md) — components, data flow, and crypto
+- [Contributing](CONTRIBUTING.md) — dev setup, commands, and conventions
+- [Domain model](CONTEXT.md) and [repo conventions](AGENTS.md)
+- [Deployment](specifications/deployment_guide.md) · [Troubleshooting](specifications/troubleshooting_guide.md) · [Security](SECURITY.md)
 
 ## Development
 
-This project follows a professional Rust project structure — a layered workspace where the
-protocol core is its own crate (`mesh-talk-core`) and the desktop app is a thin shell over it:
-- Node orchestration in `crates/mesh-talk-core/src/node/`
-- Crypto in `identity/`, `transport/` (Noise), `ratchet/`, `channel/`, `dm.rs` (all in the core crate)
-- Event log + sync in `crates/mesh-talk-core/src/eventlog/`; signed discovery in `discovery/`
-- At-rest encryption in `crates/mesh-talk-core/src/storage/`; auth (app-only) in `src-tauri/src/services/`
-- Full architecture reference: `docs/ARCHITECTURE.md`
-
-## Automation and Code Quality
-
-The project includes several automation tools to maintain code quality and consistency:
-
-### Code Formatting and Linting
-- Automatic code formatting with `cargo fmt` and `prettier`
-- Linting with `clippy` for Rust code
-- Pre-commit hooks to enforce code quality
-
-### Development Automation
-Use the provided Makefile for common development tasks:
 ```bash
-make dev        # Run in development mode
-make build      # Build for release
-make test       # Run tests
-make lint       # Run linting tools
-make fix        # Automatically fix code issues
-make format     # Format code
+make tauri-dev    # run the desktop app (hot reload)
+make test         # Rust workspace unit tests
+make e2e          # multi-process backend E2E (real nodes)
+make lint fix     # clippy -D warnings · auto-fix + format
+make check        # the full local health gate
 ```
 
-### Automated Maintenance
-The project includes scripts for automated maintenance:
-- `scripts/check-health.sh` - Run all quality checks
-- `scripts/auto-maintain.sh` - Run regular maintenance tasks
-- Pre-commit hooks that automatically format and fix code before committing
-
-### CI/CD Integration
-- GitHub Actions workflow that runs all quality checks
-- Automatic security scanning for dependencies
-- Build verification on multiple platforms
+The UI flow is covered by a Playwright suite (`cd frontend && npm run e2e`). Quality is enforced in
+CI across macOS/Windows/Linux — formatting, Clippy (`-D warnings`), tests + coverage, the frontend
+build + ESLint, supply-chain policy (`cargo deny`), unused-dep and spelling checks — plus fuzzing,
+mutation testing, secret scanning, and OpenSSF Scorecard. Commits are GPG-signed (the hooks set up
+by `make dev` enforce it). See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev
-setup, build/test/lint commands, and conventions. The domain model and
-architecture are documented in [CONTEXT.md](CONTEXT.md) and [AGENTS.md](AGENTS.md).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup,
+build/test/lint commands, and conventions, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the
+community guidelines.
 
 ## Security
 
-Please report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not
-open a public issue for security reports.
+Mesh-Talk is end-to-end encrypted with forward secrecy and has no servers or telemetry. Please
+report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open a public issue for
+security reports.
 
 ## License
 
-This project is open source under the [MIT License](LICENSE).
+Open source under the [MIT License](LICENSE).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

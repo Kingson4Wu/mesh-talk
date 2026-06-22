@@ -15,7 +15,7 @@ test:
 
 # End-to-end integration tests: real `mesh-talk-node` processes over UDP discovery +
 # TCP (two-node DM, history-across-restart, post-office offline delivery). `#[ignore]`d
-# by default (slow KDF cold starts + UDP broadcast), so run them explicitly here. Serial
+# by default (real UDP-multicast discovery + node cold starts), so run them explicitly here. Serial
 # (--test-threads=1) to avoid discovery-port / CPU contention between the heavy processes.
 e2e:
 	nice -n 10 cargo test -p mesh-talk-core --test two_node_cli --test persistent_history --test post_office_offline -- --ignored --test-threads=1

@@ -6,8 +6,8 @@ model: sonnet
 ---
 
 You run Mesh-Talk's end-to-end integration tests and return a crisp verdict. These spawn
-REAL `mesh-talk-node` processes that discover each other over UDP broadcast and talk over
-TCP — they are `#[ignore]`d (slow + need broadcast), so they only run when invoked explicitly.
+REAL `mesh-talk-node` processes that discover each other over UDP multicast and talk over
+TCP — they are `#[ignore]`d (real discovery + node cold starts), so they only run when invoked explicitly.
 
 You do NOT modify code. You run, diagnose, and report. Fixes are the caller's call.
 
@@ -52,7 +52,7 @@ Look at WHICH assertion failed and HOW LONG the test took:
    product regression in DM / sync / relay / persistence. Quote the exact assertion + the
    relevant flow lines (`node ... listening`, `peer ...`, `from ...`). This is the important case.
 
-4. **Everything fails at the discovery/peer wait.** UDP broadcast is likely blocked (sandboxed
+4. **Everything fails at the discovery/peer wait.** UDP multicast is likely blocked (sandboxed
    env). Environmental — note it; not a code bug.
 
 When in doubt between flake and regression, re-run the failing test once alone before deciding.

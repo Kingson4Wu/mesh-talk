@@ -2,9 +2,10 @@
 
 A decentralized, end-to-end-encrypted LAN messenger. **Tauri** desktop shell, **Rust**
 backend, **React + TypeScript** frontend. No server: peers discover each other over signed UDP
-broadcasts, connect directly over a Noise-encrypted TCP channel, and store messages as
-an append-only, hash-linked **event log** that syncs CRDT-style. When a peer is offline,
-an elected **post office** node stores-and-forwards the (still-encrypted) events.
+**multicast** (group `224.0.0.167`, port 47474), connect directly over a Noise-encrypted TCP
+channel, and store messages as an append-only, hash-linked **event log** that syncs CRDT-style.
+When a peer is offline, an elected **post office** node stores-and-forwards the (still-encrypted)
+events.
 
 > The earlier RSA-contact / plaintext-UDP / TCP-relay *legacy* stack has been retired;
 > this serverless stack is the entire product and lives at `/`. The only retained
@@ -21,7 +22,7 @@ React UI (features/chat/*.tsx) ──invoke()──▶ Tauri IPC (chat_commands.
         │                                               ▼
         │                                   NodeRuntime (node/runtime.rs)
         │                                   starts 7 bg tasks per login:
-        │                                   UDP listen / UDP broadcast /
+        │                                   UDP listen / UDP multicast announce /
         └────────── on_dm/on_channel/on_file callbacks ── TCP accept / PO drain /
                                                           DM·channel·file forwarders
                                                                │
@@ -84,8 +85,11 @@ React UI (features/chat/*.tsx) ──invoke()──▶ Tauri IPC (chat_commands.
 
 - **Discovery** — signed `Announce` (Ed25519, version 2) carries `x25519_pub`, `tcp_port`,
   `post_office` flag, and the `account_cert`; the device signature commits to the account
-  key (prevents cert-swap). `run_broadcast` every 2 s; `run_listen` verifies + updates the
-  roster; TTL eviction; `devices_of_account()` groups devices by account.
+  key (prevents cert-swap). Transport is UDP multicast (`DISCOVERY_MULTICAST_GROUP`
+  224.0.0.167, `DEFAULT_DISCOVERY_PORT` 47474 in `transport/net.rs`) joined on every IPv4
+  interface, plus a unicast announce/response reply, a /24 unicast scan fallback, a startup
+  burst, and periodic re-join. `run_broadcast` re-announces every 2 s; `run_listen` verifies
+  + updates the roster; TTL eviction; `devices_of_account()` groups devices by account.
 - **Delivery** — `send_*` appends the sealed event, then `deliver_direct` (Noise dial +
   one sync round) and, on failure/always, `replicate_to_post_office`. Receivers run an
   accept loop (`serve_connection` → `serve_one` ingest → `emit_new_messages` decrypt/surface).
@@ -116,10 +120,12 @@ and device linking; `features/auth/LoginScreen.tsx` is the only other screen.
   `src-tauri/` — the Tauri desktop shell, a thin layer that depends on the core. Shared
   dependency versions live in the root `[workspace.dependencies]`. The app references the
   core as `mesh_talk_core::…`; a third party can depend on `mesh-talk-core` alone (no Tauri).
-- **Local gate** (`scripts/check-health.sh`, run by the `hooks/pre-commit` hook): fmt,
+- **Local gate** (`scripts/check-health.sh`): fmt,
   `clippy --workspace --all-targets -D warnings`, ESLint, frontend tests (Vitest), full
   `cargo test --workspace`, typos, cargo-deny, cargo-machete, gitleaks, shellcheck, audits,
-  both builds — **mirrors CI** so failures surface locally, not on CI.
+  both builds — **mirrors CI** so failures surface locally, not on CI. The `hooks/pre-commit`
+  hook runs a fast slice (`check-health.sh --fast`: fmt/clippy/lint/unit only); GPG-signed
+  commits are enforced by `hooks/pre-push`.
 - **CI** (`.github/workflows/`): `ci.yml` (ubuntu+macOS matrix → the `verify` aggregate
   check, required by branch protection; coverage → Codecov on Linux), `check-health.yml`,
   `gitleaks.yml`, CodeQL, `dependabot-auto-merge.yml` (patch-only),

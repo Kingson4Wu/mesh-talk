@@ -5,10 +5,12 @@ The UI-free protocol core of [Mesh-Talk](https://github.com/Kingson4Wu/mesh-talk
 SDK is built on: it has **no UI and no Tauri dependency**, so it can be embedded in a CLI,
 a daemon, a desktop shell (as the Mesh-Talk app does), or any other Rust program.
 
-There are no servers. Peers discover each other on the local network, talk directly over an
-authenticated encrypted channel, and converge a signed, content-addressed event log. An
-elected "post office" peer store-and-forwards ciphertext so a message still reaches a
-recipient who was offline.
+There are no servers. Peers discover each other on the local network (signed UDP **multicast**
+announces — group `224.0.0.167`, default port `47474` — plus a `/24` unicast scan fallback),
+talk directly over an authenticated, encrypted Noise channel, and converge a signed,
+content-addressed event log. An elected "post office" peer store-and-forwards ciphertext so a
+message still reaches a recipient who was offline. DMs and channels are account-addressed, so a
+message fans out to every device a user has linked.
 
 ## What's inside
 
@@ -19,11 +21,14 @@ recipient who was offline.
 | [`ratchet`] | Double Ratchet — per-message forward secrecy for DMs. |
 | [`channel`] | Sender-key group ratchet — forward secrecy for group channels. |
 | [`dm`] | Sealed direct-message envelopes. |
-| [`transport`] | A Noise (`snow`) secure channel with identity binding. |
-| [`discovery`] | Signed-announce LAN peer discovery + roster. |
+| [`transport`] | A Noise (`snow`) secure channel with identity binding over TCP (dual-stack); `transport::net` holds the low-level socket + multicast-join helpers shared by the CLI and the desktop runtime. |
+| [`discovery`] | Signed-announce LAN peer discovery (multicast + `/24` scan) + roster. |
 | [`postoffice`] | A durable store-and-forward relay for offline delivery (holds ciphertext only). |
-| [`file`] | Chunked, encrypted file transfer. |
+| [`file`] | Chunked, per-chunk-AEAD file transfer with resume + a versioned manifest (48 KiB chunks; files up to ~4 GiB). |
+| [`storage`] | At-rest crypto: PBKDF2/AES-GCM encryption and `EncryptedRecordLog` (`storage::record_log`), the generic append-only encrypted log every on-disk sidecar store is built on. |
 | [`node`] | The runtime that wires the above into a working peer (DMs, channels, files, history, sync). |
+
+Wire formats are `bincode` and versioned (magic byte + version) for forward-compatible parsing.
 
 ## Use it
 
@@ -92,6 +97,22 @@ REPL commands: `/peers`, `/msg <user_id-prefix> <text>`, `/history <user_id-pref
 > back to back (the keystore and the relay log). Wait for its `post-office … listening` line
 > rather than a fixed sleep.
 
+## Tests
+
+```bash
+# Fast unit + in-process integration tests (KDFs run with cheap test params).
+cargo test -p mesh-talk-core
+
+# Heavy, real-process end-to-end rigs (spawn actual `mesh-talk-node` processes that
+# discover each other over UDP and talk over TCP). They are `#[ignore]`d by default;
+# run them serially via the workspace Makefile:
+make e2e
+```
+
+`make e2e` runs the `two_node_cli`, `persistent_history`, and `post_office_offline` rigs with
+`--ignored --test-threads=1` (serial, to avoid discovery-port and CPU contention between the
+heavy processes).
+
 ## Security model (summary)
 
 - **End-to-end encryption.** Message content is encrypted to the recipient(s); relays and the
@@ -123,4 +144,5 @@ MIT. Part of the [Mesh-Talk](https://github.com/Kingson4Wu/mesh-talk) workspace;
 [`discovery`]: src/discovery
 [`postoffice`]: src/postoffice
 [`file`]: src/file
+[`storage`]: src/storage
 [`node`]: src/node

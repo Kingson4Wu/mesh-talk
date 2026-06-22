@@ -13,8 +13,8 @@ keep you informed as we work on a fix.
 Mesh-Talk is a peer-to-peer LAN chat client that runs on each user's own machine;
 there is no central server. Key security properties:
 
-- **No central trust** — peers are discovered over UDP broadcast and connect
-  directly over TCP on the local network.
+- **No central trust** — peers are discovered over signed UDP multicast and connect
+  directly over a Noise-encrypted TCP channel on the local network.
 - **End-to-end encryption + forward secrecy** — DMs use a Double Ratchet, group
   channels a sender-key ratchet; transport is Noise (`snow`) with the peer's device
   identity bound into the handshake. Relays only ever see ciphertext.
