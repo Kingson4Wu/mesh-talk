@@ -863,6 +863,86 @@ pub async fn diag_network_info(
     })
 }
 
+// --- Presence (online / last-seen) ------------------------------------------
+
+/// A peer is considered "online" if heard from within this window. Generous enough
+/// to ride out a missed announce tick, tight enough that a departed peer dims promptly.
+const PRESENCE_TTL_SECS: u64 = 30;
+
+/// Per-conversation presence, keyed by account id (DMs) and channel id (channels).
+#[derive(Serialize)]
+pub struct PresenceInfo {
+    /// True when at least one relevant device was heard from within the TTL.
+    pub online: bool,
+    /// Whole seconds since the most-recently-seen relevant device (None if never seen).
+    pub last_seen_secs: Option<u64>,
+}
+
+/// A snapshot of presence for every account + channel conversation, keyed by id.
+///
+/// Online = the account (DM) has ≥1 device currently in the roster seen within the TTL;
+/// for a channel, ≥1 known member device is present within the TTL. Reuses the same
+/// roster the diagnostics commands read, so it's a cheap, lock-once snapshot. Polled by
+/// the frontend on a slow interval into an isolated store (presence ticks must not
+/// re-render the message list).
+#[tauri::command]
+pub async fn get_presence(
+    state: tauri::State<'_, NodeState>,
+) -> Result<std::collections::HashMap<String, PresenceInfo>, CommandError> {
+    use std::collections::HashMap;
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
+
+    // last_seen (whole secs) per user_id, from one roster snapshot.
+    let peers = rt.peers();
+    let seen_by_user: HashMap<String, u64> = peers
+        .iter()
+        .map(|p| (p.public.user_id(), p.last_seen.elapsed().as_secs()))
+        .collect();
+
+    let fold = |secs_iter: &mut dyn Iterator<Item = u64>| -> PresenceInfo {
+        let mut best: Option<u64> = None;
+        for s in secs_iter {
+            best = Some(best.map_or(s, |b| b.min(s)));
+        }
+        PresenceInfo {
+            online: best.is_some_and(|s| s < PRESENCE_TTL_SECS),
+            last_seen_secs: best,
+        }
+    };
+
+    let mut out: HashMap<String, PresenceInfo> = HashMap::new();
+
+    // Per-account presence: the freshest of the account's known devices.
+    let mut by_account: HashMap<String, Vec<u64>> = HashMap::new();
+    for p in &peers {
+        if let Some(acct) = &p.account_id {
+            by_account
+                .entry(acct.clone())
+                .or_default()
+                .push(p.last_seen.elapsed().as_secs());
+        }
+    }
+    for (acct, secs) in by_account {
+        out.insert(acct, fold(&mut secs.iter().copied()));
+    }
+
+    // Per-channel presence: the freshest of any known member device currently in roster.
+    for c in rt.list_channels() {
+        let secs: Vec<u64> = rt
+            .channel_members(c.id)
+            .into_iter()
+            .filter_map(|m| seen_by_user.get(&m.user_id()).copied())
+            .collect();
+        out.insert(
+            hex::encode(c.id.as_bytes()),
+            fold(&mut secs.iter().copied()),
+        );
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

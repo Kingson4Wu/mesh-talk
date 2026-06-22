@@ -1,17 +1,6 @@
 import { useRef, useState } from "react";
-import {
-  Hash,
-  LogOut,
-  MessagesSquare,
-  Moon,
-  Pencil,
-  Pin,
-  PinOff,
-  Sun,
-  Users,
-} from "lucide-react";
+import { LogOut, Moon, Network, Pencil, Pin, PinOff, Sun } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { IdentityGlyph, PresenceDot } from "@/components/identity";
 import { cn } from "@/lib/utils";
 import { shortId } from "@/lib/format";
 import { useTheme } from "@/lib/theme";
@@ -33,6 +23,11 @@ import { SettingsDialog } from "./SettingsDialog";
 import { AboutDialog } from "./AboutDialog";
 import { useAuth } from "@/store/auth";
 import { convKey, useChat, type Conversation } from "@/store/chat";
+import {
+  presenceLabel,
+  presenceStatus,
+  usePresenceFor,
+} from "@/store/presence";
 import type { AccountInfo, ChannelInfo } from "@/lib/types";
 
 function accountConv(a: AccountInfo, name: string): Conversation {
@@ -46,20 +41,31 @@ function channelConv(c: ChannelInfo, name: string): Conversation {
   return { kind: "channel", id: c.channel_id, name };
 }
 
+/** A compact mesh/group sigil for channels (distinct from a person's IdentityGlyph). */
+function ChannelGlyph({ size = 36 }: { size?: number }) {
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center rounded-[28%] border border-border bg-secondary text-muted-foreground"
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
+      <Network style={{ width: size * 0.5, height: size * 0.5 }} />
+    </div>
+  );
+}
+
 function Row({
   conv,
   subtitle,
-  icon,
+  channel,
   pinned,
-  canRename,
   onTogglePin,
   onRename,
 }: {
   conv: Conversation;
   subtitle: string;
-  icon?: React.ReactNode;
+  channel?: boolean;
   pinned: boolean;
-  canRename: boolean;
   onTogglePin: () => void;
   onRename: () => void;
 }) {
@@ -68,53 +74,81 @@ function Row({
   const unread = useChat((s) => s.unread[convKey(conv)] ?? 0);
   const open = useChat((s) => s.open);
   const isActive = active != null && convKey(active) === convKey(conv);
+  // Presence is read from the isolated store and keyed by id, so a presence tick only
+  // re-renders the rows whose snapshot actually changed.
+  const presence = usePresenceFor(conv.id);
+  const status = presenceStatus(presence);
 
   return (
     <div
       role="listitem"
       className={cn(
-        "group flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors",
-        isActive ? "bg-accent" : "hover:bg-accent/50",
+        "group relative flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-150 ease-out",
+        isActive ? "bg-accent" : "hover:bg-accent/60",
       )}
     >
+      {/* Teal active rail. */}
+      {isActive && (
+        <span
+          aria-hidden
+          className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-signal"
+        />
+      )}
       <button
         onClick={() => open(conv)}
         data-conv-option
         aria-current={isActive ? "true" : undefined}
         aria-label={`${conv.name}${subtitle ? `, ${subtitle}` : ""}`}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {icon ?? <Avatar name={conv.name} id={conv.id} className="h-9 w-9" />}
+        <div className="relative">
+          {channel ? (
+            <ChannelGlyph />
+          ) : (
+            <IdentityGlyph seed={conv.id} size={36} title={conv.name} />
+          )}
+          {/* Presence overlays the glyph — the signature living-LAN cue. */}
+          {!channel && (
+            <PresenceDot
+              status={status}
+              size="md"
+              label={presenceLabel(presence, t)}
+              className="absolute -bottom-0.5 -right-0.5"
+            />
+          )}
+        </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{conv.name}</div>
-          <div className="truncate text-xs text-muted-foreground">
+          <div className="truncate font-display text-sm font-medium tracking-tight">
+            {conv.name}
+          </div>
+          <div className="truncate font-mono text-xs text-muted-foreground">
             {subtitle}
           </div>
         </div>
       </button>
       {unread > 0 && (
-        <Badge className="bg-primary text-primary-foreground">{unread}</Badge>
+        <Badge className="bg-signal font-mono text-[11px] text-primary-foreground">
+          {unread}
+        </Badge>
       )}
-      {canRename && (
-        <button
-          type="button"
-          onClick={onRename}
-          title={t("sidebar.rename")}
-          aria-label={t("sidebar.rename")}
-          className="hidden rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={onRename}
+        title={t("sidebar.rename")}
+        aria-label={t("sidebar.rename")}
+        className="hidden rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground group-hover:block"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
       <button
         type="button"
         onClick={onTogglePin}
         title={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
         aria-label={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
         className={cn(
-          "rounded p-1 hover:bg-accent",
+          "rounded-md p-1 transition-colors hover:bg-accent",
           pinned
-            ? "text-primary"
+            ? "text-signal"
             : "hidden text-muted-foreground hover:text-foreground group-hover:block",
         )}
       >
@@ -151,6 +185,7 @@ export function Sidebar() {
   const togglePinned = useChat((s) => s.togglePinned);
   const setAlias = useChat((s) => s.setAlias);
   const myId = useChat((s) => s.myId);
+  const myAccountId = useChat((s) => s.myAccountId);
   const ready = useChat((s) => s.ready);
   const bootFailed = useChat((s) => s.bootFailed);
   const retryBoot = useChat((s) => s.retryBoot);
@@ -234,14 +269,27 @@ export function Sidebar() {
 
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r bg-card/40">
-      {/* identity header */}
+      {/* Identity header — own glyph + name (display) + own short mono id, then a tidy
+          action cluster. The signature is the identity; the controls stay quiet. */}
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <MessagesSquare className="h-5 w-5" />
+          <div className="relative shrink-0">
+            <IdentityGlyph
+              seed={myAccountId || myId || username}
+              size={38}
+              title={username}
+            />
+            <PresenceDot
+              status={ready ? "online" : "offline"}
+              size="md"
+              label={ready ? t("presence.online") : t("common.starting")}
+              className="absolute -bottom-0.5 -right-0.5"
+            />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold">{username}</div>
+            <div className="truncate font-display text-sm font-semibold tracking-tight">
+              {username}
+            </div>
             <div className="truncate font-mono text-xs text-muted-foreground">
               {ready ? (
                 t("sidebar.you", { id: shortId(myId) })
@@ -259,7 +307,7 @@ export function Sidebar() {
             </div>
           </div>
         </div>
-        <div className="mt-2 flex items-center gap-0.5">
+        <div className="mt-2.5 flex items-center gap-0.5">
           <SearchDialog />
           <FilesTray />
           <LinkDeviceDialog />
@@ -309,7 +357,6 @@ export function Sidebar() {
                 conv={r.conv}
                 subtitle={r.subtitle}
                 pinned
-                canRename
                 onTogglePin={() => void togglePinned(r.id, false)}
                 onRename={() =>
                   startRename(r.id, r.a.names[0] || shortId(r.id))
@@ -321,15 +368,10 @@ export function Sidebar() {
                 key={r.id}
                 conv={r.conv}
                 subtitle={r.subtitle}
+                channel
                 pinned
-                canRename
                 onTogglePin={() => void togglePinned(r.id, false)}
                 onRename={() => startRename(r.id, r.c.name)}
-                icon={
-                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                    <Hash className="h-4 w-4" />
-                  </div>
-                }
               />
             ))}
           </>
@@ -347,7 +389,6 @@ export function Sidebar() {
             conv={r.conv}
             subtitle={r.subtitle}
             pinned={false}
-            canRename
             onTogglePin={() => void togglePinned(r.id, true)}
             onRename={() => startRename(r.id, r.a.names[0] || shortId(r.id))}
           />
@@ -366,21 +407,16 @@ export function Sidebar() {
             key={r.id}
             conv={r.conv}
             subtitle={r.subtitle}
+            channel
             pinned={false}
-            canRename
             onTogglePin={() => void togglePinned(r.id, true)}
             onRename={() => startRename(r.id, r.c.name)}
-            icon={
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                <Hash className="h-4 w-4" />
-              </div>
-            }
           />
         ))}
       </nav>
 
       <div className="flex items-center gap-2 border-t px-4 py-2 text-xs text-muted-foreground">
-        <Users className="h-3.5 w-3.5" />
+        <Network className="h-3.5 w-3.5 text-signal" />
         {t("sidebar.contactsOnLan", { count: accounts.length })}
       </div>
 

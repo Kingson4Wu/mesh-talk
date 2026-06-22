@@ -93,6 +93,18 @@ export interface DiagNetworkInfo {
   interfaces: string[];
 }
 
+// --- Presence (online / last-seen) (src-tauri/src/chat_commands.rs) ---
+
+export interface PresenceInfo {
+  /** True when ≥1 relevant device was heard from within the presence TTL. */
+  online: boolean;
+  /** Whole seconds since the most-recently-seen relevant device (null = never seen). */
+  last_seen_secs: number | null;
+}
+
+/** Per-conversation presence snapshot, keyed by account_id (DMs) and channel_id. */
+export type PresenceMap = Record<string, PresenceInfo>;
+
 // --- Background-presence settings (src-tauri/src/settings.rs) ---
 
 export interface AppSettings {

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { CornerUpLeft, RotateCw, SmilePlus } from "lucide-react";
+import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
-import { Avatar } from "@/components/ui/avatar";
+import { IdentityGlyph } from "@/components/identity";
 import {
   Popover,
   PopoverContent,
@@ -9,6 +10,7 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { formatTime, shortId } from "@/lib/format";
+import { fadeSlideUp } from "@/lib/motion";
 import { EMOJIS, mentionsName, renderWithMentions } from "@/lib/mentions";
 import type { ReactionInfo } from "@/lib/types";
 import type { ChatMessage } from "@/store/chat";
@@ -17,6 +19,7 @@ export function MessageBubble({
   m,
   parent,
   showAuthor,
+  fresh,
   reactions,
   selfReactionId,
   myName,
@@ -27,6 +30,8 @@ export function MessageBubble({
   m: ChatMessage;
   parent: ChatMessage | null;
   showAuthor: boolean;
+  /** True only for a genuinely newly-arriving/sent message → plays an entrance. */
+  fresh?: boolean;
   reactions: ReactionInfo[];
   // The id that represents "me" in a reaction's `who`: the ACCOUNT id for account
   // conversations (who is account-keyed there), the device user-id for channels.
@@ -40,14 +45,13 @@ export function MessageBubble({
   const mine = m.fromMe;
   const [pickerOpen, setPickerOpen] = useState(false);
   const mentioned = !mine && mentionsName(m.text, myName);
+  // A long `who` is a raw user id — render it mono (it's an identifier).
+  const isIdName = m.who.length > 20;
+  const authorLabel = isIdName ? shortId(m.who, 10) : m.who;
 
   // Accessible summary of the bubble: who, the text, and the time — folding the transient
   // pending/failed state so a screen reader announces the message's status too.
-  const speaker = mine
-    ? t("common.you")
-    : m.who.length > 20
-      ? shortId(m.who, 10)
-      : m.who;
+  const speaker = mine ? t("common.you") : authorLabel;
   const status = m.pending
     ? t("message.sending")
     : m.failed
@@ -58,9 +62,12 @@ export function MessageBubble({
   }`;
 
   return (
-    <div
+    <motion.div
       role="article"
       aria-label={ariaLabel}
+      initial={fresh ? "hidden" : false}
+      animate="visible"
+      variants={fadeSlideUp}
       className={cn(
         "group flex gap-2.5 px-4 py-0.5",
         mine && "flex-row-reverse",
@@ -68,7 +75,7 @@ export function MessageBubble({
     >
       <div className="w-8 shrink-0">
         {showAuthor && !mine && (
-          <Avatar name={m.who} id={m.who} className="h-8 w-8" />
+          <IdentityGlyph seed={m.who} size={32} title={authorLabel} />
         )}
       </div>
 
@@ -79,8 +86,13 @@ export function MessageBubble({
         )}
       >
         {showAuthor && !mine && (
-          <span className="mb-1 px-1 text-xs font-medium text-muted-foreground">
-            {m.who.length > 20 ? shortId(m.who, 10) : m.who}
+          <span
+            className={cn(
+              "mb-1 px-1 text-xs font-medium text-muted-foreground",
+              isIdName ? "font-mono" : "font-display tracking-tight",
+            )}
+          >
+            {authorLabel}
           </span>
         )}
 
@@ -98,11 +110,11 @@ export function MessageBubble({
 
           <div
             className={cn(
-              "rounded-2xl px-3.5 py-2 text-sm shadow-sm",
+              "rounded-2xl px-3.5 py-2 text-sm transition-shadow",
               mine
-                ? "rounded-br-md bg-primary text-primary-foreground"
-                : "rounded-bl-md bg-secondary text-secondary-foreground",
-              mentioned && "ring-2 ring-amber-400/70",
+                ? "rounded-br-md bg-signal text-primary-foreground shadow-sm"
+                : "rounded-bl-md border border-border bg-card text-card-foreground shadow-elevation",
+              mentioned && "ring-2 ring-mention/70",
               m.pending && "opacity-60",
             )}
           >
@@ -112,12 +124,12 @@ export function MessageBubble({
                   "mb-1 flex items-center gap-1 rounded-md border-l-2 px-2 py-1 text-xs",
                   mine
                     ? "border-primary-foreground/40 bg-primary-foreground/10"
-                    : "border-primary/50 bg-background/40",
+                    : "border-signal/50 bg-muted/50",
                 )}
               >
                 <CornerUpLeft className="h-3 w-3 shrink-0 opacity-70" />
                 <span className="truncate opacity-80">
-                  {parent.text || "message"}
+                  {parent.text || t("composer.message")}
                 </span>
               </div>
             )}
@@ -153,19 +165,19 @@ export function MessageBubble({
                   className={cn(
                     "flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors",
                     me
-                      ? "border-primary bg-primary/15 text-primary"
+                      ? "border-signal bg-signal/15 text-signal"
                       : "border-border bg-muted/50 hover:bg-muted",
                   )}
                 >
                   <span>{r.emoji}</span>
-                  <span className="text-[10px]">{r.who.length}</span>
+                  <span className="font-mono text-[10px]">{r.who.length}</span>
                 </button>
               );
             })}
           </div>
         )}
 
-        <span className="mt-0.5 px-1 text-[10px] text-muted-foreground">
+        <span className="mt-0.5 px-1 font-mono text-[10px] text-muted-foreground">
           {formatTime(m.wallClock)}
           {m.pending && ` · ${t("message.sending")}`}
         </span>
@@ -191,7 +203,7 @@ export function MessageBubble({
           </span>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -208,12 +220,14 @@ function Actions({
   setPickerOpen: (v: boolean) => void;
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
       <button
         onClick={onReply}
         disabled={disabled}
-        title="Reply"
+        title={t("message.reply")}
+        aria-label={t("message.reply")}
         className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
       >
         <CornerUpLeft className="h-3.5 w-3.5" />
@@ -222,7 +236,8 @@ function Actions({
         <PopoverTrigger asChild>
           <button
             disabled={disabled}
-            title="React"
+            title={t("message.react")}
+            aria-label={t("message.react")}
             className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
           >
             <SmilePlus className="h-3.5 w-3.5" />

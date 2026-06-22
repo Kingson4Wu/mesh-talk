@@ -3,10 +3,12 @@ import { useTranslation } from "react-i18next";
 import { Sidebar } from "./Sidebar";
 import { ConversationView } from "./ConversationView";
 import { useChat } from "@/store/chat";
+import { usePresence } from "@/store/presence";
 
 export function ChatApp() {
   const { t } = useTranslation();
   const start = useChat((s) => s.start);
+  const startPresence = usePresence((s) => s.start);
   const error = useChat((s) => s.error);
   const clearError = useChat((s) => s.clearError);
 
@@ -14,6 +16,13 @@ export function ChatApp() {
     const stop = start();
     return stop;
   }, [start]);
+
+  // Presence polls on its own slow interval into an isolated store — kept apart from the
+  // chat store so a presence tick never re-renders the virtualized message list.
+  useEffect(() => {
+    const stop = startPresence();
+    return stop;
+  }, [startPresence]);
 
   return (
     <div className="relative flex h-full overflow-hidden">

@@ -168,8 +168,8 @@ export function Composer({
   return (
     <div className="border-t bg-card/40 p-3">
       {replyTo && (
-        <div className="mb-2 flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-sm">
-          <CornerUpLeft className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-signal bg-muted/50 px-3 py-1.5 text-sm">
+          <CornerUpLeft className="h-3.5 w-3.5 shrink-0 text-signal" />
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
             {t("composer.replyingTo")}{" "}
             <span className="text-foreground">
@@ -187,21 +187,22 @@ export function Composer({
 
       <div className="relative">
         {suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border bg-popover shadow-xl">
+          <div className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border bg-popover shadow-elevation">
             {suggestions.map((n) => (
               <button
                 key={n}
                 onClick={() => applyMention(n)}
                 className="block w-full px-3 py-2 text-left text-sm hover:bg-accent"
               >
-                @{n}
+                <span className="font-medium text-mention">@</span>
+                {n}
               </button>
             ))}
           </div>
         )}
 
         {showEmoji && (
-          <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl border bg-popover p-2 shadow-xl">
+          <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl border bg-popover p-2 shadow-elevation">
             <div className="grid grid-cols-10 gap-0.5">
               {EMOJIS.map((e) => (
                 <button
@@ -218,7 +219,7 @@ export function Composer({
           </div>
         )}
 
-        <div className="flex items-end gap-2 rounded-2xl border bg-background p-2 focus-within:ring-2 focus-within:ring-ring">
+        <div className="flex items-end gap-2 rounded-2xl border bg-background p-2 transition-colors focus-within:border-signal focus-within:ring-2 focus-within:ring-signal/30">
           {onAttach && (
             <Button
               variant="ghost"
@@ -252,9 +253,10 @@ export function Composer({
           />
           <Button
             size="icon"
+            aria-label={t("composer.send")}
             className={cn(
-              "h-9 w-9 shrink-0 rounded-xl",
-              !text.trim() && "opacity-50",
+              "h-9 w-9 shrink-0 rounded-xl bg-signal text-primary-foreground transition-opacity",
+              !text.trim() && "opacity-40",
             )}
             disabled={!text.trim()}
             onClick={send}

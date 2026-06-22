@@ -17,6 +17,7 @@ import type {
   LoginResult,
   LogoutResult,
   PeerInfo,
+  PresenceMap,
   ReactionInfo,
   RegisterResult,
   SafetyNumber,
@@ -135,6 +136,11 @@ export const diag = {
   networkInfo: () => invoke<DiagNetworkInfo>("diag_network_info"),
   /** Force an immediate re-announce + rescan (manual "announce now"). */
   rescan: () => invoke<void>("rescan_peers"),
+};
+
+export const presence = {
+  /** Per-conversation presence snapshot, keyed by account_id (DMs) and channel_id. */
+  get: () => invoke<PresenceMap>("get_presence"),
 };
 
 /** Observability: logs + static environment facts for the Diagnostics dialog. */

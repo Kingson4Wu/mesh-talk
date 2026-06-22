@@ -68,8 +68,18 @@
     "list": "Conversations",
     "dropToSend": "Drop to send to {{name}}"
   },
+  "presence": {
+    "online": "Online",
+    "lastSeenJustNow": "Last seen just now",
+    "lastSeenSecs": "Last seen {{count}}s ago",
+    "lastSeenMins": "Last seen {{count}}m ago",
+    "lastSeenHours": "Last seen {{count}}h ago",
+    "offline": "Offline"
+  },
   "message": {
     "sending": "sending…",
+    "reply": "Reply",
+    "react": "React",
     "retry": "Retry",
     "fail": {
       "peer-unknown": "Couldn't send — recipient not reachable yet",
@@ -78,9 +88,14 @@
       "unknown": "Failed to send"
     }
   },
+  "transfer": {
+    "sending": "Sending file…",
+    "saving": "Saving file…"
+  },
   "composer": {
     "replyingTo": "Replying to",
     "message": "message",
+    "send": "Send",
     "attach": "Attach a file",
     "emoji": "Emoji",
     "insertEmoji": "Insert {{emoji}}",

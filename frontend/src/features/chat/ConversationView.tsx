@@ -2,15 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import {
-  ChevronDown,
-  Hash,
-  Loader2,
-  MessagesSquare,
-  Upload,
-} from "lucide-react";
+import { ChevronDown, Loader2, MessagesSquare, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Avatar } from "@/components/ui/avatar";
+import { IdentityCrest, PresenceDot } from "@/components/identity";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { MembersDialog } from "./MembersDialog";
@@ -18,20 +12,34 @@ import { VerifyContactDialog } from "./VerifyContactDialog";
 import { TransferBar } from "./TransferBar";
 import { chat as chatApi } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
-import { shortId } from "@/lib/format";
+import { formatDay } from "@/lib/format";
+import { useMotionOK } from "@/lib/motion";
 import { useAuth } from "@/store/auth";
 import { convKey, displayName, useChat, type ChatMessage } from "@/store/chat";
+import {
+  presenceLabel,
+  presenceStatus,
+  usePresenceFor,
+} from "@/store/presence";
 import type { ReactionInfo } from "@/lib/types";
 
 function EmptyState() {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-        <MessagesSquare className="h-8 w-8" />
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+      <div className="relative">
+        <div
+          aria-hidden
+          className="absolute inset-0 -z-10 rounded-2xl bg-signal/15 blur-2xl"
+        />
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl border bg-card text-signal shadow-elevation">
+          <MessagesSquare className="h-8 w-8" />
+        </div>
       </div>
       <div>
-        <p className="font-medium">{t("conversation.noneSelectedTitle")}</p>
+        <p className="font-display text-lg font-semibold tracking-tight">
+          {t("conversation.noneSelectedTitle")}
+        </p>
         <p className="text-sm text-muted-foreground">
           {t("conversation.noneSelectedDesc")}
         </p>
@@ -46,13 +54,116 @@ function EmptyState() {
 function UnlockingState() {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-      <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+      <div className="relative flex h-16 w-16 items-center justify-center">
+        <span
+          aria-hidden
+          className="absolute inset-0 animate-ping rounded-full bg-signal/20"
+        />
+        <Loader2 className="h-7 w-7 animate-spin text-signal" />
+      </div>
       <div>
-        <p className="font-medium">{t("conversation.unlockingTitle")}</p>
+        <p className="font-display text-lg font-semibold tracking-tight">
+          {t("conversation.unlockingTitle")}
+        </p>
         <p className="text-sm text-muted-foreground">
           {t("conversation.unlockingDesc")}
         </p>
+      </div>
+    </div>
+  );
+}
+
+/** A quiet centered date separator between days in the message log. */
+function DaySeparator({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      <span className="h-px flex-1 bg-border" />
+      <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+/** DM header — the large IdentityCrest (glyph + name + presence + verified), with the
+ *  safety number reachable via the verify dialog rendered alongside in the header. */
+function DmHeader({ id, name }: { id: string; name: string }) {
+  const { t } = useTranslation();
+  const peers = useChat((s) => s.peers);
+  const presence = usePresenceFor(id);
+  const status = presenceStatus(presence);
+
+  // Verified state for the crest: a single trust read for the active account (not per-row,
+  // so no fan-out), refreshed when the conversation or its presenting device changes.
+  const fingerprint = peers.find((p) => p.account_id === id)?.user_id ?? "";
+  const [verified, setVerified] = useState(false);
+  useEffect(() => {
+    if (!fingerprint) {
+      setVerified(false);
+      return;
+    }
+    let live = true;
+    void chatApi
+      .getTrust(id, fingerprint)
+      .then((tr) => live && setVerified(tr.verified && !tr.fingerprint_changed))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [id, fingerprint]);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <IdentityCrest
+        id={id}
+        name={name}
+        verified={verified}
+        status={status}
+        variant="compact"
+      />
+      <span className="pl-12 text-xs text-muted-foreground">
+        {presenceLabel(presence, t)}
+      </span>
+    </div>
+  );
+}
+
+/** Channel header — a mesh/group glyph + name + member count. */
+function ChannelHeader({
+  id,
+  name,
+  memberCount,
+}: {
+  id: string;
+  name: string;
+  memberCount: number;
+}) {
+  const { t } = useTranslation();
+  const presence = usePresenceFor(id);
+  const status = presenceStatus(presence);
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <div className="relative">
+        <div className="flex h-9 w-9 items-center justify-center rounded-[28%] border border-border bg-secondary text-muted-foreground">
+          <MessagesSquare className="h-4 w-4" />
+        </div>
+        <PresenceDot
+          status={status}
+          size="md"
+          className="absolute -bottom-0.5 -right-0.5"
+        />
+      </div>
+      <div className="min-w-0">
+        <div className="truncate font-display font-semibold tracking-tight">
+          {name}
+        </div>
+        <div className="truncate text-xs text-muted-foreground">
+          {memberCount
+            ? t("conversation.members", { count: memberCount })
+            : t("conversation.channel")}
+        </div>
       </div>
     </div>
   );
@@ -66,6 +177,7 @@ const NO_REACTIONS: ReactionInfo[] = [];
 
 export function ConversationView() {
   const { t } = useTranslation();
+  const motionOK = useMotionOK();
   const active = useChat((s) => s.active);
   const favorites = useChat((s) => s.favorites);
   const send = useChat((s) => s.send);
@@ -132,10 +244,33 @@ export function ConversationView() {
   // Virtuoso's `followOutput` only sticks to the newest message while already at the
   // bottom, so reading history is never interrupted by an inbound message.
   const [showJump, setShowJump] = useState(false);
+
   useEffect(() => {
     setReplyTo(null);
     setShowJump(false);
   }, [key]);
+
+  // Message-enter motion: animate ONLY messages that arrive after a conversation's
+  // initial load (newly sent/received), never the initial backlog and never on scroll
+  // (virtuoso unmounts/remounts rows as they scroll out of the window). `seenKeys` is the
+  // baseline of keys already shown; it's READ in render (pure, StrictMode-safe) and only
+  // MUTATED in a post-commit effect. `primed` excludes the very first backlog load.
+  const rowKey = (m: ChatMessage, i: number) =>
+    m.id ?? m.clientId ?? `pending-${i}`;
+  const seenKeys = useRef<Set<string>>(new Set());
+  const primed = useRef(false);
+  useEffect(() => {
+    seenKeys.current = new Set();
+    primed.current = false;
+  }, [key]);
+  useEffect(() => {
+    // Record every currently-present key as "seen" after commit, and prime after the
+    // first non-empty load so subsequent genuinely-new messages animate exactly once.
+    messages.forEach((m, i) => seenKeys.current.add(rowKey(m, i)));
+    if (!primed.current && messages.length > 0) primed.current = true;
+  }, [messages, key]);
+  const isFresh = (m: ChatMessage, i: number) =>
+    primed.current && !seenKeys.current.has(rowKey(m, i));
 
   const byId = useMemo(() => {
     const m = new Map<string, ChatMessage>();
@@ -180,9 +315,9 @@ export function ConversationView() {
   return (
     <main className="relative flex flex-1 flex-col">
       {dragOver && (
-        <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-primary/10 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-primary bg-background/90 px-8 py-6 shadow-lg">
-            <Upload className="h-8 w-8 text-primary" />
+        <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-signal/10 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-signal bg-background/90 px-8 py-6 shadow-elevation-lg">
+            <Upload className="h-8 w-8 text-signal" />
             <p className="text-sm font-medium">
               {t("conversation.dropToSend", { name: headerName })}
             </p>
@@ -191,22 +326,15 @@ export function ConversationView() {
       )}
       <header className="flex items-center gap-3 border-b px-5 py-3">
         {isChannel ? (
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <Hash className="h-4 w-4" />
-          </div>
+          <ChannelHeader
+            id={active.id}
+            name={headerName}
+            memberCount={members.length}
+          />
         ) : (
-          <Avatar name={headerName} id={active.id} className="h-9 w-9" />
+          <DmHeader id={active.id} name={headerName} />
         )}
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold">{headerName}</div>
-          <div className="truncate text-xs text-muted-foreground">
-            {isChannel
-              ? members.length
-                ? t("conversation.members", { count: members.length })
-                : t("conversation.channel")
-              : t("conversation.directMessage", { id: shortId(active.id, 12) })}
-          </div>
-        </div>
+        <div className="flex-1" />
         {isChannel ? (
           <MembersDialog />
         ) : (
@@ -253,13 +381,18 @@ export function ConversationView() {
               const prev = messages[i - 1];
               const showAuthor =
                 !prev || prev.who !== m.who || prev.fromMe !== m.fromMe;
+              // A date separator opens each new calendar day (and the very first item).
+              const showDay =
+                !prev || formatDay(prev.wallClock) !== formatDay(m.wallClock);
               const parent = m.replyTo ? (byId.get(m.replyTo) ?? null) : null;
               return (
                 <div className="px-0 pb-0.5">
+                  {showDay && <DaySeparator label={formatDay(m.wallClock)} />}
                   <MessageBubble
                     m={m}
                     parent={parent}
                     showAuthor={showAuthor}
+                    fresh={motionOK && isFresh(m, i)}
                     reactions={m.id ? (reactionsByTarget.get(m.id) ?? []) : []}
                     selfReactionId={selfReactionId}
                     myName={myName}
@@ -271,7 +404,7 @@ export function ConversationView() {
               );
             }}
             // Stable per-row identity so reactions/edits don't remount unrelated rows.
-            computeItemKey={(i, m) => m.id ?? m.clientId ?? `pending-${i}`}
+            computeItemKey={(i, m) => rowKey(m, i)}
           />
         )}
         {showJump && (
@@ -291,7 +424,7 @@ export function ConversationView() {
         )}
       </div>
 
-      <TransferBar transferKey={active.id} label="file" />
+      <TransferBar transferKey={active.id} />
 
       <Composer
         placeholder={

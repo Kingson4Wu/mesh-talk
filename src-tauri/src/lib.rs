@@ -193,6 +193,7 @@ pub fn run_tauri() {
             crate::chat_commands::search,
             crate::chat_commands::diag_get_peers,
             crate::chat_commands::diag_network_info,
+            crate::chat_commands::get_presence,
             crate::chat_commands::rescan_peers,
             crate::chat_commands::write_temp_file,
             crate::logger::get_logs_dir,
