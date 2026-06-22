@@ -374,6 +374,9 @@ export function ConversationView() {
             aria-live="polite"
             aria-label={t("conversation.messageLog", { name: headerName })}
             className="h-full py-4"
+            // Keep a short conversation anchored to the bottom (just above the composer)
+            // instead of floating at the top with a large empty gap below it.
+            alignToBottom
             // Start pinned to the newest message (chat opens at the bottom).
             initialTopMostItemIndex={messages.length - 1}
             // Stick to the bottom on new messages only while the user is already there
@@ -385,8 +388,12 @@ export function ConversationView() {
             increaseViewportBy={400}
             itemContent={(i, m) => {
               const prev = messages[i - 1];
+              // Author name + avatar only earn their place in channels; in a 1:1 DM the
+              // conversation header already says who you're talking to, so the per-message
+              // author is redundant clutter (and would leak the raw device id).
               const showAuthor =
-                !prev || prev.who !== m.who || prev.fromMe !== m.fromMe;
+                isChannel &&
+                (!prev || prev.who !== m.who || prev.fromMe !== m.fromMe);
               // A date separator opens each new calendar day (and the very first item).
               const showDay =
                 !prev || formatDay(prev.wallClock) !== formatDay(m.wallClock);
@@ -398,6 +405,7 @@ export function ConversationView() {
                     m={m}
                     parent={parent}
                     showAuthor={showAuthor}
+                    isChannel={isChannel}
                     fresh={motionOK && isFresh(m, i)}
                     reactions={m.id ? (reactionsByTarget.get(m.id) ?? []) : []}
                     selfReactionId={selfReactionId}

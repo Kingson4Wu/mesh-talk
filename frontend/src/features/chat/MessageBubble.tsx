@@ -19,6 +19,7 @@ export function MessageBubble({
   m,
   parent,
   showAuthor,
+  isChannel,
   fresh,
   reactions,
   selfReactionId,
@@ -30,6 +31,8 @@ export function MessageBubble({
   m: ChatMessage;
   parent: ChatMessage | null;
   showAuthor: boolean;
+  /** Channel conversations show per-message author avatar + name; DMs don't. */
+  isChannel: boolean;
   /** True only for a genuinely newly-arriving/sent message → plays an entrance. */
   fresh?: boolean;
   reactions: ReactionInfo[];
@@ -74,11 +77,14 @@ export function MessageBubble({
         mine && "flex-row-reverse",
       )}
     >
-      <div className="w-8 shrink-0">
-        {showAuthor && !mine && (
-          <IdentityGlyph seed={m.who} size={32} title={authorLabel} />
-        )}
-      </div>
+      {/* Avatar gutter only in channels; DMs align flush with no empty gutter. */}
+      {isChannel && (
+        <div className="w-8 shrink-0">
+          {showAuthor && !mine && (
+            <IdentityGlyph seed={m.who} size={32} title={authorLabel} />
+          )}
+        </div>
+      )}
 
       <div
         className={cn(
