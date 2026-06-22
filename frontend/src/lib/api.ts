@@ -133,6 +133,8 @@ export const chat = {
 export const diag = {
   getPeers: () => invoke<DiagPeerInfo[]>("diag_get_peers"),
   networkInfo: () => invoke<DiagNetworkInfo>("diag_network_info"),
+  /** Force an immediate re-announce + rescan (manual "announce now"). */
+  rescan: () => invoke<void>("rescan_peers"),
 };
 
 /** Observability: logs + static environment facts for the Diagnostics dialog. */

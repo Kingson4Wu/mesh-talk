@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Info,
   Radar,
+  RefreshCw,
   ShieldAlert,
   Trash2,
   Wifi,
@@ -108,7 +109,18 @@ export function DiagnosticsDialog() {
   const [env, setEnv] = useState<EnvInfo | null>(null);
   const [logTail, setLogTail] = useState<string | null>(null);
   const [error, setLocalError] = useState<string | null>(null);
+  const [rescanned, setRescanned] = useState(false);
   const prevPeers = useRef<DiagPeerInfo[]>([]);
+
+  const rescan = async () => {
+    try {
+      await diag.rescan();
+      setRescanned(true);
+      setTimeout(() => setRescanned(false), 1500);
+    } catch (e) {
+      setLocalError(errorMessage(e));
+    }
+  };
 
   const revealLogs = async () => {
     try {
@@ -259,12 +271,25 @@ export function DiagnosticsDialog() {
 
           {/* Discovered peers */}
           <section className="space-y-2 rounded-lg border p-3">
-            <p className="flex items-center gap-2 text-sm font-semibold">
-              <Radar className="h-4 w-4" /> {t("diagnostics.discoveredPeers")}
-              <Badge className="bg-muted text-muted-foreground">
-                {peers.length}
-              </Badge>
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                <Radar className="h-4 w-4" /> {t("diagnostics.discoveredPeers")}
+                <Badge className="bg-muted text-muted-foreground">
+                  {peers.length}
+                </Badge>
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void rescan()}
+                title={t("diagnostics.rescanHint")}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                {rescanned
+                  ? t("diagnostics.rescanned")
+                  : t("diagnostics.rescan")}
+              </Button>
+            </div>
             {peers.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 {t("diagnostics.noPeers")}

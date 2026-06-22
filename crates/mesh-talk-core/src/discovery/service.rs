@@ -9,6 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::UdpSocket;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 /// Decode + verify + record one received datagram. Returns the [`UpdateOutcome`]
@@ -76,10 +77,21 @@ pub async fn run_listen(
     }
 }
 
+/// A staggered startup burst of announces (offsets from start), the way LocalSend
+/// fires several quick multicast announces at launch to beat UDP packet loss and
+/// converge first-contact fast. Each is idempotent — peers self-filter dupes by
+/// `user_id` — so an extra few packets are harmless. Sent before the steady loop.
+const BROADCAST_STARTUP_BURST_MS: [u64; 3] = [100, 500, 2000];
+
 /// Periodically send our `announce` to `target` (the multicast group in
 /// production) over `socket`, every `interval`. `socket` must already be
 /// configured for the target (e.g. broadcast-enabled if `target` is a broadcast
 /// address); this function only sends.
+///
+/// At startup it first fires a staggered burst ([`BROADCAST_STARTUP_BURST_MS`]) so
+/// first-contact converges fast even if an early multicast packet is dropped, then
+/// settles into the steady `interval` loop. If `trigger` is supplied, a notify on it
+/// fires an immediate extra announce (used by the manual "announce now" control).
 ///
 /// A transient `send_to` error (e.g. WiFi not yet up at launch, or the network
 /// dropping out) is ignored — the loop keeps ticking and retries next interval,
@@ -89,11 +101,27 @@ pub async fn run_broadcast(
     announce: Announce,
     target: SocketAddr,
     interval: Duration,
+    trigger: Option<Arc<Notify>>,
 ) {
     let bytes = encode(&announce);
+    // Startup burst: a few staggered announces to beat early UDP loss.
+    for offset_ms in BROADCAST_STARTUP_BURST_MS {
+        tokio::time::sleep(Duration::from_millis(offset_ms)).await;
+        let _ = socket.send_to(&bytes, target).await;
+    }
     let mut tick = tokio::time::interval(interval);
+    tick.tick().await; // consume the immediate first tick (the burst just sent)
     loop {
-        tick.tick().await;
+        // Steady re-announce on the timer, OR an immediate one when triggered.
+        match &trigger {
+            Some(notify) => tokio::select! {
+                _ = tick.tick() => {}
+                _ = notify.notified() => {}
+            },
+            None => {
+                tick.tick().await;
+            }
+        }
         // Ignore send errors: the network may be transiently down. Retry next tick.
         let _ = socket.send_to(&bytes, target).await;
     }
@@ -112,7 +140,12 @@ const SCAN_STEADY_INTERVAL: Duration = Duration::from_secs(20);
 /// skipping our own address. The receiver's normal listen loop records us directly
 /// (and, on first sight, replies), so two scanning sides converge symmetrically
 /// even when multicast/broadcast is dropped. Send errors are ignored per-target.
-pub async fn run_scan(socket: Arc<UdpSocket>, announce: Announce, discovery_port: u16) {
+pub async fn run_scan(
+    socket: Arc<UdpSocket>,
+    announce: Announce,
+    discovery_port: u16,
+    trigger: Option<Arc<Notify>>,
+) {
     let bytes = encode(&announce);
     for delay in SCAN_STARTUP_DELAYS_SECS {
         tokio::time::sleep(Duration::from_secs(delay)).await;
@@ -121,7 +154,16 @@ pub async fn run_scan(socket: Arc<UdpSocket>, announce: Announce, discovery_port
     let mut tick = tokio::time::interval(SCAN_STEADY_INTERVAL);
     tick.tick().await; // consume the immediate first tick (we just scanned)
     loop {
-        tick.tick().await;
+        // Steady sweep on the timer, OR an immediate one when triggered.
+        match &trigger {
+            Some(notify) => tokio::select! {
+                _ = tick.tick() => {}
+                _ = notify.notified() => {}
+            },
+            None => {
+                tick.tick().await;
+            }
+        }
         scan_once(&socket, &bytes, discovery_port).await;
     }
 }
@@ -176,6 +218,23 @@ pub fn spawn_discovery(
     self_user_id: String,
     discovery_port: u16,
 ) -> Vec<JoinHandle<()>> {
+    spawn_discovery_with_trigger(socket, roster, announce, self_user_id, discovery_port, None)
+}
+
+/// As [`spawn_discovery`], but the broadcast and scan loops also watch `trigger`:
+/// a `notify_waiters()` on it fires an immediate re-announce AND an immediate /24
+/// sweep (in addition to their timers). The desktop runtime wires this to a manual
+/// "announce now / rescan" control so a user can force first-contact when LAN
+/// discovery is flaky. Pass `None` (or use [`spawn_discovery`]) when no manual
+/// trigger is needed.
+pub fn spawn_discovery_with_trigger(
+    socket: Arc<UdpSocket>,
+    roster: Arc<Mutex<Roster>>,
+    announce: Announce,
+    self_user_id: String,
+    discovery_port: u16,
+    trigger: Option<Arc<Notify>>,
+) -> Vec<JoinHandle<()>> {
     let self_announce_bytes = Arc::new(encode(&announce));
     let target: SocketAddr = (crate::node::net::DISCOVERY_MULTICAST_GROUP, discovery_port).into();
     vec![
@@ -191,8 +250,14 @@ pub fn spawn_discovery(
             announce.clone(),
             target,
             Duration::from_secs(2),
+            trigger.clone(),
         )),
-        tokio::spawn(run_scan(Arc::clone(&socket), announce, discovery_port)),
+        tokio::spawn(run_scan(
+            Arc::clone(&socket),
+            announce,
+            discovery_port,
+            trigger,
+        )),
         tokio::spawn(run_rejoin(socket)),
     ]
 }
@@ -344,6 +409,7 @@ mod tests {
             announce.clone(),
             recv_addr,
             Duration::from_millis(10),
+            None,
         ));
 
         let mut buf = vec![0u8; 2048];
@@ -354,6 +420,80 @@ mod tests {
         let decoded = decode(&buf[..n]).expect("decodes");
         assert_eq!(decoded, announce);
         assert!(decoded.verify());
+    }
+
+    #[tokio::test]
+    async fn broadcast_burst_fires_several_announces_before_the_steady_loop() {
+        // The startup burst sends multiple announces within the first ~2s, all
+        // decodable and BEFORE the long steady interval would have ticked. Use a
+        // very long steady interval so any announce we receive must be a burst one.
+        let alice = DeviceIdentity::generate();
+        let receiver = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let recv_addr = receiver.local_addr().unwrap();
+        let sender = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let announce = Announce::new(&alice, "Alice", 4000);
+
+        tokio::spawn(run_broadcast(
+            sender,
+            announce.clone(),
+            recv_addr,
+            Duration::from_secs(3600), // steady loop won't tick during the test
+            None,
+        ));
+
+        // Expect at least the first two burst announces (100ms, 500ms) inside 2s.
+        let mut buf = vec![0u8; 2048];
+        for _ in 0..2 {
+            let (n, _src) =
+                tokio::time::timeout(Duration::from_secs(2), receiver.recv_from(&mut buf))
+                    .await
+                    .expect("a burst announce within 2s")
+                    .unwrap();
+            assert_eq!(decode(&buf[..n]).expect("decodes"), announce);
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_trigger_fires_an_immediate_announce() {
+        // With a long steady interval (and after the burst), a notify on the trigger
+        // produces an extra announce promptly — the manual "announce now" path.
+        let alice = DeviceIdentity::generate();
+        let receiver = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let recv_addr = receiver.local_addr().unwrap();
+        let sender = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let announce = Announce::new(&alice, "Alice", 4000);
+        let trigger = Arc::new(Notify::new());
+
+        tokio::spawn(run_broadcast(
+            sender,
+            announce.clone(),
+            recv_addr,
+            Duration::from_secs(3600),
+            Some(Arc::clone(&trigger)),
+        ));
+
+        // Drain the startup burst (3 announces) so the next one is trigger-driven.
+        let mut buf = vec![0u8; 2048];
+        for _ in 0..BROADCAST_STARTUP_BURST_MS.len() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), receiver.recv_from(&mut buf))
+                .await
+                .expect("burst announce")
+                .unwrap();
+        }
+        // No further announce without a trigger (steady interval is an hour).
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), receiver.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "no announce should arrive between the burst and a trigger"
+        );
+        // Fire the trigger → an immediate announce arrives.
+        trigger.notify_waiters();
+        let (n, _src) = tokio::time::timeout(Duration::from_secs(2), receiver.recv_from(&mut buf))
+            .await
+            .expect("triggered announce within 2s")
+            .unwrap();
+        assert_eq!(decode(&buf[..n]).expect("decodes"), announce);
     }
 
     #[tokio::test]

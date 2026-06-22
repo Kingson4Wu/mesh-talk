@@ -3,7 +3,7 @@
 //! holds the handles. Tauri-agnostic — inbound DMs are delivered via an injected
 //! `on_dm` callback, so this is unit-testable without a GUI.
 
-use crate::discovery::service::spawn_discovery;
+use crate::discovery::service::spawn_discovery_with_trigger;
 use crate::discovery::{Announce, PeerRecord, Roster};
 use crate::eventlog::LogError;
 use crate::identity::account_keystore;
@@ -14,7 +14,7 @@ use crate::node::{HistoryEntry, Node, NodeError, ReceivedDm};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
 /// How often the desktop node drains held DMs from the elected post office.
@@ -67,6 +67,9 @@ pub struct NodeRuntime {
     account_path: std::path::PathBuf,
     /// The session password, to re-encrypt the keystore when adopting a linked account.
     password: String,
+    /// Notify shared with the discovery broadcast + scan loops; firing it forces an
+    /// immediate re-announce and a /24 sweep (the manual "announce now / rescan").
+    discovery_trigger: Arc<Notify>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -130,13 +133,15 @@ impl NodeRuntime {
 
         let socket = Arc::new(discovery_socket(discovery_port)?);
 
+        let discovery_trigger = Arc::new(Notify::new());
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
-        tasks.extend(spawn_discovery(
+        tasks.extend(spawn_discovery_with_trigger(
             Arc::clone(&socket),
             Arc::clone(&roster),
             announce,
             self_uid.clone(),
             discovery_port,
+            Some(Arc::clone(&discovery_trigger)),
         ));
         tasks.push(tokio::spawn(Arc::clone(&node).run_accept_loop(listener)));
         {
@@ -173,6 +178,7 @@ impl NodeRuntime {
             tcp_port,
             account_path: dir.join("account.keystore"),
             password: password.to_string(),
+            discovery_trigger,
             tasks,
         })
     }
@@ -196,6 +202,14 @@ impl NodeRuntime {
     /// is wired; today each device generates its own account on first run).
     pub fn account_id(&self) -> &str {
         &self.account_id
+    }
+
+    /// Force an immediate re-announce + /24 rescan, on top of the periodic timers.
+    /// Useful when LAN discovery is flaky (e.g. first-contact lost to UDP drops):
+    /// the user can press "announce now" to converge without waiting for the next
+    /// tick. Idempotent and harmless — peers self-filter duplicate announces.
+    pub fn trigger_discovery(&self) {
+        self.discovery_trigger.notify_waiters();
     }
 
     /// A snapshot of currently-known peers.

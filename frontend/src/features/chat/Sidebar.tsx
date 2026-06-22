@@ -30,6 +30,7 @@ import { FilesTray } from "./FilesTray";
 import { LinkDeviceDialog } from "./LinkDeviceDialog";
 import { DiagnosticsDialog } from "./DiagnosticsDialog";
 import { SettingsDialog } from "./SettingsDialog";
+import { AboutDialog } from "./AboutDialog";
 import { useAuth } from "@/store/auth";
 import { convKey, useChat, type Conversation } from "@/store/chat";
 import type { AccountInfo, ChannelInfo } from "@/lib/types";
@@ -264,20 +265,21 @@ export function Sidebar() {
           <LinkDeviceDialog />
           <DiagnosticsDialog />
           <SettingsDialog />
+          <AboutDialog />
           <div className="flex-1" />
           <Button
             variant="ghost"
             size="icon"
             title={
-              theme === "dark" ? t("sidebar.lightMode") : t("sidebar.darkMode")
+              theme === "light" ? t("sidebar.darkMode") : t("sidebar.lightMode")
             }
             aria-label={t("sidebar.toggleTheme")}
             onClick={() => toggleTheme()}
           >
-            {theme === "dark" ? (
-              <Sun className="h-4 w-4" />
-            ) : (
+            {theme === "light" ? (
               <Moon className="h-4 w-4" />
+            ) : (
+              <Sun className="h-4 w-4" />
             )}
           </Button>
           <Button

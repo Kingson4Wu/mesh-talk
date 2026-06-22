@@ -832,6 +832,16 @@ pub async fn diag_get_peers(
         .collect())
 }
 
+/// Force an immediate re-announce + /24 rescan (the manual "announce now" control on
+/// the Diagnostics page). Helps converge first-contact when LAN discovery is flaky.
+#[tauri::command]
+pub async fn rescan_peers(state: tauri::State<'_, NodeState>) -> Result<(), CommandError> {
+    let guard = state.0.lock().await;
+    let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
+    rt.trigger_discovery();
+    Ok(())
+}
+
 /// This device's own identity + LAN/discovery facts, for the Diagnostics page.
 #[tauri::command]
 pub async fn diag_network_info(

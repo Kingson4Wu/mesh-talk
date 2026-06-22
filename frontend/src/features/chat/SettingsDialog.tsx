@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { Bell, Languages, MinusSquare, Rocket, Settings } from "lucide-react";
+import {
+  Bell,
+  Languages,
+  MinusSquare,
+  Palette,
+  Rocket,
+  Settings,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -13,6 +20,9 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { settings as settingsApi } from "@/lib/api";
 import { setLanguage, SUPPORTED_LANGUAGES, type Language } from "@/lib/i18n";
+import { useTheme, type Theme } from "@/lib/theme";
+
+const THEMES: Theme[] = ["light", "dark", "oled"];
 
 interface Row {
   id: string;
@@ -63,6 +73,9 @@ const LANGUAGE_LABELS: Record<Language, string> = {
 export function SettingsDialog() {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
+  // Selectors return primitives only (stable refs) — a fresh object once black-screened the app.
+  const theme = useTheme((s) => s.theme);
+  const setTheme = useTheme((s) => s.set);
   // Primitive state only (memory: zustand selectors returning fresh objects each
   // render once black-screened the app — kept as local primitives here regardless).
   const [minimizeToTray, setMinimizeToTray] = useState(true);
@@ -170,6 +183,37 @@ export function SettingsDialog() {
               {SUPPORTED_LANGUAGES.map((lng) => (
                 <option key={lng} value={lng}>
                   {LANGUAGE_LABELS[lng]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="mt-0.5 text-muted-foreground">
+                <Palette className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <label
+                  htmlFor="setting-theme"
+                  className="block text-sm font-medium"
+                >
+                  {t("settings.theme")}
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.themeDesc")}
+                </p>
+              </div>
+            </div>
+            <select
+              id="setting-theme"
+              value={theme}
+              onChange={(e) => setTheme(e.target.value as Theme)}
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              aria-label={t("settings.theme")}
+            >
+              {THEMES.map((th) => (
+                <option key={th} value={th}>
+                  {t(`settings.theme_${th}`)}
                 </option>
               ))}
             </select>

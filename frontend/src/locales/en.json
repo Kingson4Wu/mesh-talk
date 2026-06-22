@@ -96,7 +96,12 @@
     "closeToTray": "Close to tray",
     "closeToTrayDesc": "Closing the window hides it to the tray instead of quitting.",
     "notifications": "Notifications",
-    "notificationsDesc": "Notify me about new messages when the window isn't focused."
+    "notificationsDesc": "Notify me about new messages when the window isn't focused.",
+    "theme": "Theme",
+    "themeDesc": "Choose the color theme.",
+    "theme_light": "Light",
+    "theme_dark": "Dark",
+    "theme_oled": "Pure black (OLED)"
   },
   "search": {
     "title": "Search messages",
@@ -169,7 +174,10 @@
     "logEmpty": "(log is empty)",
     "troubleshoot": "Troubleshoot",
     "troubleshootHint": "If peers don't appear, your firewall may block LAN discovery. Allow UDP {{udp}} (multicast discovery) and TCP {{tcp}} (this session). Make sure both devices are on the same network.",
-    "macosFirewall": "System Settings → Network → Firewall: allow incoming connections for Mesh-Talk, or turn the firewall off on a trusted LAN."
+    "macosFirewall": "System Settings → Network → Firewall: allow incoming connections for Mesh-Talk, or turn the firewall off on a trusted LAN.",
+    "rescan": "Announce now",
+    "rescanned": "Announced",
+    "rescanHint": "Re-announce this device and rescan the LAN immediately."
   },
   "verify": {
     "trigger": "Verify safety number",
@@ -194,5 +202,13 @@
     "description": "Create a group conversation and invite discovered peers.",
     "namePlaceholder": "Channel name",
     "noPeers": "No peers to invite yet."
+  },
+  "about": {
+    "title": "About",
+    "description": "App version and project links.",
+    "tagline": "Encrypted, peer-to-peer messaging over your local network.",
+    "version": "Version {{version}}",
+    "sourceRepo": "Source repository",
+    "license": "License (MIT)"
   }
 }

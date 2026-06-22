@@ -96,7 +96,12 @@
     "closeToTray": "关闭到托盘",
     "closeToTrayDesc": "关闭窗口时隐藏到托盘，而非退出。",
     "notifications": "通知",
-    "notificationsDesc": "当窗口未聚焦时，提醒我有新消息。"
+    "notificationsDesc": "当窗口未聚焦时，提醒我有新消息。",
+    "theme": "主题",
+    "themeDesc": "选择配色主题。",
+    "theme_light": "浅色",
+    "theme_dark": "深色",
+    "theme_oled": "纯黑（OLED）"
   },
   "search": {
     "title": "搜索消息",
@@ -169,7 +174,10 @@
     "logEmpty": "（日志为空）",
     "troubleshoot": "故障排查",
     "troubleshootHint": "如果看不到对方，可能是防火墙拦截了局域网发现。请放行 UDP {{udp}}（组播发现）和 TCP {{tcp}}（本次会话），并确保两台设备在同一网络。",
-    "macosFirewall": "系统设置 → 网络 → 防火墙：允许 Mesh-Talk 接收传入连接，或在受信任的局域网中关闭防火墙。"
+    "macosFirewall": "系统设置 → 网络 → 防火墙：允许 Mesh-Talk 接收传入连接，或在受信任的局域网中关闭防火墙。",
+    "rescan": "立即广播",
+    "rescanned": "已广播",
+    "rescanHint": "立即重新广播本设备并重新扫描局域网。"
   },
   "verify": {
     "trigger": "验证安全码",
@@ -194,5 +202,13 @@
     "description": "创建群组会话并邀请已发现的对端。",
     "namePlaceholder": "频道名称",
     "noPeers": "暂无可邀请的对端。"
+  },
+  "about": {
+    "title": "关于",
+    "description": "应用版本与项目链接。",
+    "tagline": "在局域网内进行端到端加密的点对点通信。",
+    "version": "版本 {{version}}",
+    "sourceRepo": "源代码仓库",
+    "license": "许可证（MIT）"
   }
 }
