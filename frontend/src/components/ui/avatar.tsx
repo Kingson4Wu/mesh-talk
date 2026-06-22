@@ -1,40 +1,44 @@
 import { cn } from "@/lib/utils";
+import { IdentityGlyph } from "@/components/identity/IdentityGlyph";
 
-/** Deterministic gradient avatar from an id/name + initials. */
-function hashHue(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
-  return h;
-}
-
+/**
+ * Avatar — renders an image when `src` is provided, otherwise falls back to the
+ * on-brand deterministic IdentityGlyph sigil derived from the id (the "Ink & Signal"
+ * signature). Existing `name`/`id`/`className` API is unchanged; `src` is additive.
+ */
 export function Avatar({
   name,
   id,
+  src,
+  size = 36,
+  verified,
   className,
 }: {
   name: string;
   id: string;
+  src?: string;
+  size?: number;
+  verified?: boolean;
   className?: string;
 }) {
-  const initials = (name || id)
-    .split(/\s+/)
-    .map((w) => w[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-  const hue = hashHue(id || name);
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={name || id}
+        width={size}
+        height={size}
+        className={cn("shrink-0 rounded-full object-cover", className)}
+      />
+    );
+  }
   return (
-    <div
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white",
-        className,
-      )}
-      style={{
-        background: `linear-gradient(135deg, hsl(${hue} 65% 55%), hsl(${(hue + 40) % 360} 65% 45%))`,
-      }}
-    >
-      {initials || "?"}
-    </div>
+    <IdentityGlyph
+      seed={id || name}
+      size={size}
+      verified={verified}
+      title={name || id}
+      className={className}
+    />
   );
 }

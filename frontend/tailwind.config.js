@@ -40,6 +40,27 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Signature accents — `bg-signal`, `text-verified`, `text-mention`.
+        signal: "hsl(var(--signal))",
+        verified: "hsl(var(--verified))",
+        mention: "hsl(var(--mention))",
+      },
+      fontFamily: {
+        display: [
+          "'Space Grotesk Variable'",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif",
+        ],
+        sans: ["'Inter Variable'", "system-ui", "sans-serif"],
+        mono: ["'Geist Mono Variable'", "ui-monospace", "monospace"],
+      },
+      boxShadow: {
+        // Soft elevation for cards / sheets / popovers under the ink palette.
+        elevation:
+          "0 1px 2px hsl(220 40% 2% / 0.18), 0 8px 24px -8px hsl(220 40% 2% / 0.28)",
+        "elevation-lg":
+          "0 2px 4px hsl(220 40% 2% / 0.2), 0 16px 48px -12px hsl(220 40% 2% / 0.42)",
       },
       borderRadius: {
         lg: "var(--radius)",
