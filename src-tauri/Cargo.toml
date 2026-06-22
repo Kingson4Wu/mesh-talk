@@ -49,6 +49,9 @@ serde_json = "1"
 # normal (non-test) dependency and so doesn't inherit the core crate's own `cfg(test)` cheap path.
 mesh-talk-core = { path = "../crates/mesh-talk-core", features = ["fast-test-kdf"] }
 
+[lints]
+workspace = true
+
 [lib]
 name = "mesh_talk"
 path = "src/lib.rs"

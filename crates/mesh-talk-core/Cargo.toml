@@ -15,6 +15,9 @@ description = "Mesh-Talk core: a serverless, end-to-end-encrypted LAN messaging 
 # under `[dependencies]` or `default`.
 fast-test-kdf = []
 
+[lints]
+workspace = true
+
 [lib]
 name = "mesh_talk_core"
 path = "src/lib.rs"
