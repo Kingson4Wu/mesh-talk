@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { LogOut, Moon, Network, Pencil, Pin, PinOff, Sun } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
@@ -235,39 +235,55 @@ export function Sidebar() {
   };
 
   // Resolve the displayed name (alias overrides the announced name) and split into
-  // pinned vs the rest. Sort is stable on the source order within each group.
-  const accountRows = accounts.map((a) => {
-    const id = a.account_id;
-    const announced = a.names[0] || shortId(id);
-    const name = favorites[id]?.custom_alias || announced;
-    return {
-      a,
-      id,
-      conv: accountConv(a, name),
-      pinned: favorites[id]?.pinned ?? false,
-      subtitle:
-        a.device_count > 1
-          ? t("sidebar.devices", { count: a.device_count })
-          : shortId(id, 12),
-    };
-  });
-  const channelRows = channels.map((c) => {
-    const id = c.channel_id;
-    const name = favorites[id]?.custom_alias || c.name;
-    return {
-      c,
-      id,
-      conv: channelConv(c, name),
-      pinned: favorites[id]?.pinned ?? false,
-      subtitle: t("sidebar.memberCount", { count: c.member_count }),
-    };
-  });
+  // pinned vs the rest. Sort is stable on the source order within each group. Memoized so
+  // the map + four partition passes don't re-run on every render (the sidebar re-renders
+  // on the 4s roster refresh and on every favorites change).
+  const {
+    pinnedAccounts,
+    unpinnedAccounts,
+    pinnedChannels,
+    unpinnedChannels,
+    hasPinned,
+  } = useMemo(() => {
+    const accountRows = accounts.map((a) => {
+      const id = a.account_id;
+      const announced = a.names[0] || shortId(id);
+      const name = favorites[id]?.custom_alias || announced;
+      return {
+        a,
+        id,
+        conv: accountConv(a, name),
+        pinned: favorites[id]?.pinned ?? false,
+        subtitle:
+          a.device_count > 1
+            ? t("sidebar.devices", { count: a.device_count })
+            : shortId(id, 12),
+      };
+    });
+    const channelRows = channels.map((c) => {
+      const id = c.channel_id;
+      const name = favorites[id]?.custom_alias || c.name;
+      return {
+        c,
+        id,
+        conv: channelConv(c, name),
+        pinned: favorites[id]?.pinned ?? false,
+        subtitle: t("sidebar.memberCount", { count: c.member_count }),
+      };
+    });
 
-  const pinnedAccounts = accountRows.filter((r) => r.pinned);
-  const unpinnedAccounts = accountRows.filter((r) => !r.pinned);
-  const pinnedChannels = channelRows.filter((r) => r.pinned);
-  const unpinnedChannels = channelRows.filter((r) => !r.pinned);
-  const hasPinned = pinnedAccounts.length + pinnedChannels.length > 0;
+    const pinnedAccounts = accountRows.filter((r) => r.pinned);
+    const unpinnedAccounts = accountRows.filter((r) => !r.pinned);
+    const pinnedChannels = channelRows.filter((r) => r.pinned);
+    const unpinnedChannels = channelRows.filter((r) => !r.pinned);
+    return {
+      pinnedAccounts,
+      unpinnedAccounts,
+      pinnedChannels,
+      unpinnedChannels,
+      hasPinned: pinnedAccounts.length + pinnedChannels.length > 0,
+    };
+  }, [accounts, channels, favorites, t]);
 
   return (
     <aside

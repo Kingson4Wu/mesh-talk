@@ -6,6 +6,7 @@ use aes_gcm::{
 use pbkdf2::pbkdf2_hmac;
 use rand_core::RngCore;
 use sha2::Sha256;
+use zeroize::Zeroize;
 
 pub const SALT_SIZE: usize = 16;
 pub const NONCE_SIZE: usize = 12;
@@ -24,6 +25,15 @@ const PBKDF2_ROUNDS: u32 = 600_000;
 const PBKDF2_ROUNDS: u32 = 1;
 
 pub struct EncryptionKey([u8; KEY_SIZE]);
+
+/// Zeroize the derived key on drop so it does not linger in freed memory (mirrors
+/// `GroupKey`/`RatchetState`). This is at-rest key material, never serialized, so this
+/// changes no wire/on-disk format.
+impl Drop for EncryptionKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl EncryptionKey {
     pub fn from_password(password: &str, salt: &[u8; SALT_SIZE]) -> Result<Self, StorageError> {

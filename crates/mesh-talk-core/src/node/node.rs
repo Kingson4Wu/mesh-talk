@@ -23,7 +23,7 @@ use crate::node::reaction::ReactionPayload;
 use crate::node::received_log::ReceivedLog;
 use crate::node::sentlog::SentLog;
 use crate::node::session::SessionError;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -119,6 +119,10 @@ impl std::fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
+/// Our own reactions, keyed by `(conversation, target message, emoji)` and collapsed
+/// to the latest action `(wall_clock_ms, payload)`. See the `my_dm_reactions` field.
+type MyReactions = HashMap<(ConversationId, EventId, String), (u64, ReactionPayload)>;
+
 /// The node: identity + event log + shared roster + an outbound stream of
 /// received DMs. Construct with [`Node::open`]; share as `Arc<Node>`.
 pub struct Node {
@@ -158,9 +162,12 @@ pub struct Node {
     pub(in crate::node) received_files: Mutex<ReceivedLog>,
     /// Own DM reactions: sealed to the peer so un-openable from our own log. Stored in
     /// memory (with the wall-clock we made each at) so `reactions` can merge them and
-    /// resolve toggles by recency independent of merge order. `(conv, wall_clock_ms,
-    /// payload)`. Lost on restart (MVP limitation).
-    pub(in crate::node) my_dm_reactions: Mutex<Vec<(ConversationId, u64, ReactionPayload)>>,
+    /// resolve toggles by recency independent of merge order. Keyed by
+    /// `(conv, target, emoji)` and collapsed to the LATEST action — the same
+    /// max-reduction `aggregate` performs per author — so a long-running session can't
+    /// grow this without bound (every author entry here is us). Lost on restart (MVP
+    /// limitation).
+    pub(in crate::node) my_dm_reactions: Mutex<MyReactions>,
 }
 
 impl Node {
@@ -310,7 +317,7 @@ impl Node {
             dm_ratchet: Mutex::new(dm_ratchet),
             received: Mutex::new(received),
             received_files: Mutex::new(received_files),
-            my_dm_reactions: Mutex::new(Vec::new()),
+            my_dm_reactions: Mutex::new(HashMap::new()),
         }))
     }
 

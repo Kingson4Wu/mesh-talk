@@ -391,7 +391,21 @@ impl Node {
         }
         std::fs::rename(&part, dest)
             .map_err(|e| NodeError::File(format!("finalize rename: {e}")))?;
+        // The file is fully reassembled + verified on disk: reclaim its chunk events.
+        self.prune_file_chunks(file_conv);
         Ok(())
+    }
+
+    /// Drop a completed file's CHUNK events from the durable event log (one event per
+    /// CHUNK_SIZE piece, otherwise kept append-only forever). Best-effort: a failure to
+    /// compact is non-fatal (the file was already saved). Only the per-file chunk
+    /// conversation is dropped — the manifest stays in the DM/channel conversation, and
+    /// the manifest entry stays in the FileBook, so history still shows the attachment;
+    /// progress simply reports complete from the manifest's chunk_count vs. zero held
+    /// (a re-save would re-sync the chunks if a peer still has them).
+    fn prune_file_chunks(&self, file_conv: ConversationId) {
+        let mut log = self.log.lock().expect("log mutex not poisoned");
+        let _ = log.drop_conversation(&file_conv);
     }
 
     /// The chunk-event ciphertexts of a per-file conversation, in log order.

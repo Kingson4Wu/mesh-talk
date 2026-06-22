@@ -39,10 +39,7 @@ impl Node {
         self.append_event(conv, EventKind::React, sealed)?;
         // Our own DM reaction is sealed to the peer; record it so `reactions` can
         // include it (we can't open it from our own log).
-        self.my_dm_reactions
-            .lock()
-            .expect("my_dm_reactions mutex not poisoned")
-            .push((conv, now_millis(), payload));
+        self.record_my_reaction(conv, now_millis(), payload);
         self.deliver_direct(&peer, conv).await.ok();
         self.replicate_to_post_office(conv).await.ok();
         Ok(())
@@ -83,18 +80,15 @@ impl Node {
         // Record our own reaction (sealed to peers, so un-openable from our own log)
         // under the account conversation, for `account_reactions` to merge.
         let acct_conv = account_conversation_id(&my_account, target_account_id);
-        self.my_dm_reactions
-            .lock()
-            .expect("my_dm_reactions mutex not poisoned")
-            .push((
-                acct_conv,
-                now_millis(),
-                ReactionPayload {
-                    target,
-                    emoji: emoji.to_string(),
-                    remove,
-                },
-            ));
+        self.record_my_reaction(
+            acct_conv,
+            now_millis(),
+            ReactionPayload {
+                target,
+                emoji: emoji.to_string(),
+                remove,
+            },
+        );
         Ok(())
     }
 
@@ -160,7 +154,7 @@ impl Node {
         }
         // Merge our own account reactions (sealed to peers; not openable from our log).
         let acct_conv = account_conversation_id(&my_account, peer_account_id);
-        for (c, w, p) in self
+        for ((c, _, _), (w, p)) in self
             .my_dm_reactions
             .lock()
             .expect("my_dm_reactions mutex not poisoned")
@@ -253,7 +247,7 @@ impl Node {
         }
         // Merge our own DM reactions for this conversation (not in the openable log).
         if !is_channel {
-            for (c, w, p) in self
+            for ((c, _, _), (w, p)) in self
                 .my_dm_reactions
                 .lock()
                 .expect("my_dm_reactions mutex not poisoned")
@@ -265,5 +259,29 @@ impl Node {
             }
         }
         aggregate(&decoded)
+    }
+
+    /// Record one of OUR OWN reactions (sealed to the peer, so un-openable from our log)
+    /// for later merge in `reactions`/`account_reactions`. Collapsed to the latest action
+    /// per `(conv, target, emoji)` — newer wall_clock wins, and on an exact tie a `remove`
+    /// beats an `add` — so the map matches `aggregate`'s per-author max-reduction and
+    /// stays bounded by the number of distinct (conv, target, emoji) keys (no per-toggle
+    /// growth, no linear scan blow-up).
+    fn record_my_reaction(&self, conv: ConversationId, wall: u64, payload: ReactionPayload) {
+        let key = (conv, payload.target, payload.emoji.clone());
+        let mut map = self
+            .my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned");
+        match map.get(&key) {
+            // Newer wins; on an exact wall-clock tie a remove wins (matches `aggregate`).
+            Some((cur_wall, _)) if wall > *cur_wall || (wall == *cur_wall && payload.remove) => {
+                map.insert(key, (wall, payload));
+            }
+            Some(_) => {}
+            None => {
+                map.insert(key, (wall, payload));
+            }
+        }
     }
 }

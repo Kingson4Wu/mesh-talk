@@ -19,6 +19,47 @@ import type {
 
 const HISTORY_LIMIT = 200;
 
+// Cap how many conversations keep cached message/reaction arrays in memory at once.
+// Touching hundreds of conversations in a session would otherwise retain them all until
+// logout. Only the cached arrays for the least-recently-opened conversations beyond this
+// many are evicted; `unread` (tiny, drives sidebar badges) is never touched, and a reopen
+// repopulates from the log via reload(). Active conversation is always retained.
+const CONV_CACHE_LIMIT = 50;
+
+/**
+ * Evict message/reaction caches for the least-recently-opened conversations, keeping at
+ * most CONV_CACHE_LIMIT entries. `order` is most-recent-last; `keep` (the active key) is
+ * never evicted. Returns the trimmed maps plus the pruned order list. Pure — no set().
+ */
+function evictCaches(
+  messages: Record<string, ChatMessage[]>,
+  reactions: Record<string, ReactionInfo[]>,
+  order: string[],
+  keep: string,
+): {
+  messages: Record<string, ChatMessage[]>;
+  reactions: Record<string, ReactionInfo[]>;
+  order: string[];
+} {
+  if (order.length <= CONV_CACHE_LIMIT) return { messages, reactions, order };
+  const excess = order.length - CONV_CACHE_LIMIT;
+  const evicted = new Set<string>();
+  for (let i = 0; i < order.length && evicted.size < excess; i++) {
+    if (order[i] !== keep) evicted.add(order[i]);
+  }
+  const nextMessages: Record<string, ChatMessage[]> = {};
+  for (const k of Object.keys(messages))
+    if (!evicted.has(k)) nextMessages[k] = messages[k];
+  const nextReactions: Record<string, ReactionInfo[]> = {};
+  for (const k of Object.keys(reactions))
+    if (!evicted.has(k)) nextReactions[k] = reactions[k];
+  return {
+    messages: nextMessages,
+    reactions: nextReactions,
+    order: order.filter((k) => !evicted.has(k)),
+  };
+}
+
 export type ConvKind = "account" | "channel";
 
 export interface Conversation {
@@ -153,6 +194,9 @@ interface ChatState {
   messages: Record<string, ChatMessage[]>;
   reactions: Record<string, ReactionInfo[]>;
   unread: Record<string, number>;
+  // Conversation keys in open-recency order (most-recent-last); drives cache eviction.
+  // Not read by any component selector — purely internal LRU bookkeeping.
+  cacheOrder: string[];
   members: ChannelMemberInfo[];
   incomingFiles: IncomingFile[];
   // Per-contact UI prefs (pin + custom alias), keyed by account_id/channel_id. Persisted
@@ -194,6 +238,7 @@ export const useChat = create<ChatState>((set, get) => ({
   messages: {},
   reactions: {},
   unread: {},
+  cacheOrder: [],
   members: [],
   incomingFiles: [],
   favorites: NO_FAVORITES,
@@ -297,6 +342,7 @@ export const useChat = create<ChatState>((set, get) => ({
       messages: {},
       reactions: {},
       unread: {},
+      cacheOrder: [],
       members: [],
       incomingFiles: [],
       favorites: NO_FAVORITES,
@@ -346,7 +392,20 @@ export const useChat = create<ChatState>((set, get) => ({
 
   open: async (c) => {
     const key = convKey(c);
-    set((s) => ({ active: c, unread: { ...s.unread, [key]: 0 }, members: [] }));
+    set((s) => {
+      // Mark this conversation most-recently-opened, then evict the message/reaction
+      // caches of the least-recently-opened beyond the cap (never the active one).
+      const order = [...s.cacheOrder.filter((k) => k !== key), key];
+      const trimmed = evictCaches(s.messages, s.reactions, order, key);
+      return {
+        active: c,
+        unread: { ...s.unread, [key]: 0 },
+        members: [],
+        messages: trimmed.messages,
+        reactions: trimmed.reactions,
+        cacheOrder: trimmed.order,
+      };
+    });
     await get().reload();
     if (c.kind === "channel") {
       try {

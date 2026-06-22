@@ -131,6 +131,37 @@ impl PersistentEventLog {
         self.log = log;
         Ok(dropped)
     }
+
+    /// Drop a single WHOLE conversation, compacting the on-disk log to match. Used by a
+    /// regular device to reclaim a per-file CHUNK conversation once the file is fully
+    /// reassembled + verified — those chunk events are dead weight afterwards (one event
+    /// per CHUNK_SIZE piece, otherwise kept forever, the worst append-only offender).
+    /// Returns the number of events dropped (0 if the conversation is absent).
+    ///
+    /// Only safe for conversations no other conversation references — which holds for
+    /// per-file chunk conversations: they are self-contained (their events are never
+    /// parents of DM/channel events). Do NOT call this on a real DM/channel conversation.
+    pub fn drop_conversation(&mut self, conversation: &ConversationId) -> Result<usize, LogError> {
+        let dropped = self.log.events(conversation).len();
+        if dropped == 0 {
+            return Ok(0);
+        }
+        let kept: Vec<Event> = self
+            .log
+            .conversations()
+            .into_iter()
+            .filter(|c| c != conversation)
+            // (lamport, id) order is causal within a conversation.
+            .flat_map(|c| self.log.events(&c).into_iter().cloned().collect::<Vec<_>>())
+            .collect();
+        self.file.rewrite(&kept)?;
+        let mut log = EventLog::default();
+        for event in kept {
+            log.index_trusted(event);
+        }
+        self.log = log;
+        Ok(dropped)
+    }
 }
 
 // NOTE: this impl is structurally identical to `impl SyncStore for EventLog`
@@ -370,6 +401,65 @@ eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
         // Received events were persisted — they survive reopen.
         let dest = PersistentEventLog::open(&dst_path, "pw").unwrap();
         assert_eq!(dest.events(&conv).len(), 2);
+    }
+
+    #[test]
+    fn drop_conversation_reclaims_file_chunks_without_accumulating() {
+        // Regression (disk leak): a completed file transfer's per-file CHUNK
+        // conversation must be reclaimable so repeated transfers don't accumulate
+        // chunk events forever in messages.log. Dropping one conversation keeps the
+        // rest, compacts on disk, and survives reopen — and doing it across repeated
+        // "transfers" keeps the file bounded by the live (real) conversation, not by
+        // total chunks ever transferred.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let id = DeviceIdentity::generate();
+        let real_conv = ConversationId::new([1u8; 32]);
+
+        let mut plog = PersistentEventLog::open(&path, "pw").unwrap();
+        // A real DM event we must always keep.
+        plog.append(mk(&id, 1, 1, b"keep me")).unwrap();
+
+        // Simulate 5 successive file transfers, each into its own file_conv with
+        // several chunk events, dropped right after "save".
+        for t in 0..5u8 {
+            let file_conv = ConversationId::new([100 + t; 32]);
+            for c in 0..6u64 {
+                let chunk = Event::new(
+                    &id,
+                    file_conv,
+                    1000 + t as u64 * 10 + c, // unique seq per author chain
+                    vec![],
+                    1000 + t as u64 * 10 + c,
+                    0,
+                    EventKind::Message,
+                    vec![0xCD; 32],
+                );
+                plog.append(chunk).unwrap();
+            }
+            // The receiver saved + verified the file → reclaim its chunk events.
+            let dropped = plog.drop_conversation(&file_conv).unwrap();
+            assert_eq!(dropped, 6);
+            assert!(plog.events(&file_conv).is_empty());
+        }
+
+        // After 5 transfers (30 chunk events total), only the real conversation's
+        // single event remains — chunks did NOT accumulate.
+        assert_eq!(plog.all_event_ids().len(), 1);
+        assert_eq!(plog.events(&real_conv).len(), 1);
+
+        // Dropping an absent conversation is a no-op.
+        assert_eq!(
+            plog.drop_conversation(&ConversationId::new([9u8; 32]))
+                .unwrap(),
+            0
+        );
+
+        // The compaction is durable: reopen sees only the kept event.
+        drop(plog);
+        let plog = PersistentEventLog::open(&path, "pw").unwrap();
+        assert_eq!(plog.all_event_ids().len(), 1);
+        assert_eq!(plog.events(&real_conv).len(), 1);
     }
 
     #[test]

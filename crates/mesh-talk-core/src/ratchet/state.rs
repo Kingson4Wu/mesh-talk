@@ -202,7 +202,9 @@ impl RatchetState {
             self.skipped_order.push_back((dhr, self.nr));
             while self.skipped.len() > MAX_SKIPPED_TOTAL {
                 if let Some(old) = self.skipped_order.pop_front() {
-                    self.skipped.remove(&old);
+                    if let Some(mut evicted) = self.skipped.remove(&old) {
+                        evicted.zeroize();
+                    }
                 } else {
                     break;
                 }

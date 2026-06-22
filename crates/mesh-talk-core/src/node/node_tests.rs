@@ -1303,6 +1303,41 @@ async fn a_dm_reaction_is_visible_to_both_peers() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(ok, "alice sees bob's reaction");
+
+    // Regression (FIX 4): toggling the same reaction many times must NOT grow
+    // `my_dm_reactions` without bound — it collapses to ONE entry per
+    // (conv, target, emoji), resolved by recency. Spam add/remove on the same
+    // emoji, then a second emoji.
+    for i in 0..50 {
+        bob_node
+            .react_dm(&alice_uid, target, "👍", i % 2 == 0)
+            .await
+            .unwrap();
+    }
+    bob_node
+        .react_dm(&alice_uid, target, "🎉", false)
+        .await
+        .unwrap();
+    {
+        let map = bob_node
+            .my_dm_reactions
+            .lock()
+            .expect("my_dm_reactions mutex not poisoned");
+        // Two distinct (conv, target, emoji) keys only — not 50+ pushed entries.
+        assert_eq!(
+            map.len(),
+            2,
+            "own reactions collapse to one per (conv,target,emoji)"
+        );
+    }
+    // Aggregation still works on the collapsed map: 🎉 (last action add) is on.
+    let bob_views = bob_node.reactions(conv);
+    assert!(
+        bob_views
+            .iter()
+            .any(|v| v.emoji == "🎉" && v.who.contains(&bob_uid)),
+        "🎉 is on"
+    );
 }
 
 /// Channel file transfer over the wire, both directions. The manifest is sealed

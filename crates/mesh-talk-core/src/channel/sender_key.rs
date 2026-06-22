@@ -162,14 +162,12 @@ impl SenderChain {
     /// buffered key, or beyond the skip bound.
     pub fn message_key(&mut self, target: u32) -> Result<[u8; 32], SenderKeyError> {
         if let Some(mk) = self.skipped.remove(&target) {
-            // Prune now-stale heads so `order` stays bounded by the live `skipped` map.
-            while self
-                .order
-                .front()
-                .is_some_and(|k| !self.skipped.contains_key(k))
-            {
-                self.order.pop_front();
-            }
+            // Drop the matching order entry too, or `order` would accumulate
+            // consumed-key tombstones without bound: consuming a MIDDLE key while a
+            // lower index stays buffered leaves a front-only prune unable to reclaim
+            // it (the MAX_SKIPPED_TOTAL cap only bounds the map). Kept in sync,
+            // `order.len() == skipped.len()` always (mirrors the DM ratchet).
+            self.order.retain(|k| *k != target);
             return Ok(mk);
         }
         if target < self.n {
@@ -188,7 +186,9 @@ impl SenderChain {
             self.n += 1;
             while self.skipped.len() > MAX_SKIPPED_TOTAL {
                 if let Some(old) = self.order.pop_front() {
-                    self.skipped.remove(&old);
+                    if let Some(mut evicted) = self.skipped.remove(&old) {
+                        evicted.zeroize();
+                    }
                 } else {
                     break;
                 }
@@ -385,6 +385,50 @@ mod tests {
 07000000"
         );
         assert_eq!(SenderKey::deserialize(&sk.serialize()).unwrap().n, 7);
+    }
+
+    #[test]
+    fn order_stays_bounded_when_consuming_middle_keys() {
+        // Regression (DoS): consuming a MIDDLE buffered key while a lower index stays
+        // buffered must reclaim its `order` entry, or `order` accumulates tombstones
+        // without bound even though `skipped` is capped. A hostile sender driving high-n
+        // headers would otherwise grow `order` on every peer forever. Invariant:
+        // order.len() == skipped.len() at all times.
+        let mut sk = SenderKey::generate();
+        let mut rc = SenderChain::from_distribution(&sk.distribution());
+
+        // Buffer 0..=2 by jumping to 3 (positions 0,1,2 become skipped).
+        for _ in 0..4 {
+            sk.ratchet();
+        }
+        rc.message_key(3).unwrap();
+        assert_eq!(rc.order.len(), 3);
+        assert_eq!(rc.order.len(), rc.skipped.len());
+
+        // Consume the MIDDLE (1), leaving the lower index 0 buffered. Front-only
+        // pruning could NOT reclaim 1's slot; retain must.
+        rc.message_key(1).unwrap();
+        assert_eq!(rc.skipped.len(), 2); // {0, 2}
+        assert_eq!(rc.order.len(), rc.skipped.len());
+
+        // Soak: repeatedly buffer a fresh high run and consume its middle, always
+        // leaving index 0 stuck. order must track skipped, never grow unbounded.
+        let mut next = 4u32;
+        for _ in 0..500 {
+            let lo = next;
+            for _ in 0..3 {
+                sk.ratchet();
+                next += 1;
+            }
+            // jump to lo+2 buffering lo, lo+1
+            rc.message_key(lo + 2).unwrap();
+            // consume the middle (lo+1), leaving lo buffered
+            rc.message_key(lo + 1).unwrap();
+            assert_eq!(rc.order.len(), rc.skipped.len());
+            assert!(rc.skipped.len() <= MAX_SKIPPED_TOTAL);
+        }
+        // order never accumulated tombstones beyond the live map.
+        assert_eq!(rc.order.len(), rc.skipped.len());
     }
 
     #[test]

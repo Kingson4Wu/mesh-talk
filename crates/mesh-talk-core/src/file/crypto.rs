@@ -27,6 +27,7 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
@@ -42,6 +43,16 @@ pub const CHUNK_SIZE: usize = 48 * 1024;
 /// the (sealed) `FileManifest` so only conversation members can decrypt chunks.
 #[derive(Clone)]
 pub struct FileKey([u8; KEY_SIZE]);
+
+/// Zeroize the per-file key on drop so it does not linger in freed memory (mirrors
+/// `GroupKey`/`RatchetState`). Each `Clone` owns its own copy, each zeroized on its
+/// own drop. The key bytes still travel inside the sealed manifest unchanged, so this
+/// changes no wire/on-disk format.
+impl Drop for FileKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl FileKey {
     pub fn generate() -> Self {
