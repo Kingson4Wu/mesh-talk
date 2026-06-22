@@ -48,3 +48,10 @@ clap = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rand_chacha = "0.3" # seeded CSPRNG for deterministic property tests (rand_core 0.6 SeedableRng)
+# Self-dev-dependency on our OWN crate, activating `fast-test-kdf`. This is the lever that
+# makes the multi-process integration rigs fast: when Cargo builds the test targets it unifies
+# features for `mesh-talk-core`, so the `mesh-talk-node` binary handed to the tests via
+# `CARGO_BIN_EXE_mesh-talk-node` is ALSO compiled with `fast-test-kdf` — collapsing each node's
+# cold start from ~60-70s (real Argon2/PBKDF2) to ~instant. Cargo does NOT activate a
+# dev-dependency-only feature for `cargo build`/release, so production key strength is untouched.
+mesh-talk-core = { path = ".", features = ["fast-test-kdf"] }

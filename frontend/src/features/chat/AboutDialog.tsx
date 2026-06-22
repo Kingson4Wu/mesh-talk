@@ -39,7 +39,12 @@ export function AboutDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title={t("about.title")}>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="sidebar-action-about"
+          title={t("about.title")}
+        >
           <Info className="h-4 w-4" />
         </Button>
       </DialogTrigger>

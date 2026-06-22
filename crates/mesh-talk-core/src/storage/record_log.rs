@@ -367,4 +367,44 @@ mod tests {
             EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
         assert_eq!(records, vec![rec(1, b"a"), rec(3, b"c"), rec(4, b"d")]);
     }
+
+    #[test]
+    fn rewrite_to_empty_leaves_header_only_and_appends_resume() {
+        // Compacting away every record (the "drop the whole conversation" case) must
+        // leave a valid header-only file that reopens empty, and appends afterwards
+        // must work against the freshly-reopened handle.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        let (mut log, _): (EncryptedRecordLog<Rec>, _) =
+            EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+        log.append(&rec(1, b"a")).unwrap();
+        log.append(&rec(2, b"b")).unwrap();
+        log.rewrite(&[]).unwrap();
+        // On-disk: exactly the header, no record bytes.
+        assert_eq!(std::fs::read(&path).unwrap().len(), 6 + SALT_SIZE);
+        // The live handle still works post-rewrite.
+        log.append(&rec(3, b"c")).unwrap();
+        drop(log);
+        let (_log, records): (EncryptedRecordLog<Rec>, _) =
+            EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+        assert_eq!(records, vec![rec(3, b"c")]);
+    }
+
+    #[test]
+    fn round_trips_a_record_larger_than_a_single_buffer() {
+        // A record whose ciphertext is far bigger than typical must frame, persist,
+        // and reload intact (the u32 length prefix and read_to_end path handle it).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        let big = rec(1, &vec![0xA5u8; 512 * 1024]);
+        {
+            let (mut log, _): (EncryptedRecordLog<Rec>, _) =
+                EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+            log.append(&big).unwrap();
+            log.append(&rec(2, b"small after big")).unwrap();
+        }
+        let (_log, records): (EncryptedRecordLog<Rec>, _) =
+            EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+        assert_eq!(records, vec![big, rec(2, b"small after big")]);
+    }
 }

@@ -26,6 +26,7 @@ export function SafetyNumber({
   return (
     <div className={cn("space-y-3", className)}>
       <code
+        data-testid="safety-number"
         className={cn(
           "block break-all rounded-lg border p-3 font-mono text-sm leading-relaxed tracking-wide",
           verified

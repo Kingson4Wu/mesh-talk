@@ -131,13 +131,14 @@ export function SearchDialog() {
         <Button
           variant="ghost"
           size="icon"
+          data-testid="sidebar-action-search"
           title={t("search.title")}
           disabled={!ready}
         >
           <Search className="h-4 w-4" />
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" data-testid="search-dialog">
         <DialogHeader>
           <DialogTitle>{t("search.title")}</DialogTitle>
         </DialogHeader>
@@ -145,6 +146,7 @@ export function SearchDialog() {
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             autoFocus
+            data-testid="search-input"
             placeholder={t("search.placeholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -184,6 +186,7 @@ export function SearchDialog() {
               <motion.button
                 key={i}
                 variants={fadeSlideUp}
+                data-testid="search-result"
                 onClick={() => go(h)}
                 onMouseEnter={() => setActiveIdx(i)}
                 aria-selected={i === activeIdx}

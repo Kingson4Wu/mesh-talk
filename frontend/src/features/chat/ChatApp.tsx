@@ -25,7 +25,10 @@ export function ChatApp() {
   }, [startPresence]);
 
   return (
-    <div className="relative flex h-full overflow-hidden">
+    <div
+      data-testid="chat-shell"
+      className="relative flex h-full overflow-hidden"
+    >
       <Sidebar />
       <ConversationView />
       {error && (

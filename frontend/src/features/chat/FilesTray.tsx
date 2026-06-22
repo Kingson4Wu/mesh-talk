@@ -159,6 +159,7 @@ export function FilesTray() {
         <Button
           variant="ghost"
           size="icon"
+          data-testid="sidebar-action-files"
           title={t("files.received")}
           className="relative"
         >
@@ -170,7 +171,7 @@ export function FilesTray() {
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0">
+      <PopoverContent align="end" className="w-80 p-0" data-testid="files-tray">
         <div className="flex items-center justify-between gap-2 border-b px-3 py-2.5">
           <span className="font-display text-sm font-semibold tracking-tight">
             {t("files.received")}

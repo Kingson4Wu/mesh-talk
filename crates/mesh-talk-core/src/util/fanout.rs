@@ -90,4 +90,14 @@ mod tests {
         let out: Vec<i32> = bounded_for_each(Vec::<i32>::new(), 4, |x| async move { x }).await;
         assert!(out.is_empty());
     }
+
+    #[tokio::test]
+    async fn limit_zero_is_clamped_and_still_runs() {
+        // Documented: `limit` is clamped to at least 1. A `0` must NOT deadlock on a
+        // zero-permit semaphore (which would acquire forever) — it must run serially.
+        let out = bounded_for_each(vec![1, 2, 3], 0, |x| async move { x * 2 }).await;
+        let mut sorted = out;
+        sorted.sort();
+        assert_eq!(sorted, vec![2, 4, 6]);
+    }
 }

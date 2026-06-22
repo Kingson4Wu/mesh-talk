@@ -105,16 +105,25 @@ export function LoginScreen() {
         >
           <Tabs value={tab} onValueChange={onTab}>
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="signin">{t("login.signIn")}</TabsTrigger>
-              <TabsTrigger value="register">{t("login.register")}</TabsTrigger>
+              <TabsTrigger value="signin" data-testid="login-tab-signin">
+                {t("login.signIn")}
+              </TabsTrigger>
+              <TabsTrigger value="register" data-testid="login-tab-register">
+                {t("login.register")}
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value={tab} forceMount>
-              <form onSubmit={submit} className="mt-5 space-y-4">
+              <form
+                onSubmit={submit}
+                className="mt-5 space-y-4"
+                data-testid="login-form"
+              >
                 <div className="space-y-2">
                   <Label htmlFor="username">{t("login.username")}</Label>
                   <Input
                     id="username"
+                    data-testid="login-username"
                     autoFocus
                     autoComplete="username"
                     value={username}
@@ -126,6 +135,7 @@ export function LoginScreen() {
                   <Label htmlFor="password">{t("login.password")}</Label>
                   <Input
                     id="password"
+                    data-testid="login-password"
                     type="password"
                     autoComplete={
                       tab === "signin" ? "current-password" : "new-password"
@@ -151,6 +161,7 @@ export function LoginScreen() {
 
                 <Button
                   type="submit"
+                  data-testid="login-submit"
                   className="w-full"
                   disabled={loading || !username.trim() || !password}
                 >

@@ -324,7 +324,10 @@ export function ConversationView() {
           </div>
         </div>
       )}
-      <header className="flex items-center gap-3 border-b px-5 py-3">
+      <header
+        data-testid="conversation-header"
+        className="flex items-center gap-3 border-b px-5 py-3"
+      >
         {isChannel ? (
           <ChannelHeader
             id={active.id}
@@ -351,7 +354,10 @@ export function ConversationView() {
           </p>
         )}
         {!loading && messages.length === 0 && (
-          <p className="py-8 text-center text-sm text-muted-foreground">
+          <p
+            data-testid="conversation-empty"
+            className="py-8 text-center text-sm text-muted-foreground"
+          >
             {t("conversation.noMessages")}
           </p>
         )}

@@ -97,6 +97,7 @@ function Row({
       <button
         onClick={() => open(conv)}
         data-conv-option
+        data-testid={`conversation-row-${conv.id}`}
         aria-current={isActive ? "true" : undefined}
         aria-label={`${conv.name}${subtitle ? `, ${subtitle}` : ""}`}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -143,6 +144,7 @@ function Row({
       <button
         type="button"
         onClick={onTogglePin}
+        data-testid={`conversation-pin-${conv.id}`}
         title={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
         aria-label={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
         className={cn(
@@ -268,10 +270,13 @@ export function Sidebar() {
   const hasPinned = pinnedAccounts.length + pinnedChannels.length > 0;
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r bg-card/40">
+    <aside
+      data-testid="sidebar"
+      className="flex w-72 shrink-0 flex-col border-r bg-card/40"
+    >
       {/* Identity header — own glyph + name (display) + own short mono id, then a tidy
           action cluster. The signature is the identity; the controls stay quiet. */}
-      <div className="border-b px-4 py-3">
+      <div className="border-b px-4 py-3" data-testid="self-identity">
         <div className="flex items-center gap-3">
           <div className="relative shrink-0">
             <IdentityGlyph
@@ -318,6 +323,7 @@ export function Sidebar() {
           <Button
             variant="ghost"
             size="icon"
+            data-testid="sidebar-theme-toggle"
             title={
               theme === "light" ? t("sidebar.darkMode") : t("sidebar.lightMode")
             }
@@ -333,6 +339,7 @@ export function Sidebar() {
           <Button
             variant="ghost"
             size="icon"
+            data-testid="sidebar-sign-out"
             title={t("sidebar.signOut")}
             onClick={() => logout()}
           >

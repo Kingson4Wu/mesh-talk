@@ -175,11 +175,16 @@ export function SettingsDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title={t("settings.title")}>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="sidebar-action-settings"
+          title={t("settings.title")}
+        >
           <Settings className="h-4 w-4" />
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" data-testid="settings-dialog">
         <DialogHeader>
           <DialogTitle>{t("settings.title")}</DialogTitle>
           <DialogDescription>{t("settings.description")}</DialogDescription>
@@ -195,6 +200,7 @@ export function SettingsDialog() {
               control={
                 <select
                   id="setting-theme"
+                  data-testid="settings-theme-select"
                   value={theme}
                   onChange={(e) => setTheme(e.target.value as Theme)}
                   className={SELECT_CLASS}
@@ -216,6 +222,7 @@ export function SettingsDialog() {
               control={
                 <select
                   id="setting-language"
+                  data-testid="settings-language-select"
                   value={currentLang}
                   onChange={(e) => setLanguage(e.target.value as Language)}
                   className={SELECT_CLASS}

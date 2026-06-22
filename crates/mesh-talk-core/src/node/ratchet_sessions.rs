@@ -117,4 +117,37 @@ mod tests {
         // advanced one (n=1, not n=0 which bob already consumed)
         assert_eq!(bob.ratchet_decrypt(&h2, &ct2).unwrap(), b"msg2");
     }
+
+    #[test]
+    fn has_and_get_agree_when_a_stored_blob_fails_to_deserialize() {
+        // Documented invariant: `has` routes through `get`, so a record that
+        // AEAD-authenticates but whose `state` bytes don't decode as a RatchetState
+        // must report `has == false` (matching `get == None`) — never `has == true`
+        // while `get == None`, which would let the node believe it has a session and
+        // silently re-bootstrap, breaking the peer's decryption.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        {
+            let mut store = RatchetSessions::open(&path, "pw").unwrap();
+            // Append a record with authentic framing but undecodable state bytes,
+            // straight through the underlying log (bypassing `put`'s serialize).
+            store
+                .file
+                .append(&SessionRecord {
+                    peer: "peer1".into(),
+                    state: vec![0xFF; 3], // not a valid RatchetState wire form
+                })
+                .unwrap();
+        }
+        // Reopen so the bogus blob is the indexed `latest` for the peer.
+        let store = RatchetSessions::open(&path, "pw").unwrap();
+        assert!(
+            store.get("peer1").is_none(),
+            "garbage state does not decode"
+        );
+        assert!(
+            !store.has("peer1"),
+            "has must agree with get — never claim a session that won't decode"
+        );
+    }
 }

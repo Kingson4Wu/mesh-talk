@@ -89,11 +89,16 @@ export function LinkDeviceDialog() {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title={t("linkDevice.trigger")}>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="sidebar-action-link"
+          title={t("linkDevice.trigger")}
+        >
           <Smartphone className="h-4 w-4" />
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent data-testid="link-device-dialog">
         <DialogHeader>
           <DialogTitle>{t("linkDevice.title")}</DialogTitle>
           <DialogDescription>

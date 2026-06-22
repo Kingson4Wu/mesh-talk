@@ -4,6 +4,14 @@
 //! history survives a real process restart. No post office: history comes purely
 //! from disk. `#[ignore]`d (real processes + UDP broadcast). Run explicitly:
 //!   nice -n 10 cargo test -p mesh-talk-core --test persistent_history -- --ignored
+//!
+//! SPEED: the `mesh-talk-node` binary handed to this test is built with the
+//! `fast-test-kdf` feature automatically — the crate carries a self-dev-dependency
+//! (`mesh-talk-core = { path = ".", features = ["fast-test-kdf"] }`) so Cargo unifies
+//! that feature onto the bin when compiling test targets. Cold start is therefore
+//! ~instant rather than ~60-70s of real Argon2/PBKDF2, with no effect on release builds.
+//! Nodes are also started SEQUENTIALLY (start one, await its line, then the next) so a
+//! slow machine never has to run two KDF-heavy cold starts concurrently.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -85,10 +93,12 @@ impl Drop for CliNode {
 }
 
 fn read_uid(node: &CliNode) -> String {
-    // Cold-start runs 3 PBKDF2-600k rounds (keystore + messages.log + sent.log);
-    // on a debug build that takes ~60s on this machine. Allow 90s to be safe.
+    // With `fast-test-kdf` the startup line is near-instant; this generous 180s ceiling
+    // is pure slow-machine margin (e.g. a contended CI box building without the feature),
+    // not a tuned value. Nodes are started sequentially, so at most one cold start is ever
+    // in flight at a time.
     let line = node
-        .wait_for(|l| l.starts_with("node "), Duration::from_secs(90))
+        .wait_for(|l| l.starts_with("node "), Duration::from_secs(180))
         .expect("node startup line");
     line.split_whitespace().nth(1).expect("uid").to_string()
 }
@@ -122,9 +132,12 @@ fn message_history_survives_restart() {
     let bob_dir = dir.path().join("bob");
     std::fs::create_dir_all(&bob_dir).expect("bob dir");
     let alice_keystore = alice_dir.join("identity.keystore");
+    // Start SEQUENTIALLY — spawn Alice and await her startup line BEFORE spawning Bob —
+    // so a slow machine never runs two KDF-heavy cold starts at once (the cause of the
+    // 90s-budget flake). This mirrors post_office_offline's reliable ordering.
     let mut alice = CliNode::spawn(&alice_keystore, "Alice", dp);
-    let mut bob = CliNode::spawn(&bob_dir.join("identity.keystore"), "Bob", dp);
     let alice_uid = read_uid(&alice);
+    let mut bob = CliNode::spawn(&bob_dir.join("identity.keystore"), "Bob", dp);
     let bob_uid = read_uid(&bob);
 
     await_peer(&mut alice, &bob_uid, "Alice→Bob");

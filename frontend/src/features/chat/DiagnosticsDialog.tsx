@@ -229,11 +229,16 @@ export function DiagnosticsDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" title={t("diagnostics.trigger")}>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="sidebar-action-diagnostics"
+          title={t("diagnostics.trigger")}
+        >
           <Radar className="h-4 w-4" />
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" data-testid="diagnostics-dialog">
         <DialogHeader>
           <DialogTitle>{t("diagnostics.title")}</DialogTitle>
           <DialogDescription>{t("diagnostics.description")}</DialogDescription>
@@ -241,17 +246,24 @@ export function DiagnosticsDialog() {
 
         <Tabs defaultValue="overview" className="w-full">
           <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="overview">
+            <TabsTrigger
+              value="overview"
+              data-testid="diagnostics-tab-overview"
+            >
               {t("diagnostics.tabOverview")}
             </TabsTrigger>
-            <TabsTrigger value="peers">
+            <TabsTrigger value="peers" data-testid="diagnostics-tab-peers">
               {t("diagnostics.tabPeers")}
               <Badge className="ml-1.5 bg-muted text-muted-foreground">
                 {peers.length}
               </Badge>
             </TabsTrigger>
-            <TabsTrigger value="logs">{t("diagnostics.tabLogs")}</TabsTrigger>
-            <TabsTrigger value="help">{t("diagnostics.tabHelp")}</TabsTrigger>
+            <TabsTrigger value="logs" data-testid="diagnostics-tab-logs">
+              {t("diagnostics.tabLogs")}
+            </TabsTrigger>
+            <TabsTrigger value="help" data-testid="diagnostics-tab-help">
+              {t("diagnostics.tabHelp")}
+            </TabsTrigger>
           </TabsList>
 
           <div className="max-h-[60vh] overflow-y-auto pr-0.5">

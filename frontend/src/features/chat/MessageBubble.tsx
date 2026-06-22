@@ -64,6 +64,7 @@ export function MessageBubble({
   return (
     <motion.div
       role="article"
+      data-testid="message-bubble"
       aria-label={ariaLabel}
       initial={fresh ? "hidden" : false}
       animate="visible"
@@ -120,6 +121,7 @@ export function MessageBubble({
           >
             {parent && (
               <div
+                data-testid="message-parent-snippet"
                 className={cn(
                   "mb-1 flex items-center gap-1 rounded-md border-l-2 px-2 py-1 text-xs",
                   mine
@@ -160,6 +162,7 @@ export function MessageBubble({
                 <button
                   key={`${r.target}:${r.emoji}`}
                   type="button"
+                  data-testid="reaction-chip"
                   aria-label={`${me ? "Remove your" : "Add"} ${r.emoji} reaction`}
                   onClick={() => m.id && onReact(m.id, r.emoji)}
                   className={cn(
@@ -226,6 +229,7 @@ function Actions({
       <button
         onClick={onReply}
         disabled={disabled}
+        data-testid="message-reply"
         title={t("message.reply")}
         aria-label={t("message.reply")}
         className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
@@ -236,6 +240,7 @@ function Actions({
         <PopoverTrigger asChild>
           <button
             disabled={disabled}
+            data-testid="message-react"
             title={t("message.react")}
             aria-label={t("message.react")}
             className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
@@ -243,11 +248,12 @@ function Actions({
             <SmilePlus className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-auto">
+        <PopoverContent className="w-auto" data-testid="reaction-picker">
           <div className="flex gap-1">
             {EMOJIS.map((e) => (
               <button
                 key={e}
+                data-testid={`reaction-option-${e}`}
                 onClick={() => {
                   onPick(e);
                   setPickerOpen(false);

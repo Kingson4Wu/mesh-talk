@@ -4,6 +4,14 @@
 //! decrypted message. `#[ignore]`d — spawns real processes and uses UDP
 //! broadcast, which can be blocked/flaky in sandboxed CI. Run explicitly:
 //!   nice -n 10 cargo test -p mesh-talk-core --test two_node_cli -- --ignored
+//!
+//! SPEED: the `mesh-talk-node` binary handed to this test is built with the
+//! `fast-test-kdf` feature automatically — the crate carries a self-dev-dependency
+//! (`mesh-talk-core = { path = ".", features = ["fast-test-kdf"] }`) so Cargo unifies
+//! that feature onto the bin when compiling test targets. Cold start is therefore
+//! ~instant rather than ~60-70s of real Argon2/PBKDF2, with no effect on release builds.
+//! Nodes are also started SEQUENTIALLY (start A, await its line, then start B) so a
+//! slow machine never has to run two KDF-heavy cold starts concurrently.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -90,10 +98,11 @@ impl Drop for CliNode {
 /// Read the `user_id` from a node's startup line: `node <uid> listening ...`.
 fn read_user_id(node: &CliNode) -> String {
     let line = node
-        // A node's cold start runs several PBKDF2-600k unlocks (device + account keystores
-        // + encrypted log stores) — ~18s on an idle machine under `nice`, more under
-        // contention. Generous so the rig isn't flaky (persistent_history uses 90s too).
-        .wait_for(|l| l.starts_with("node "), Duration::from_secs(90))
+        // With `fast-test-kdf` the startup line is near-instant; this generous 180s
+        // ceiling is pure slow-machine margin (e.g. a heavily-contended CI box building
+        // without the feature), not a tuned value. Nodes are started sequentially, so at
+        // most one cold start is ever in flight here.
+        .wait_for(|l| l.starts_with("node "), Duration::from_secs(180))
         .expect("node printed its startup line");
     line.split_whitespace()
         .nth(1)
@@ -131,18 +140,21 @@ fn two_cli_nodes_exchange_a_dm() {
 
     // Each node gets its OWN subdir: account.keystore + messages.log + sent.log are derived
     // from the keystore's parent dir, so a shared dir would clobber them and crash a node.
+    //
+    // Start SEQUENTIALLY — spawn Alpha and await its startup line BEFORE spawning Bravo —
+    // so a slow machine never runs two KDF-heavy cold starts at once (the cause of the
+    // 90s-budget flake). This mirrors post_office_offline's reliable ordering.
     let mut alpha = CliNode::spawn(
         &dir.path().join("alpha").join("identity.keystore"),
         "Alpha",
         discovery_port,
     );
+    let alpha_uid = read_user_id(&alpha);
     let mut bravo = CliNode::spawn(
         &dir.path().join("bravo").join("identity.keystore"),
         "Bravo",
         discovery_port,
     );
-
-    let alpha_uid = read_user_id(&alpha);
     let bravo_uid = read_user_id(&bravo);
     assert_ne!(alpha_uid, bravo_uid, "two identities must differ");
 

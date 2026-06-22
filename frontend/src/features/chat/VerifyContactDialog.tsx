@@ -103,6 +103,7 @@ export function VerifyContactDialog({
         <Button
           variant="ghost"
           size="icon"
+          data-testid="verify-trigger"
           title={t("verify.trigger")}
           aria-label={t("verify.trigger")}
         >
@@ -115,7 +116,7 @@ export function VerifyContactDialog({
           )}
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent data-testid="verify-dialog">
         <DialogHeader>
           <DialogTitle>{t("verify.title")}</DialogTitle>
           <DialogDescription>
@@ -147,7 +148,10 @@ export function VerifyContactDialog({
               </div>
             </div>
           ) : trusted ? (
-            <div className="flex items-center gap-2 rounded-lg border border-verified/40 bg-verified/10 px-3 py-2 text-sm font-medium text-verified">
+            <div
+              data-testid="verify-verified-banner"
+              className="flex items-center gap-2 rounded-lg border border-verified/40 bg-verified/10 px-3 py-2 text-sm font-medium text-verified"
+            >
               <ShieldCheck className="h-4 w-4 shrink-0" />
               {t("verify.verifiedBanner", { name })}
             </div>
@@ -187,6 +191,7 @@ export function VerifyContactDialog({
           <div className="flex justify-end">
             <Button
               autoFocus
+              data-testid="verify-mark-button"
               variant={changed ? "destructive" : "default"}
               disabled={!fingerprint || busy}
               onClick={verify}

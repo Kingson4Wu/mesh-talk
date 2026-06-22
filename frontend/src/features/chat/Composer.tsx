@@ -168,7 +168,10 @@ export function Composer({
   return (
     <div className="border-t bg-card/40 p-3">
       {replyTo && (
-        <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-signal bg-muted/50 px-3 py-1.5 text-sm">
+        <div
+          data-testid="composer-reply-banner"
+          className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-signal bg-muted/50 px-3 py-1.5 text-sm"
+        >
           <CornerUpLeft className="h-3.5 w-3.5 shrink-0 text-signal" />
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
             {t("composer.replyingTo")}{" "}
@@ -187,10 +190,14 @@ export function Composer({
 
       <div className="relative">
         {suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border bg-popover shadow-elevation">
+          <div
+            data-testid="mention-popover"
+            className="absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border bg-popover shadow-elevation"
+          >
             {suggestions.map((n) => (
               <button
                 key={n}
+                data-testid={`mention-option-${n}`}
                 onClick={() => applyMention(n)}
                 className="block w-full px-3 py-2 text-left text-sm hover:bg-accent"
               >
@@ -202,12 +209,16 @@ export function Composer({
         )}
 
         {showEmoji && (
-          <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl border bg-popover p-2 shadow-elevation">
+          <div
+            data-testid="emoji-picker"
+            className="absolute bottom-full left-0 mb-2 w-72 rounded-xl border bg-popover p-2 shadow-elevation"
+          >
             <div className="grid grid-cols-10 gap-0.5">
               {EMOJIS.map((e) => (
                 <button
                   key={e}
                   type="button"
+                  data-testid={`emoji-option-${e}`}
                   onClick={() => insertEmoji(e)}
                   className="rounded-md p-1 text-lg leading-none hover:bg-accent"
                   aria-label={t("composer.insertEmoji", { emoji: e })}
@@ -224,6 +235,7 @@ export function Composer({
             <Button
               variant="ghost"
               size="icon"
+              data-testid="composer-attach"
               className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
               title={t("composer.attach")}
               onClick={onAttach}
@@ -234,6 +246,7 @@ export function Composer({
           <Button
             variant="ghost"
             size="icon"
+            data-testid="composer-emoji"
             className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
             title={t("composer.emoji")}
             aria-label={t("composer.emoji")}
@@ -244,6 +257,7 @@ export function Composer({
           <textarea
             ref={ref}
             rows={1}
+            data-testid="composer-input"
             value={text}
             onChange={onInput}
             onKeyDown={onKeyDown}
@@ -253,6 +267,7 @@ export function Composer({
           />
           <Button
             size="icon"
+            data-testid="composer-send"
             aria-label={t("composer.send")}
             className={cn(
               "h-9 w-9 shrink-0 rounded-xl bg-signal text-primary-foreground transition-opacity",
