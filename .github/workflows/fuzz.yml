@@ -43,12 +43,17 @@ jobs:
           tool: cargo-fuzz
 
       - name: Fuzz every target
+        # Force the gnu target: cargo-fuzz otherwise defaults to a musl triple, and the
+        # libFuzzer sanitizer (ASan) is incompatible with statically-linked musl libc
+        # ("sanitizer is incompatible with statically linked libc"). gnu = dynamic libc,
+        # and it's the runner's host target so its std is already present.
         run: |
           set -euo pipefail
           TIME="${{ github.event.inputs.max_total_time || '120' }}"
+          TARGET="x86_64-unknown-linux-gnu"
           for target in $(cargo +nightly fuzz list); do
             echo "::group::fuzz $target (${TIME}s)"
-            cargo +nightly fuzz run "$target" -- -max_total_time="$TIME" -rss_limit_mb=4096
+            cargo +nightly fuzz run --target "$TARGET" "$target" -- -max_total_time="$TIME" -rss_limit_mb=4096
             echo "::endgroup::"
           done
 

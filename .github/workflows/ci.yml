@@ -100,6 +100,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: src-tauri/lcov.info
           fail_ci_if_error: false
 
