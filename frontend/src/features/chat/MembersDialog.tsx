@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { motion } from "framer-motion";
 import { Users, UserPlus, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -6,23 +7,35 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Avatar } from "@/components/ui/avatar";
-import { shortId } from "@/lib/format";
+import { IdentityCrest } from "@/components/identity";
+import { fadeSlideUp, listStagger, useMotionOK } from "@/lib/motion";
 import { useChat } from "@/store/chat";
+import { usePresence } from "@/store/presence";
 
 export function MembersDialog() {
   const { t } = useTranslation();
+  const motionOK = useMotionOK();
   const members = useChat((s) => s.members);
   const peers = useChat((s) => s.peers);
   const addMember = useChat((s) => s.addMember);
   const removeMember = useChat((s) => s.removeMember);
+  // Whole presence map (the dialog reads many ids at once; one subscription).
+  const presenceMap = usePresence((s) => s.map);
   const [open, setOpen] = useState(false);
+
+  const statusFor = (accountId: string | null | undefined) =>
+    accountId && presenceMap[accountId]?.online ? "online" : "offline";
 
   const memberIds = new Set(members.map((m) => m.user_id));
   const addable = peers.filter((p) => !memberIds.has(p.user_id));
+
+  // A member's account id (and so its presence) comes from the discovery roster.
+  const accountOf = (userId: string) =>
+    peers.find((p) => p.user_id === userId)?.account_id ?? null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -33,58 +46,74 @@ export function MembersDialog() {
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {t("members.title", { count: members.length })}
+          <DialogTitle className="flex items-baseline gap-2">
+            {t("members.title")}
+            <span className="font-display text-base font-normal tabular-nums text-muted-foreground">
+              {members.length}
+            </span>
           </DialogTitle>
+          <DialogDescription>{t("members.description")}</DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-48 space-y-1 overflow-y-auto">
+        <motion.div
+          initial={motionOK ? "hidden" : false}
+          animate="visible"
+          variants={listStagger}
+          className="max-h-56 space-y-0.5 overflow-y-auto"
+        >
           {members.map((m) => (
-            <div
+            <motion.div
               key={m.user_id}
-              className="flex items-center gap-3 rounded-md px-1 py-1.5"
+              variants={fadeSlideUp}
+              className="group flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-accent/50"
             >
-              <Avatar name={m.name} id={m.user_id} className="h-7 w-7" />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm">{m.name}</div>
-                <div className="truncate font-mono text-xs text-muted-foreground">
-                  {shortId(m.user_id, 12)}
-                </div>
+                <IdentityCrest
+                  id={m.user_id}
+                  name={m.name || t("common.unnamed")}
+                  status={statusFor(accountOf(m.user_id))}
+                  variant="compact"
+                />
               </div>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
                 title={t("common.remove")}
+                aria-label={t("common.remove")}
                 onClick={() => removeMember(m.user_id)}
               >
                 <X className="h-4 w-4" />
               </Button>
-            </div>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
 
         {addable.length > 0 && (
-          <>
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="space-y-1.5">
+            <div className="font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               {t("members.addPeer")}
             </div>
-            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-1">
+            <div className="max-h-40 space-y-0.5 overflow-y-auto rounded-lg border p-1">
               {addable.map((p) => (
                 <button
                   key={p.user_id}
                   onClick={() => addMember(p.user_id)}
                   className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-accent/50"
                 >
-                  <Avatar name={p.name} id={p.user_id} className="h-7 w-7" />
-                  <span className="flex-1 truncate text-sm">
-                    {p.name || t("common.unnamed")}
-                  </span>
-                  <UserPlus className="h-4 w-4 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <IdentityCrest
+                      id={p.user_id}
+                      name={p.name || t("common.unnamed")}
+                      status={statusFor(p.account_id)}
+                      variant="compact"
+                    />
+                  </div>
+                  <UserPlus className="h-4 w-4 shrink-0 text-signal" />
                 </button>
               ))}
             </div>
-          </>
+          </div>
         )}
       </DialogContent>
     </Dialog>

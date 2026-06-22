@@ -103,7 +103,10 @@
   },
   "settings": {
     "title": "设置",
-    "description": "让 Mesh-Talk 在后台保持运行，以便接收消息并保持可被发现。",
+    "description": "外观、后台行为，以及接收文件的保存位置。",
+    "sectionAppearance": "外观",
+    "sectionBackground": "后台",
+    "sectionFiles": "文件",
     "language": "语言",
     "languageDesc": "选择显示语言。",
     "launchAtLogin": "开机自启",
@@ -116,13 +119,19 @@
     "themeDesc": "选择配色主题。",
     "theme_light": "浅色",
     "theme_dark": "深色",
-    "theme_oled": "纯黑（OLED）"
+    "theme_oled": "纯黑（OLED）",
+    "downloadFolder": "下载文件夹",
+    "downloadFolderDesc": "接收文件的保存位置。留空则每次询问。",
+    "downloadFolderSet": "接收的文件将自动保存到此处。",
+    "chooseFolder": "选择文件夹",
+    "changeFolder": "更改"
   },
   "search": {
     "title": "搜索消息",
     "placeholder": "在所有会话中搜索…",
     "searching": "搜索中…",
-    "noMatches": "没有匹配项。"
+    "noMatches": "没有匹配项。",
+    "empty": "输入关键字以搜索你的会话。"
   },
   "files": {
     "received": "已接收的文件",
@@ -140,7 +149,8 @@
     "thisAccount": "本设备的账户：",
     "addDevice": "添加你的另一台设备",
     "showCode": "显示配对码",
-    "qrHint": "用手机扫描二维码，或直接复制上方的配对码并粘贴到你的另一台设备上。",
+    "showOnOther": "在本设备生成配对码，然后在你想要关联的设备上输入它。",
+    "qrHint": "用手机扫描二维码，或复制配对码并在你的另一台设备上输入。",
     "enterCodeHint": "在你的另一台设备上输入下方的配对码。",
     "haveCode": "已有来自另一台设备的配对码？",
     "pickDevice": "选择设备…",
@@ -157,6 +167,10 @@
     "trigger": "诊断 / 发现",
     "title": "诊断",
     "description": "查看局域网发现的运行情况：发现了谁、你的身份以及网络信息。",
+    "tabOverview": "概览",
+    "tabPeers": "对端",
+    "tabLogs": "日志",
+    "tabHelp": "故障排查",
     "thisDevice": "本设备",
     "name": "名称",
     "fingerprint": "指纹",
@@ -196,9 +210,11 @@
   },
   "verify": {
     "trigger": "验证安全码",
-    "title": "验证 {{name}}",
+    "title": "验证联系人",
     "verified": "已验证",
     "description": "通过可信渠道（当面、电话）与 {{name}} 核对此安全码。若一致，则中间没有第三方。",
+    "verifiedBanner": "你已验证 {{name}}。本会话已端到端安全加密。",
+    "prompt": "通过可信渠道与该联系人核对下方的安全码，核对一致后将其标记为已验证。",
     "changedTitle": "该联系人的安全码已变更。",
     "changedDesc": "他们的设备指纹与你首次看到的不同。这通常发生在他们添加或更换设备时——但也可能是冒充者。请在信任之前重新验证。",
     "offline": "该联系人当前不在线，无法显示其指纹。",
@@ -208,7 +224,8 @@
   },
   "members": {
     "trigger": "成员",
-    "title": "频道成员（{{count}}）",
+    "title": "成员",
+    "description": "此频道中的所有成员。",
     "addPeer": "添加对端"
   },
   "createChannel": {
@@ -216,6 +233,7 @@
     "title": "新建频道",
     "description": "创建群组会话并邀请已发现的对端。",
     "namePlaceholder": "频道名称",
+    "invite": "邀请对端",
     "noPeers": "暂无可邀请的对端。"
   },
   "about": {

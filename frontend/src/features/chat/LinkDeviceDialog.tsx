@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Smartphone, KeyRound, Loader2 } from "lucide-react";
+import { Smartphone, KeyRound, Loader2, Copy, Check } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useTranslation } from "react-i18next";
 import {
@@ -28,6 +28,7 @@ export function LinkDeviceDialog() {
   const [joinCode, setJoinCode] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const onOpenChange = (v: boolean) => {
     setOpen(v);
@@ -46,6 +47,14 @@ export function LinkDeviceDialog() {
     } catch (e) {
       setMsg(errorMessage(e));
     }
+  };
+
+  const copyCode = () => {
+    if (!code) return;
+    void navigator.clipboard?.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    });
   };
 
   const doLink = async () => {
@@ -89,48 +98,67 @@ export function LinkDeviceDialog() {
           <DialogTitle>{t("linkDevice.title")}</DialogTitle>
           <DialogDescription>
             {t("linkDevice.thisAccount")}{" "}
-            <code className="font-mono">
+            <code className="font-mono text-foreground/80">
               {myAccountId ? `${shortId(myAccountId, 12)}…` : "—"}
             </code>
           </DialogDescription>
         </DialogHeader>
 
-        <section className="space-y-2 rounded-lg border p-3">
-          <p className="text-sm font-medium">{t("linkDevice.addDevice")}</p>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={showCode}>
-              {t("linkDevice.showCode")}
-            </Button>
-            {code && (
-              <code className="rounded bg-muted px-2 py-1 font-mono text-sm tracking-widest">
-                {code}
-              </code>
-            )}
-          </div>
-          {code && (
-            <div className="flex items-center gap-3">
+        {/* Show this device's pairing code on the OTHER device. */}
+        <section className="space-y-3 rounded-lg border p-4">
+          <p className="font-display text-sm font-semibold tracking-tight">
+            {t("linkDevice.addDevice")}
+          </p>
+          {!code ? (
+            <>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t("linkDevice.showOnOther")}
+              </p>
+              <Button variant="secondary" size="sm" onClick={showCode}>
+                {t("linkDevice.showCode")}
+              </Button>
+            </>
+          ) : (
+            <div className="flex items-center gap-4">
               {/* Display-only QR: this is a desktop app with no scanner, so the QR is just
                   a convenience for transcribing the code via a phone camera / future mobile
-                  client. The copyable text above remains the primary (desktop) path. */}
-              <div className="rounded-md bg-white p-2">
-                <QRCodeSVG value={code} size={96} />
+                  client. The copyable text remains the primary (desktop) path. */}
+              <div className="shrink-0 rounded-lg bg-white p-2">
+                <QRCodeSVG value={code} size={104} />
               </div>
-              <p className="text-xs text-muted-foreground">
-                {t("linkDevice.qrHint")}
-              </p>
+              <div className="min-w-0 flex-1 space-y-2">
+                <button
+                  type="button"
+                  onClick={copyCode}
+                  title={t("common.copy")}
+                  className="group flex w-full items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-left transition-colors hover:bg-muted"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-xl font-semibold tracking-[0.2em] text-signal">
+                    {code}
+                  </span>
+                  {copied ? (
+                    <Check className="h-4 w-4 shrink-0 text-verified" />
+                  ) : (
+                    <Copy className="h-4 w-4 shrink-0 opacity-40 group-hover:opacity-100" />
+                  )}
+                </button>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("linkDevice.qrHint")}
+                </p>
+              </div>
             </div>
           )}
-          <p className="text-xs text-muted-foreground">
-            {t("linkDevice.enterCodeHint")}
-          </p>
         </section>
 
-        <section className="space-y-2 rounded-lg border p-3">
-          <p className="text-sm font-medium">{t("linkDevice.haveCode")}</p>
+        {/* Enter a code FROM another device here. */}
+        <section className="space-y-2 rounded-lg border p-4">
+          <p className="font-display text-sm font-semibold tracking-tight">
+            {t("linkDevice.haveCode")}
+          </p>
           <select
             value={joinPeer}
             onChange={(e) => setJoinPeer(e.target.value)}
-            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm transition-colors hover:border-ring focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             <option value="">{t("linkDevice.pickDevice")}</option>
             {peers.map((p) => (
@@ -145,6 +173,7 @@ export function LinkDeviceDialog() {
               placeholder={t("linkDevice.pairingCode")}
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
+              className="font-mono tracking-widest"
             />
             <Button
               disabled={!joinPeer || !joinCode.trim() || busy}
@@ -156,10 +185,11 @@ export function LinkDeviceDialog() {
           </div>
         </section>
 
-        <section className="flex items-center justify-between rounded-lg border border-destructive/30 p-3">
-          <div>
+        {/* Lost / compromised device — rotate the account identity. */}
+        <section className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <div className="min-w-0">
             <p className="text-sm font-medium">{t("linkDevice.lostDevice")}</p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs leading-relaxed text-muted-foreground">
               {t("linkDevice.rotateIdentity")}
             </p>
           </div>
@@ -168,13 +198,14 @@ export function LinkDeviceDialog() {
             size="sm"
             disabled={busy}
             onClick={rekey}
+            className="shrink-0"
           >
             <KeyRound className="h-4 w-4" />
             {t("linkDevice.rekey")}
           </Button>
         </section>
 
-        {msg && <p className="text-sm font-medium text-primary">{msg}</p>}
+        {msg && <p className="text-sm font-medium text-signal">{msg}</p>}
       </DialogContent>
     </Dialog>
   );

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Bell,
+  FolderOpen,
   Languages,
   MinusSquare,
   Palette,
@@ -24,25 +26,38 @@ import { useTheme, type Theme } from "@/lib/theme";
 
 const THEMES: Theme[] = ["light", "dark", "oled"];
 
-interface Row {
-  id: string;
-  icon: React.ReactNode;
+/** A section group: a small display-font label over a stack of rows. */
+function Section({
+  title,
+  children,
+}: {
   title: string;
-  desc: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-2">
+      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {title}
+      </h3>
+      <div className="grid gap-2">{children}</div>
+    </section>
+  );
 }
 
-function ToggleRow({
+/** A row scaffold: icon + label/help on the left, a control on the right. */
+function Row({
   id,
   icon,
   title,
   desc,
-  checked,
-  onChange,
-  disabled,
-}: Row) {
+  control,
+}: {
+  id?: string;
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  control: React.ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
       <div className="flex min-w-0 items-start gap-3">
@@ -51,19 +66,18 @@ function ToggleRow({
           <label htmlFor={id} className="block text-sm font-medium">
             {title}
           </label>
-          <p className="text-xs text-muted-foreground">{desc}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {desc}
+          </p>
         </div>
       </div>
-      <Switch
-        id={id}
-        checked={checked}
-        onCheckedChange={onChange}
-        disabled={disabled}
-        aria-label={title}
-      />
+      <div className="shrink-0">{control}</div>
     </div>
   );
 }
+
+const SELECT_CLASS =
+  "h-9 rounded-md border border-input bg-background px-2 text-sm transition-colors hover:border-ring focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 
 const LANGUAGE_LABELS: Record<Language, string> = {
   en: "English",
@@ -82,6 +96,7 @@ export function SettingsDialog() {
   const [notifications, setNotifications] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
+  const [downloadDir, setDownloadDir] = useState("");
 
   // Load current state whenever the dialog opens.
   useEffect(() => {
@@ -90,6 +105,7 @@ export function SettingsDialog() {
       (s) => {
         setMinimizeToTray(s.minimize_to_tray);
         setNotifications(s.notifications);
+        setDownloadDir(s.download_dir);
       },
       () => {},
     );
@@ -133,6 +149,22 @@ export function SettingsDialog() {
     }
   };
 
+  const chooseDir = async () => {
+    try {
+      const dir = await openDialog({
+        directory: true,
+        defaultPath: downloadDir || undefined,
+      });
+      if (typeof dir === "string") {
+        const cur = await settingsApi.get();
+        await settingsApi.set({ ...cur, download_dir: dir });
+        setDownloadDir(dir);
+      }
+    } catch {
+      // Cancelled / unavailable — leave the current folder untouched.
+    }
+  };
+
   // The active base language (i18n.language may be a region code like "en-US").
   const currentLang = (
     SUPPORTED_LANGUAGES.includes(i18n.language as Language)
@@ -149,100 +181,134 @@ export function SettingsDialog() {
       </DialogTrigger>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Settings className="h-4 w-4" /> {t("settings.title")}
-          </DialogTitle>
+          <DialogTitle>{t("settings.title")}</DialogTitle>
           <DialogDescription>{t("settings.description")}</DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3">
-          <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
-            <div className="flex min-w-0 items-start gap-3">
-              <div className="mt-0.5 text-muted-foreground">
-                <Languages className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <label
-                  htmlFor="setting-language"
-                  className="block text-sm font-medium"
-                >
-                  {t("settings.language")}
-                </label>
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.languageDesc")}
-                </p>
-              </div>
-            </div>
-            <select
-              id="setting-language"
-              value={currentLang}
-              onChange={(e) => setLanguage(e.target.value as Language)}
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-              aria-label={t("settings.language")}
-            >
-              {SUPPORTED_LANGUAGES.map((lng) => (
-                <option key={lng} value={lng}>
-                  {LANGUAGE_LABELS[lng]}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
-            <div className="flex min-w-0 items-start gap-3">
-              <div className="mt-0.5 text-muted-foreground">
-                <Palette className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <label
-                  htmlFor="setting-theme"
-                  className="block text-sm font-medium"
-                >
-                  {t("settings.theme")}
-                </label>
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.themeDesc")}
-                </p>
-              </div>
-            </div>
-            <select
+        <div className="grid max-h-[70vh] gap-5 overflow-y-auto pr-0.5">
+          <Section title={t("settings.sectionAppearance")}>
+            <Row
               id="setting-theme"
-              value={theme}
-              onChange={(e) => setTheme(e.target.value as Theme)}
-              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-              aria-label={t("settings.theme")}
-            >
-              {THEMES.map((th) => (
-                <option key={th} value={th}>
-                  {t(`settings.theme_${th}`)}
-                </option>
-              ))}
-            </select>
-          </div>
-          <ToggleRow
-            id="setting-launch-at-login"
-            icon={<Rocket className="h-4 w-4" />}
-            title={t("settings.launchAtLogin")}
-            desc={t("settings.launchAtLoginDesc")}
-            checked={launchAtLogin}
-            onChange={(v) => void onLaunch(v)}
-            disabled={autostartBusy}
-          />
-          <ToggleRow
-            id="setting-close-to-tray"
-            icon={<MinusSquare className="h-4 w-4" />}
-            title={t("settings.closeToTray")}
-            desc={t("settings.closeToTrayDesc")}
-            checked={minimizeToTray}
-            onChange={onMinimize}
-          />
-          <ToggleRow
-            id="setting-notifications"
-            icon={<Bell className="h-4 w-4" />}
-            title={t("settings.notifications")}
-            desc={t("settings.notificationsDesc")}
-            checked={notifications}
-            onChange={onNotifications}
-          />
+              icon={<Palette className="h-4 w-4" />}
+              title={t("settings.theme")}
+              desc={t("settings.themeDesc")}
+              control={
+                <select
+                  id="setting-theme"
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value as Theme)}
+                  className={SELECT_CLASS}
+                  aria-label={t("settings.theme")}
+                >
+                  {THEMES.map((th) => (
+                    <option key={th} value={th}>
+                      {t(`settings.theme_${th}`)}
+                    </option>
+                  ))}
+                </select>
+              }
+            />
+            <Row
+              id="setting-language"
+              icon={<Languages className="h-4 w-4" />}
+              title={t("settings.language")}
+              desc={t("settings.languageDesc")}
+              control={
+                <select
+                  id="setting-language"
+                  value={currentLang}
+                  onChange={(e) => setLanguage(e.target.value as Language)}
+                  className={SELECT_CLASS}
+                  aria-label={t("settings.language")}
+                >
+                  {SUPPORTED_LANGUAGES.map((lng) => (
+                    <option key={lng} value={lng}>
+                      {LANGUAGE_LABELS[lng]}
+                    </option>
+                  ))}
+                </select>
+              }
+            />
+          </Section>
+
+          <Section title={t("settings.sectionBackground")}>
+            <Row
+              id="setting-launch-at-login"
+              icon={<Rocket className="h-4 w-4" />}
+              title={t("settings.launchAtLogin")}
+              desc={t("settings.launchAtLoginDesc")}
+              control={
+                <Switch
+                  id="setting-launch-at-login"
+                  checked={launchAtLogin}
+                  onCheckedChange={(v) => void onLaunch(v)}
+                  disabled={autostartBusy}
+                  aria-label={t("settings.launchAtLogin")}
+                />
+              }
+            />
+            <Row
+              id="setting-close-to-tray"
+              icon={<MinusSquare className="h-4 w-4" />}
+              title={t("settings.closeToTray")}
+              desc={t("settings.closeToTrayDesc")}
+              control={
+                <Switch
+                  id="setting-close-to-tray"
+                  checked={minimizeToTray}
+                  onCheckedChange={onMinimize}
+                  aria-label={t("settings.closeToTray")}
+                />
+              }
+            />
+            <Row
+              id="setting-notifications"
+              icon={<Bell className="h-4 w-4" />}
+              title={t("settings.notifications")}
+              desc={t("settings.notificationsDesc")}
+              control={
+                <Switch
+                  id="setting-notifications"
+                  checked={notifications}
+                  onCheckedChange={onNotifications}
+                  aria-label={t("settings.notifications")}
+                />
+              }
+            />
+          </Section>
+
+          <Section title={t("settings.sectionFiles")}>
+            <Row
+              icon={<FolderOpen className="h-4 w-4" />}
+              title={t("settings.downloadFolder")}
+              desc={
+                downloadDir
+                  ? t("settings.downloadFolderSet")
+                  : t("settings.downloadFolderDesc")
+              }
+              control={
+                <div className="flex max-w-[11rem] flex-col items-end gap-1">
+                  {downloadDir && (
+                    <span
+                      className="max-w-full truncate font-mono text-[11px] text-muted-foreground"
+                      title={downloadDir}
+                    >
+                      {downloadDir}
+                    </span>
+                  )}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void chooseDir()}
+                  >
+                    {downloadDir
+                      ? t("settings.changeFolder")
+                      : t("settings.chooseFolder")}
+                  </Button>
+                </div>
+              }
+            />
+          </Section>
         </div>
       </DialogContent>
     </Dialog>

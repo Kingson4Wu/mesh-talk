@@ -1,12 +1,6 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import {
-  ExternalLink,
-  Github,
-  Info,
-  MessagesSquare,
-  Scale,
-} from "lucide-react";
+import { Code2, ExternalLink, Info, Scale } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -17,6 +11,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { IdentityGlyph } from "@/components/identity";
 import { obs } from "@/lib/api";
 
 const REPO_URL = "https://github.com/Kingson4Wu/mesh-talk";
@@ -50,19 +45,17 @@ export function AboutDialog() {
       </DialogTrigger>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Info className="h-4 w-4" /> {t("about.title")}
-          </DialogTitle>
+          <DialogTitle>{t("about.title")}</DialogTitle>
           <DialogDescription>{t("about.description")}</DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-              <MessagesSquare className="h-6 w-6" />
-            </div>
+        <div className="grid gap-5">
+          <div className="flex items-center gap-4">
+            <IdentityGlyph seed="mesh-talk" size={56} className="shrink-0" />
             <div className="min-w-0">
-              <div className="text-base font-semibold">Mesh-Talk</div>
+              <div className="font-display text-xl font-semibold tracking-tight">
+                Mesh-Talk
+              </div>
               <div className="font-mono text-xs text-muted-foreground">
                 {version
                   ? t("about.version", { version })
@@ -71,7 +64,9 @@ export function AboutDialog() {
             </div>
           </div>
 
-          <p className="text-sm text-muted-foreground">{t("about.tagline")}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {t("about.tagline")}
+          </p>
 
           <div className="grid gap-2">
             <Button
@@ -80,7 +75,7 @@ export function AboutDialog() {
               className="justify-start"
               onClick={() => open_(REPO_URL)}
             >
-              <Github className="h-4 w-4" /> {t("about.sourceRepo")}
+              <Code2 className="h-4 w-4" /> {t("about.sourceRepo")}
               <ExternalLink className="ml-auto h-3.5 w-3.5 opacity-60" />
             </Button>
             <Button

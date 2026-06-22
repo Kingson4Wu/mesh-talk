@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Download, FileDown, FolderOpen, X } from "lucide-react";
+import {
+  Download,
+  FileArchive,
+  FileAudio,
+  FileImage,
+  FileText,
+  FileVideo,
+  File as FileIcon,
+  FolderOpen,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +20,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { IdentityGlyph } from "@/components/identity";
 import { chat, settings as settingsApi } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
 import { humanSize } from "@/lib/format";
@@ -18,6 +29,22 @@ import { TransferBar } from "./TransferBar";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const isImage = (name: string) => IMAGE_EXT.test(name);
+
+/** Pick an on-brand file glyph from the extension. */
+function fileGlyph(name: string) {
+  const ext = name.toLowerCase().split(".").pop() ?? "";
+  const cls = "h-4 w-4 shrink-0 text-signal";
+  if (IMAGE_EXT.test(name)) return <FileImage className={cls} />;
+  if (/^(mp4|mov|mkv|webm|avi)$/.test(ext))
+    return <FileVideo className={cls} />;
+  if (/^(mp3|wav|flac|aac|ogg|m4a)$/.test(ext))
+    return <FileAudio className={cls} />;
+  if (/^(zip|tar|gz|7z|rar|bz2|xz)$/.test(ext))
+    return <FileArchive className={cls} />;
+  if (/^(txt|md|pdf|doc|docx|csv|json|log)$/.test(ext))
+    return <FileText className={cls} />;
+  return <FileIcon className={cls} />;
+}
 
 /** Inline thumbnail for a received image: fetch the decrypted bytes and show them via a
  * short-lived object URL (revoked on unmount). Renders nothing until/unless it loads. */
@@ -144,8 +171,10 @@ export function FilesTray() {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 p-0">
-        <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-          <span className="text-sm font-semibold">{t("files.received")}</span>
+        <div className="flex items-center justify-between gap-2 border-b px-3 py-2.5">
+          <span className="font-display text-sm font-semibold tracking-tight">
+            {t("files.received")}
+          </span>
           <button
             type="button"
             onClick={() => void chooseDir()}
@@ -153,15 +182,18 @@ export function FilesTray() {
             className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
           >
             <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-            <span className="max-w-32 truncate">
+            <span className="max-w-32 truncate font-mono">
               {downloadDir || t("files.noDefaultFolder")}
             </span>
           </button>
         </div>
         {files.length === 0 ? (
-          <p className="px-3 py-4 text-center text-sm text-muted-foreground">
-            {t("files.nothingReceived")}
-          </p>
+          <div className="flex flex-col items-center gap-2 px-3 py-8 text-center">
+            <Download className="h-7 w-7 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">
+              {t("files.nothingReceived")}
+            </p>
+          </div>
         ) : (
           <div className="max-h-72 overflow-y-auto p-1">
             {files.map((f) => (
@@ -173,11 +205,21 @@ export function FilesTray() {
                   <ImageThumb fileConv={f.fileConv} alt={f.name} />
                 )}
                 <div className="flex items-center gap-2">
-                  <FileDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  {fileGlyph(f.name)}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm">{f.name}</div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {f.fromName} · {humanSize(f.size)}
+                    <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                      <IdentityGlyph
+                        seed={f.fromName}
+                        size={14}
+                        className="shrink-0"
+                        title={f.fromName}
+                      />
+                      <span className="truncate">{f.fromName}</span>
+                      <span aria-hidden>·</span>
+                      <span className="shrink-0 font-mono">
+                        {humanSize(f.size)}
+                      </span>
                     </div>
                   </div>
                   {savedPaths[f.fileConv] ? (

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { Hash, Search, SearchX } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -10,13 +11,45 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IdentityGlyph } from "@/components/identity";
 import { chat } from "@/lib/api";
 import { formatDay } from "@/lib/format";
+import { fadeSlideUp, listStagger, useMotionOK } from "@/lib/motion";
 import { useChat, type Conversation } from "@/store/chat";
 import type { SearchHitInfo } from "@/lib/types";
 
+/** Highlight every case-insensitive occurrence of `term` in `text` with the signal hue. */
+function Highlighted({ text, term }: { text: string; term: string }) {
+  const parts = useMemo(() => {
+    const q = term.trim();
+    if (!q) return [text];
+    const re = new RegExp(
+      `(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
+      "gi",
+    );
+    return text.split(re);
+  }, [text, term]);
+  return (
+    <>
+      {parts.map((p, i) =>
+        i % 2 === 1 ? (
+          <mark
+            key={i}
+            className="rounded-sm bg-signal/20 px-0.5 font-medium text-signal"
+          >
+            {p}
+          </mark>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 export function SearchDialog() {
   const { t } = useTranslation();
+  const motionOK = useMotionOK();
   const open = useChat((s) => s.open);
   const peers = useChat((s) => s.peers);
   const ready = useChat((s) => s.ready);
@@ -24,6 +57,7 @@ export function SearchDialog() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHitInfo[]>([]);
   const [searching, setSearching] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -42,7 +76,10 @@ export function SearchDialog() {
     timer.current = setTimeout(async () => {
       try {
         const results = await chat.search(query.trim());
-        if (active) setHits(results);
+        if (active) {
+          setHits(results);
+          setActiveIdx(0);
+        }
       } catch {
         if (active) setHits([]);
       } finally {
@@ -72,6 +109,22 @@ export function SearchDialog() {
     setDialogOpen(false);
   };
 
+  // Keyboard navigation across results (↑/↓ move, Enter opens).
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (hits.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.min(i + 1, hits.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const h = hits[activeIdx];
+      if (h) go(h);
+    }
+  };
+
   return (
     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
       <DialogTrigger asChild>
@@ -88,46 +141,88 @@ export function SearchDialog() {
         <DialogHeader>
           <DialogTitle>{t("search.title")}</DialogTitle>
         </DialogHeader>
-        <Input
-          autoFocus
-          placeholder={t("search.placeholder")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            autoFocus
+            placeholder={t("search.placeholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            className="pl-9"
+            aria-label={t("search.title")}
+          />
+        </div>
         <div className="max-h-80 space-y-1 overflow-y-auto">
           {searching && (
-            <p className="py-4 text-center text-sm text-muted-foreground">
+            <p className="py-8 text-center text-sm text-muted-foreground">
               {t("search.searching")}
             </p>
           )}
           {!searching && query.trim() && hits.length === 0 && (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              {t("search.noMatches")}
-            </p>
+            <div className="flex flex-col items-center gap-2 py-8 text-center">
+              <SearchX className="h-7 w-7 text-muted-foreground/60" />
+              <p className="text-sm text-muted-foreground">
+                {t("search.noMatches")}
+              </p>
+            </div>
           )}
-          {hits.map((h, i) => (
-            <button
-              key={i}
-              onClick={() => go(h)}
-              className="block w-full rounded-lg px-3 py-2 text-left hover:bg-accent"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">
-                  {h.is_channel ? "#" : ""}
-                  {h.label}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {formatDay(h.wall_clock)}
-                </span>
-              </div>
-              <div className="truncate text-sm text-muted-foreground">
-                <span className="text-foreground/70">
-                  {h.from_me ? t("common.you") : h.who}:
-                </span>{" "}
-                {h.text}
-              </div>
-            </button>
-          ))}
+          {!searching && !query.trim() && (
+            <div className="flex flex-col items-center gap-2 py-8 text-center">
+              <Search className="h-7 w-7 text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground">
+                {t("search.empty")}
+              </p>
+            </div>
+          )}
+          <motion.div
+            initial={motionOK ? "hidden" : false}
+            animate="visible"
+            variants={listStagger}
+          >
+            {hits.map((h, i) => (
+              <motion.button
+                key={i}
+                variants={fadeSlideUp}
+                onClick={() => go(h)}
+                onMouseEnter={() => setActiveIdx(i)}
+                aria-selected={i === activeIdx}
+                className={
+                  "flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors " +
+                  (i === activeIdx ? "bg-accent" : "hover:bg-accent/50")
+                }
+              >
+                {h.is_channel ? (
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[28%] border border-border bg-secondary text-muted-foreground">
+                    <Hash className="h-4 w-4" />
+                  </div>
+                ) : (
+                  <IdentityGlyph
+                    seed={h.target}
+                    size={36}
+                    className="shrink-0"
+                  />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-display text-sm font-semibold tracking-tight">
+                      {h.is_channel ? "#" : ""}
+                      {h.label}
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                      {formatDay(h.wall_clock)}
+                    </span>
+                  </div>
+                  <div className="truncate text-sm text-muted-foreground">
+                    <span className="text-foreground/70">
+                      {h.from_me ? t("common.you") : h.who}:
+                    </span>{" "}
+                    <Highlighted text={h.text} term={query} />
+                  </div>
+                </div>
+              </motion.button>
+            ))}
+          </motion.div>
         </div>
       </DialogContent>
     </Dialog>

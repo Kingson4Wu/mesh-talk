@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import {
   ShieldCheck,
   ShieldAlert,
@@ -14,19 +15,22 @@ import {
   DialogDescription,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IdentityCrest, SafetyNumber } from "@/components/identity";
 import { chat } from "@/lib/api";
 import { errorMessage } from "@/lib/error";
+import { fadeSlideUp, useMotionOK } from "@/lib/motion";
 import { useChat } from "@/store/chat";
-import type { SafetyNumber, TrustInfo } from "@/lib/types";
+import { presenceStatus, usePresenceFor } from "@/store/presence";
+import type { SafetyNumber as SafetyNumberInfo, TrustInfo } from "@/lib/types";
 
 /**
- * Contact verification / safety-number UI. A contact is identified by its account id;
- * its current device fingerprint comes from the discovery roster. We show the
- * fingerprint as a readable safety number (grouped digits + a word sequence) that the
- * two users compare out-of-band, a "Mark as verified" action, a verified badge, and a
- * loud warning if a known contact's fingerprint changed since first contact.
+ * Contact verification / safety-number UI — the trust centerpiece. A contact is identified
+ * by its account id; its current device fingerprint comes from the discovery roster. We
+ * present the contact as a large IdentityCrest, the fingerprint as a readable SafetyNumber
+ * (grouped mono digits + a word sequence) compared out-of-band, a "Mark as verified"
+ * action, a confident verified state, and a loud-but-elegant warning if a known contact's
+ * fingerprint changed since first contact.
  *
  * This is pure trust UX over the existing fingerprints — no crypto changes.
  */
@@ -38,14 +42,17 @@ export function VerifyContactDialog({
   name: string;
 }) {
   const { t } = useTranslation();
+  const motionOK = useMotionOK();
   const peers = useChat((s) => s.peers);
+  const presence = usePresenceFor(accountId);
+  const status = presenceStatus(presence);
   // The current device fingerprint presenting this account (any of its devices).
   const fingerprint =
     peers.find((p) => p.account_id === accountId)?.user_id ?? "";
 
   const [open, setOpen] = useState(false);
   const [trust, setTrust] = useState<TrustInfo | null>(null);
-  const [sn, setSn] = useState<SafetyNumber | null>(null);
+  const [sn, setSn] = useState<SafetyNumberInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -55,12 +62,12 @@ export function VerifyContactDialog({
     setErr(null);
     void (async () => {
       try {
-        const [t, s] = await Promise.all([
+        const [tr, s] = await Promise.all([
           chat.getTrust(accountId, fingerprint),
           chat.safetyNumber(fingerprint),
         ]);
         if (active) {
-          setTrust(t);
+          setTrust(tr);
           setSn(s);
         }
       } catch (e) {
@@ -88,6 +95,7 @@ export function VerifyContactDialog({
 
   const verified = trust?.verified ?? false;
   const changed = trust?.fingerprint_changed ?? false;
+  const trusted = verified && !changed;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -101,7 +109,7 @@ export function VerifyContactDialog({
           {changed ? (
             <ShieldAlert className="h-4 w-4 text-destructive" />
           ) : verified ? (
-            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            <ShieldCheck className="h-4 w-4 text-verified" />
           ) : (
             <ShieldQuestion className="h-4 w-4" />
           )}
@@ -109,67 +117,84 @@ export function VerifyContactDialog({
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {t("verify.title", { name })}
-            {verified && !changed && (
-              <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                <ShieldCheck className="mr-1 h-3 w-3" /> {t("verify.verified")}
-              </Badge>
-            )}
-          </DialogTitle>
+          <DialogTitle>{t("verify.title")}</DialogTitle>
           <DialogDescription>
             {t("verify.description", { name })}
           </DialogDescription>
         </DialogHeader>
 
-        {changed && (
-          <div className="flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>
-              <p className="font-semibold">{t("verify.changedTitle")}</p>
-              <p className="text-xs">{t("verify.changedDesc")}</p>
+        <div className="space-y-4">
+          {/* The contact, rendered with the large crest. */}
+          <IdentityCrest
+            id={fingerprint || accountId}
+            name={name}
+            verified={trusted}
+            status={status}
+            variant="large"
+          />
+
+          {/* Trust state banner. */}
+          {changed ? (
+            <div className="flex items-start gap-2.5 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="space-y-0.5">
+                <p className="font-display font-semibold">
+                  {t("verify.changedTitle")}
+                </p>
+                <p className="text-xs leading-relaxed text-destructive/90">
+                  {t("verify.changedDesc")}
+                </p>
+              </div>
             </div>
-          </div>
-        )}
+          ) : trusted ? (
+            <div className="flex items-center gap-2 rounded-lg border border-verified/40 bg-verified/10 px-3 py-2 text-sm font-medium text-verified">
+              <ShieldCheck className="h-4 w-4 shrink-0" />
+              {t("verify.verifiedBanner", { name })}
+            </div>
+          ) : (
+            <div className="flex items-start gap-2.5 rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <ShieldQuestion className="mt-0.5 h-4 w-4 shrink-0 text-signal" />
+              <p className="leading-relaxed">{t("verify.prompt")}</p>
+            </div>
+          )}
 
-        {!fingerprint && (
-          <p className="text-sm text-muted-foreground">{t("verify.offline")}</p>
-        )}
+          {!fingerprint && (
+            <p className="text-sm text-muted-foreground">
+              {t("verify.offline")}
+            </p>
+          )}
 
-        {sn && fingerprint && (
-          <div className="space-y-3 rounded-lg border p-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {sn && fingerprint && (
+            <motion.div
+              initial={motionOK ? "hidden" : false}
+              animate="visible"
+              variants={fadeSlideUp}
+              className="space-y-2"
+            >
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 {t("verify.safetyNumber")}
               </p>
-              <code className="mt-1 block break-all font-mono text-sm leading-relaxed">
-                {sn.grouped}
-              </code>
-            </div>
-            {sn.words.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {sn.words.map((w, i) => (
-                  <Badge
-                    key={`${w}-${i}`}
-                    className="bg-muted capitalize text-muted-foreground"
-                  >
-                    {w}
-                  </Badge>
-                ))}
-              </div>
-            )}
+              <SafetyNumber
+                value={sn.grouped}
+                words={sn.words}
+                verified={trusted}
+              />
+            </motion.div>
+          )}
+
+          {err && <p className="text-sm text-destructive">{err}</p>}
+
+          <div className="flex justify-end">
+            <Button
+              autoFocus
+              variant={changed ? "destructive" : "default"}
+              disabled={!fingerprint || busy}
+              onClick={verify}
+            >
+              {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+              {trusted ? t("verify.reverify") : t("verify.markVerified")}
+            </Button>
           </div>
-        )}
-
-        {err && <p className="text-sm text-destructive">{err}</p>}
-
-        <div className="flex justify-end">
-          <Button autoFocus disabled={!fingerprint || busy} onClick={verify}>
-            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {verified && !changed
-              ? t("verify.reverify")
-              : t("verify.markVerified")}
-          </Button>
         </div>
       </DialogContent>
     </Dialog>
