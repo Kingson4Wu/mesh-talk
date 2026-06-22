@@ -3,6 +3,8 @@
 # Mesh-Talk
 
 [![CI](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/ci.yml)
+[![UI E2E](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-ui.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-ui.yml)
+[![Backend E2E](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-backend.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/e2e-backend.yml)
 [![Fuzz](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/fuzz.yml)
 [![Mutants](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/mutants.yml)
 [![Gitleaks](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Kingson4Wu/mesh-talk/actions/workflows/gitleaks.yml)
@@ -15,6 +17,7 @@
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![platform: macOS | Windows | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000000?logo=linux&logoColor=white)](#prerequisites)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-docs-8A2BE2)](https://deepwiki.com/Kingson4Wu/mesh-talk)
+[![Release](https://img.shields.io/github/v/release/Kingson4Wu/mesh-talk?sort=semver)](https://github.com/Kingson4Wu/mesh-talk/releases)
 
 A local network chat tool written in Rust that enables users to communicate directly with others on the same network using UDP broadcast and TCP connections.
 

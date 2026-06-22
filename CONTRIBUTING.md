@@ -26,17 +26,27 @@ cargo run --bin mesh-talk-node -- --name alice   # headless node (add --post-off
 | Command | What it does |
 |---------|--------------|
 | `make build` | `cargo build --release` |
-| `make test` | Rust test suite (`cd src-tauri && cargo test`) |
-| `make lint` | `cargo clippy --all-targets -- -D warnings` |
+| `make test` | Rust workspace test suite (`cargo test --workspace`) |
+| `make e2e` | Multi-process backend E2E (real `mesh-talk-node` rigs over UDP/TCP) |
+| `make lint` | `cargo clippy --workspace -- -D warnings` |
 | `make format` | `cargo fmt` + `prettier` on the frontend |
 | `make check` | full health check (`scripts/check-health.sh`) |
 
-> **CPU note.** The test suite runs many password-KDF (PBKDF2, 600k rounds) and crypto
-> operations and cargo parallelizes to all cores. `.cargo/config.toml` caps `jobs` and
-> `RUST_TEST_THREADS`; for ad-hoc runs prefer `cargo test -- --test-threads=2`.
-> A `PreToolUse` hook in `.claude/settings.json` enforces this for Claude Code.
+### Test layers
 
-Filter tests while iterating: `cd src-tauri && cargo test node::node`.
+1. **Unit** — `cargo test -p mesh-talk-core --lib` (fast: test builds use cheap KDF
+   params via `cfg(test)` / the `fast-test-kdf` feature, so the security KDF is real in
+   release but instant in tests).
+2. **Backend E2E** — `make e2e`: the `#[ignore]`d multi-process rigs (two-node DM,
+   history-across-restart, post-office offline delivery). Fast + reliable; CI runs them in
+   `e2e-backend.yml`.
+3. **UI E2E** — `cd frontend && npm run e2e`: Playwright drives the real React app against
+   a mocked Tauri backend and walks the full business flow. Selectors use `data-testid` —
+   when you add UI, add a `data-testid` and a flow test. CI runs them in `e2e-ui.yml`.
+
+> **CPU note.** `.cargo/config.toml` caps `jobs`/`RUST_TEST_THREADS` so a parallel build
+> doesn't saturate the machine; for ad-hoc runs prefer `cargo test -- --test-threads=2`.
+> Filter while iterating: `cargo test -p mesh-talk-core node::node`.
 
 ## Coding style
 
@@ -69,6 +79,9 @@ discovery, reconnection) should mirror the docs under `specifications/`.
 
 ## Commit & pull request guidelines
 
+- **Sign commits with GPG** (`git commit -S`). `make dev` enables `commit.gpgsign`; the
+  `commit-msg` and `pre-push` hooks reject unsigned commits. No key yet?
+  `gpg --full-generate-key`, then `git config --global user.signingkey <KEY_ID>`.
 - Use [Conventional Commits](https://www.conventionalcommits.org/) with scopes,
   e.g. `feat(network): …`, `fix(contacts): …`. See
   `specifications/git_standards.md`.
