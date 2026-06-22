@@ -53,7 +53,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-rand_chacha = "0.3" # seeded CSPRNG for deterministic property tests (rand_core 0.6 SeedableRng)
+rand_chacha = "0.9" # seeded CSPRNG for deterministic property tests (rand_core 0.6 SeedableRng)
 # Self-dev-dependency on our OWN crate, activating `fast-test-kdf`. This is the lever that
 # makes the multi-process integration rigs fast: when Cargo builds the test targets it unifies
 # features for `mesh-talk-core`, so the `mesh-talk-node` binary handed to the tests via
