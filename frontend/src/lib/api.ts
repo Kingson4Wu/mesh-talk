@@ -45,6 +45,9 @@ export const chat = {
   myId: () => invoke<string>("my_id"),
   accountId: () => invoke<string>("account_id"),
 
+  /** Set the OS app-icon unread badge (dock/taskbar); 0 clears it. */
+  setBadge: (count: number) => invoke<void>("set_badge", { count }),
+
   listPeers: () => invoke<PeerInfo[]>("list_peers"),
   listAccounts: () => invoke<AccountInfo[]>("list_accounts"),
   listChannels: () => invoke<ChannelInfo[]>("list_channels"),

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Sidebar } from "./Sidebar";
 import { ConversationView } from "./ConversationView";
+import { chat as chatApi } from "@/lib/api";
 import { useChat } from "@/store/chat";
 import { usePresence } from "@/store/presence";
 
@@ -11,6 +12,15 @@ export function ChatApp() {
   const startPresence = usePresence((s) => s.start);
   const error = useChat((s) => s.error);
   const clearError = useChat((s) => s.clearError);
+  // Total unread across all conversations → the OS app-icon badge (dock/taskbar count).
+  // A primitive sum keeps the selector stable (re-renders only when the total changes).
+  const totalUnread = useChat((s) =>
+    Object.values(s.unread).reduce((a, b) => a + b, 0),
+  );
+
+  useEffect(() => {
+    chatApi.setBadge(totalUnread).catch(() => {});
+  }, [totalUnread]);
 
   useEffect(() => {
     const stop = start();

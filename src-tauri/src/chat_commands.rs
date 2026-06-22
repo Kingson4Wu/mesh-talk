@@ -685,6 +685,18 @@ pub async fn write_temp_file(
 ///   System Settings → Privacy & Security → Screen Recording.
 /// - Windows/Linux: not wired up yet — returns a clear error (cross-platform capture is a
 ///   documented follow-up; see `capture_png`).
+/// Set the OS app-icon unread badge: the macOS dock number, the Windows taskbar overlay,
+/// or the Linux Unity launcher count. `count` is the total unread messages; 0 (or None)
+/// clears the badge. Best-effort — a platform without badge support just no-ops.
+#[tauri::command]
+pub async fn set_badge(app: tauri::AppHandle, count: u32) -> Result<(), CommandError> {
+    if let Some(window) = app.get_webview_window("main") {
+        let n = if count == 0 { None } else { Some(count as i64) };
+        let _ = window.set_badge_count(n);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn capture_screen(
     app: tauri::AppHandle,

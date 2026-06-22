@@ -468,6 +468,7 @@ export const test = base.extend({
           diag_get_peers: () => diagPeers,
           diag_network_info: () => networkInfo,
           rescan_peers: ok,
+          set_badge: ok,
           env_info: () => envInfo,
           get_logs_dir: () => envInfo.logs_dir,
           get_log_file: () => `${envInfo.logs_dir}/mesh-talk.log`,
