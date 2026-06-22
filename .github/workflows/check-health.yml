@@ -1,16 +1,23 @@
 name: Code Quality and Health Check
 
+# Deep, cross-platform health check (macOS + Windows) that runs the full
+# scripts/check-health.sh. Per-push/PR gating lives in ci.yml (Linux + macOS);
+# this runs on main, on a weekly schedule, and on demand to avoid duplicating a
+# heavy build on every branch push.
 on:
-  pull_request:
-    branches:
-      - '**'
   push:
-    branches:
-      - '**'
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  NODE_VERSION: '18'
+  # Node 20+ required: vite 8 needs >=20.19 and uses CustomEvent (a Node 20 global).
+  NODE_VERSION: '20'
 
 jobs:
   check:
