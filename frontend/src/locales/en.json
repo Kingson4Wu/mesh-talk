@@ -19,7 +19,15 @@
     "change": "Change photo…",
     "remove": "Remove photo",
     "editOwn": "Change your photo",
-    "editContact": "Change {{name}}'s photo"
+    "editContact": "Change {{name}}'s photo",
+    "crop": {
+      "title": "Crop photo",
+      "description": "Drag to reposition and zoom to frame your photo.",
+      "confirm": "Set photo",
+      "zoomLabel": "Zoom",
+      "previewLabel": "Preview",
+      "viewportLabel": "Drag to reposition the photo"
+    }
   },
   "login": {
     "tagline": "Serverless · end-to-end encrypted",

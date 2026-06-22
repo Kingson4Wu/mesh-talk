@@ -19,7 +19,15 @@
     "change": "写真を変更…",
     "remove": "写真を削除",
     "editOwn": "自分の写真を変更",
-    "editContact": "{{name}} の写真を変更"
+    "editContact": "{{name}} の写真を変更",
+    "crop": {
+      "title": "写真を切り抜き",
+      "description": "ドラッグで位置を調整し、ズームで構図を決めます。",
+      "confirm": "写真を設定",
+      "zoomLabel": "ズーム",
+      "previewLabel": "プレビュー",
+      "viewportLabel": "ドラッグして写真の位置を調整"
+    }
   },
   "login": {
     "tagline": "サーバー不要 · エンドツーエンド暗号化",

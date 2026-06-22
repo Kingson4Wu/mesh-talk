@@ -19,7 +19,15 @@
     "change": "換頭像…",
     "remove": "移除頭像",
     "editOwn": "換你個頭像",
-    "editContact": "換 {{name}} 個頭像"
+    "editContact": "換 {{name}} 個頭像",
+    "crop": {
+      "title": "裁頭像",
+      "description": "拖嚟調位置，縮放嚟揀個構圖。",
+      "confirm": "設定頭像",
+      "zoomLabel": "縮放",
+      "previewLabel": "預覽",
+      "viewportLabel": "拖嚟調頭像位置"
+    }
   },
   "login": {
     "tagline": "唔使伺服器 · 端對端加密",

@@ -19,7 +19,15 @@
     "change": "Cambiar foto…",
     "remove": "Quitar foto",
     "editOwn": "Cambiar tu foto",
-    "editContact": "Cambiar la foto de {{name}}"
+    "editContact": "Cambiar la foto de {{name}}",
+    "crop": {
+      "title": "Recortar foto",
+      "description": "Arrastra para reposicionar y haz zoom para encuadrar tu foto.",
+      "confirm": "Establecer foto",
+      "zoomLabel": "Zoom",
+      "previewLabel": "Vista previa",
+      "viewportLabel": "Arrastra para reposicionar la foto"
+    }
   },
   "login": {
     "tagline": "Sin servidor · cifrado de extremo a extremo",

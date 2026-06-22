@@ -6,9 +6,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { pickAndResizeAvatar } from "@/lib/avatarImage";
+import { pickImageFile } from "@/lib/avatarImage";
 import { useAvatar, useAvatars } from "@/store/avatars";
 import { cn } from "@/lib/utils";
+import { AvatarCropDialog } from "@/features/chat/AvatarCropDialog";
 
 /**
  * AvatarEditMenu — wraps an identity glyph (its `children`) in a button that opens a small
@@ -29,13 +30,14 @@ export function AvatarEditMenu({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [cropFile, setCropFile] = useState<File | null>(null);
   const hasPhoto = useAvatar(id) !== undefined;
   const setAvatar = useAvatars((s) => s.setAvatar);
 
   const choose = async () => {
     setOpen(false);
-    const dataUrl = await pickAndResizeAvatar();
-    if (dataUrl) void setAvatar(id, dataUrl);
+    const file = await pickImageFile();
+    if (file) setCropFile(file);
   };
   const remove = () => {
     setOpen(false);
@@ -43,46 +45,56 @@ export function AvatarEditMenu({
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={ariaLabel}
-          className={cn(
-            "group/avatar relative rounded-[28%] outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            className,
-          )}
-        >
-          {children}
-          {/* Hover hint that this avatar is editable. */}
-          <span
-            aria-hidden
-            className="absolute inset-0 flex items-center justify-center rounded-[28%] bg-black/45 opacity-0 transition-opacity group-hover/avatar:opacity-100"
-          >
-            <Camera className="h-4 w-4 text-white" />
-          </span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-48 p-1">
-        <button
-          type="button"
-          onClick={() => void choose()}
-          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm hover:bg-accent"
-        >
-          <ImagePlus className="h-4 w-4 text-muted-foreground" />
-          {hasPhoto ? t("avatar.change") : t("avatar.set")}
-        </button>
-        {hasPhoto && (
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
           <button
             type="button"
-            onClick={remove}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-destructive hover:bg-accent"
+            aria-label={ariaLabel}
+            className={cn(
+              "group/avatar relative rounded-[28%] outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              className,
+            )}
           >
-            <Trash2 className="h-4 w-4" />
-            {t("avatar.remove")}
+            {children}
+            {/* Hover hint that this avatar is editable. */}
+            <span
+              aria-hidden
+              className="absolute inset-0 flex items-center justify-center rounded-[28%] bg-black/45 opacity-0 transition-opacity group-hover/avatar:opacity-100"
+            >
+              <Camera className="h-4 w-4 text-white" />
+            </span>
           </button>
-        )}
-      </PopoverContent>
-    </Popover>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-48 p-1">
+          <button
+            type="button"
+            onClick={() => void choose()}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm hover:bg-accent"
+          >
+            <ImagePlus className="h-4 w-4 text-muted-foreground" />
+            {hasPhoto ? t("avatar.change") : t("avatar.set")}
+          </button>
+          {hasPhoto && (
+            <button
+              type="button"
+              onClick={remove}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-destructive hover:bg-accent"
+            >
+              <Trash2 className="h-4 w-4" />
+              {t("avatar.remove")}
+            </button>
+          )}
+        </PopoverContent>
+      </Popover>
+      <AvatarCropDialog
+        file={cropFile}
+        onConfirm={(dataUrl) => {
+          setCropFile(null);
+          void setAvatar(id, dataUrl);
+        }}
+        onCancel={() => setCropFile(null)}
+      />
+    </>
   );
 }
