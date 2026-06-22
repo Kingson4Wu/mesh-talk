@@ -29,7 +29,7 @@ pub async fn dial(
 ) -> Result<SecureChannel<TcpStream>, TransportError> {
     let stream = TcpStream::connect(addr).await?;
     stream.set_nodelay(true)?;
-    crate::node::net::set_tcp_keepalive(&stream);
+    crate::transport::net::set_tcp_keepalive(&stream);
     SecureChannel::connect(stream, identity, expected_peer).await
 }
 
@@ -41,7 +41,7 @@ pub async fn secure_accept(
     identity: &DeviceIdentity,
 ) -> Result<SecureChannel<TcpStream>, TransportError> {
     stream.set_nodelay(true)?;
-    crate::node::net::set_tcp_keepalive(&stream);
+    crate::transport::net::set_tcp_keepalive(&stream);
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, SecureChannel::accept(stream, identity)).await {
         Ok(result) => result,
         Err(_) => Err(TransportError::Noise("accept handshake timed out".into())),

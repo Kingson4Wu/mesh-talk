@@ -268,39 +268,6 @@ impl AuthService {
 
         Ok(())
     }
-
-    /// Get the current logged in user
-    pub fn get_current_user(&self) -> Option<User> {
-        let current_user = self.current_user.lock().unwrap();
-        current_user.clone()
-    }
-
-    /// Validate a session token
-    pub fn validate_session(&self, token: String) -> AuthResult<User> {
-        let mut sessions = self.sessions.lock().unwrap();
-        let session = sessions.get(&token).ok_or(AuthError::InvalidCredentials)?;
-
-        if session.is_expired() {
-            sessions.remove(&token);
-            return Err(AuthError::InvalidCredentials);
-        }
-
-        // For now, we'll create a minimal user object
-        // In a more complete implementation, we might want to load more user details
-        let user = User {
-            user_id: session.user_id.clone(),
-            name: "Unknown".to_string(), // We don't have the username in the session
-            address: "Unknown".to_string(), // We don't have the address in the session
-            created_at: session.created_at,
-            last_seen: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            is_online: true,
-        };
-
-        Ok(user)
-    }
 }
 
 #[cfg(test)]
@@ -455,33 +422,5 @@ mod tests {
         let (auth_service, _) = setup_test_context();
         let result = auth_service.logout("nonexistent_token".to_string());
         assert!(matches!(result, Err(AuthError::NotLoggedIn)));
-    }
-
-    #[test]
-    fn test_session_validation() {
-        let (auth_service, _) = setup_test_context();
-        let _ = auth_service.register(
-            "testuser".to_string(),
-            "supersafepass".to_string(),
-            "192.168.1.1:7000".to_string(),
-        );
-        let (_, token) = auth_service
-            .login("testuser".to_string(), "supersafepass".to_string())
-            .unwrap();
-
-        // Validate session
-        let result = auth_service.validate_session(token);
-        assert!(result.is_ok());
-
-        let user = result.unwrap();
-        assert_eq!(user.name, "Unknown"); // Name is not stored in session
-    }
-
-    #[test]
-    fn test_session_validation_invalid_token() {
-        let (auth_service, _) = setup_test_context();
-        let result = auth_service.validate_session("invalid_token".to_string());
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), AuthError::InvalidCredentials);
     }
 }

@@ -9,6 +9,10 @@
 pub mod auth;
 pub mod channel;
 pub mod handshake;
+/// Low-level socket plumbing (UDP discovery socket, multicast joins, dual-stack
+/// TCP listener) shared by discovery and the node runtime. Dependency-free of the
+/// higher layers, so it sits at the bottom of the stack.
+pub mod net;
 pub mod session;
 
 pub use channel::SecureChannel;

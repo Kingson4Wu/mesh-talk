@@ -8,10 +8,10 @@
 //! is opaque to what the key means — it just maps an id to a record.
 
 use crate::commands::CommandError;
+use crate::config_store;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 
 /// What we persist about one contact's local UI preferences.
 ///
@@ -49,39 +49,17 @@ pub struct FavoriteInfo {
     pub custom_alias: Option<String>,
 }
 
-fn favorites_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|d| d.join("favorites.json"))
-}
+/// The persistence file for the favorites table, under the app config dir.
+const FAVORITES_FILE: &str = "favorites.json";
 
 /// Load the persisted favorites table (empty if missing/unreadable) into managed state.
 pub fn load_into_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &FavoritesState) {
-    let loaded = favorites_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<FavoritesFile>(&s).ok())
-        .unwrap_or_default();
-    *state.0.lock().unwrap() = loaded;
+    *state.0.lock().unwrap() = config_store::load::<R, FavoritesFile>(app, FAVORITES_FILE);
 }
 
 /// Persist the favorites table to disk (best-effort; logged on failure).
 fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, file: &FavoritesFile) {
-    let Some(path) = favorites_path(app) else {
-        log::warn!("No app config dir; favorites not persisted");
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_json::to_string_pretty(file) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                log::warn!("Failed to persist favorites: {e}");
-            }
-        }
-        Err(e) => log::warn!("Failed to serialize favorites: {e}"),
-    }
+    config_store::save(app, FAVORITES_FILE, "favorites", file);
 }
 
 /// Snapshot every favorites entry the user has set (pin and/or alias).

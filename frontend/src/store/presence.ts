@@ -25,7 +25,7 @@ interface PresenceState {
 }
 
 /** Stable empty presence for an unknown key (constant ref → no spurious re-renders). */
-const OFFLINE: PresenceInfo = { online: false, last_seen_secs: null };
+export const OFFLINE: PresenceInfo = { online: false, last_seen_secs: null };
 const EMPTY: PresenceMap = {};
 
 /** Merge a fresh snapshot into the prior map, REUSING the prior record object for any

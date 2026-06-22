@@ -69,6 +69,35 @@ function nextClientId(): string {
   return `c${clientIdCounter}`;
 }
 
+/** Number of boot poll attempts (≈30s at BOOT_POLL_MS). */
+const BOOT_POLL_TRIES = 60;
+const BOOT_POLL_MS = 500;
+
+/**
+ * Poll my_id/account_id until the node finishes opening (post-login KDF unlock takes a
+ * moment), then mark ready and refresh the roster. Returns true once ready, false if the
+ * boot window is exhausted. `isCancelled` lets a caller (e.g. logout) abort the loop;
+ * when cancelled we stop quietly without flipping any flags.
+ */
+async function pollUntilReady(
+  set: Set,
+  get: Get,
+  isCancelled: () => boolean,
+): Promise<boolean> {
+  for (let i = 0; i < BOOT_POLL_TRIES && !isCancelled(); i++) {
+    try {
+      const id = await chat.myId();
+      const acct = await chat.accountId();
+      set({ myId: id, myAccountId: acct, ready: true });
+      await get().refreshRoster();
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, BOOT_POLL_MS));
+    }
+  }
+  return false;
+}
+
 function fromHistory(h: HistoryItem): ChatMessage {
   return {
     id: h.id,
@@ -230,18 +259,10 @@ export const useChat = create<ChatState>((set, get) => ({
   retryBoot: () => {
     set({ bootFailed: false, ready: false });
     void (async () => {
-      for (let i = 0; i < 60; i++) {
-        try {
-          const id = await chat.myId();
-          const acct = await chat.accountId();
-          set({ myId: id, myAccountId: acct, ready: true });
-          await get().refreshRoster();
-          return;
-        } catch {
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
-      set({ bootFailed: true });
+      // No cancel token here: retryBoot is a one-shot user action with no teardown hook,
+      // so it always runs to completion (matching the prior behavior).
+      const ok = await pollUntilReady(set, get, () => false);
+      if (!ok) set({ bootFailed: true });
     })();
   },
 
@@ -284,23 +305,13 @@ export const useChat = create<ChatState>((set, get) => ({
     void get().loadFavorites();
     // Poll my_id until the node finishes opening (post-login KDF unlock takes a moment).
     let cancelled = false;
-    const boot = async () => {
-      for (let i = 0; i < 60 && !cancelled; i++) {
-        try {
-          const id = await chat.myId();
-          const acct = await chat.accountId();
-          set({ myId: id, myAccountId: acct, ready: true });
-          await get().refreshRoster();
-          return;
-        } catch {
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
+    void (async () => {
+      const ok = await pollUntilReady(set, get, () => cancelled);
       // Exhausted the boot window without the node coming up — surface it so the UI can
-      // offer a retry instead of sitting on "starting…" forever.
-      if (!cancelled) set({ bootFailed: true });
-    };
-    void boot();
+      // offer a retry instead of sitting on "starting…" forever. (Skip if cancelled by
+      // teardown, so a logout mid-boot doesn't flash a spurious failure.)
+      if (!ok && !cancelled) set({ bootFailed: true });
+    })();
 
     const roster = setInterval(() => {
       if (get().ready) void get().refreshRoster();

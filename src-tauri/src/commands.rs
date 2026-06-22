@@ -348,11 +348,6 @@ fn require_session(state: &AppState) -> CommandResult<crate::state::SessionInfo>
 // Node lifecycle bridge
 // ---------------------------------------------------------------------------
 
-/// The base directory for node per-account data (the app's `~/.mesh-talk`).
-fn node_data_dir() -> std::path::PathBuf {
-    crate::data_dir()
-}
-
 /// Spawn the node runtime in the background, wiring its inbound callbacks to the
 /// app's Tauri events, and store it in `node_handle`. Shared by login and by account
 /// adoption after device linking (which drops the old runtime and re-spawns; `start`
@@ -370,7 +365,8 @@ pub(crate) fn spawn_node_runtime(
     let app_handle_for_channel = app_handle.clone();
     let app_handle_for_file = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let base_dir = node_data_dir();
+        // The base directory for node per-account data (the app's `~/.mesh-talk`).
+        let base_dir = crate::data_dir();
         match mesh_talk_core::node::NodeRuntime::start(
             &base_dir,
             &account_id,

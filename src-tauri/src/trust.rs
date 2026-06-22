@@ -12,10 +12,10 @@
 //! silently overwrite it.
 
 use crate::commands::CommandError;
+use crate::config_store;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 
 /// What we persist about one contact account.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,39 +53,17 @@ pub struct TrustInfo {
     pub known: bool,
 }
 
-fn trust_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|d| d.join("trust.json"))
-}
+/// The persistence file for the trust table, under the app config dir.
+const TRUST_FILE: &str = "trust.json";
 
 /// Load the persisted trust table (empty if missing/unreadable) into managed state.
 pub fn load_into_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &TrustState) {
-    let loaded = trust_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<TrustFile>(&s).ok())
-        .unwrap_or_default();
-    *state.0.lock().unwrap() = loaded;
+    *state.0.lock().unwrap() = config_store::load::<R, TrustFile>(app, TRUST_FILE);
 }
 
 /// Persist the trust table to disk (best-effort; logged on failure).
 fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, file: &TrustFile) {
-    let Some(path) = trust_path(app) else {
-        log::warn!("No app config dir; trust table not persisted");
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_json::to_string_pretty(file) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                log::warn!("Failed to persist trust table: {e}");
-            }
-        }
-        Err(e) => log::warn!("Failed to serialize trust table: {e}"),
-    }
+    config_store::save(app, TRUST_FILE, "trust table", file);
 }
 
 /// Fetch trust state for a contact account, given its CURRENT device fingerprint.

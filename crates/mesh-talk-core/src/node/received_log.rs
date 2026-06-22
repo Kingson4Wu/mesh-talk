@@ -1,19 +1,16 @@
 //! A local-only, password-encrypted sidecar recording the plaintext of DMs this
 //! node RECEIVED. Inbound DMs are decrypted then discarded; this store keeps a
 //! private plaintext copy so history can show both sides. It is never synced,
-//! never served to peers, and holds no signatures. On-disk framing mirrors
-//! [`crate::node::sentlog`] (magic + salt header, then length-prefixed
-//! AES-256-GCM records) but stores [`ReceivedEntry`] records.
+//! never served to peers, and holds no signatures. The on-disk framing is the
+//! shared [`EncryptedRecordLog`] (magic + salt header, then length-prefixed
+//! AES-256-GCM records); this store layers [`ReceivedEntry`] records, a
+//! per-conversation index, and an event-id dedup set on top.
 
 use crate::eventlog::event::{ConversationId, EventId};
 use crate::eventlog::LogError;
-use crate::storage::encryption::{
-    decrypt_data, encrypt_data, generate_salt, EncryptionKey, NONCE_SIZE, SALT_SIZE,
-};
+use crate::storage::record_log::EncryptedRecordLog;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 6] = b"MTRECV";
@@ -31,8 +28,7 @@ pub struct ReceivedEntry {
 /// An append-only, password-encrypted log of locally-received message plaintext,
 /// indexed in memory by conversation.
 pub struct ReceivedLog {
-    file: File,
-    key: EncryptionKey,
+    file: EncryptedRecordLog<ReceivedEntry>,
     by_conversation: HashMap<ConversationId, Vec<ReceivedEntry>>,
     /// Event ids already stored, so `record` is idempotent — a re-imported backfill (e.g. a
     /// second `link_device`) or any duplicate write is skipped instead of durably doubling
@@ -43,51 +39,10 @@ pub struct ReceivedLog {
 impl ReceivedLog {
     /// Open (or create) the received log at `path`, replaying stored entries.
     pub fn open(path: &Path, password: &str) -> Result<Self, LogError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        match OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(mut file) => {
-                let salt = generate_salt();
-                let key = EncryptionKey::from_password(password, &salt)?;
-                file.write_all(MAGIC)?;
-                file.write_all(&salt)?;
-                file.flush()?;
-                Ok(Self {
-                    file,
-                    key,
-                    by_conversation: HashMap::new(),
-                    seen: HashSet::new(),
-                })
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Self::load(path, password),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn load(path: &Path, password: &str) -> Result<Self, LogError> {
-        let mut file = OpenOptions::new().read(true).append(true).open(path)?;
-        let mut magic = [0u8; 6];
-        file.read_exact(&mut magic)
-            .map_err(|_| LogError::CorruptFile("missing magic".into()))?;
-        if &magic != MAGIC {
-            return Err(LogError::CorruptFile("bad magic".into()));
-        }
-        let mut salt = [0u8; SALT_SIZE];
-        file.read_exact(&mut salt)
-            .map_err(|_| LogError::CorruptFile("missing salt".into()))?;
-        let key = EncryptionKey::from_password(password, &salt)?;
-        let mut rest = Vec::new();
-        file.read_to_end(&mut rest)?;
-
+        let (file, entries) = EncryptedRecordLog::<ReceivedEntry>::open(path, password, MAGIC)?;
         let mut by_conversation: HashMap<ConversationId, Vec<ReceivedEntry>> = HashMap::new();
         let mut seen: HashSet<EventId> = HashSet::new();
-        for entry in Self::parse_records(&rest, &key)? {
+        for entry in entries {
             seen.insert(entry.event_id);
             by_conversation
                 .entry(entry.conversation)
@@ -96,41 +51,9 @@ impl ReceivedLog {
         }
         Ok(Self {
             file,
-            key,
             by_conversation,
             seen,
         })
-    }
-
-    /// Parse the record region. A torn trailing record (crash mid-write) is
-    /// dropped; a record that fails to decrypt (tampering) is an error.
-    fn parse_records(mut data: &[u8], key: &EncryptionKey) -> Result<Vec<ReceivedEntry>, LogError> {
-        let mut entries = Vec::new();
-        loop {
-            if data.len() < 4 {
-                break;
-            }
-            let len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-            data = &data[4..];
-            if data.len() < len {
-                break; // torn trailing record
-            }
-            let record = &data[..len];
-            data = &data[len..];
-            if record.len() < NONCE_SIZE {
-                return Err(LogError::CorruptFile("record shorter than nonce".into()));
-            }
-            let nonce: [u8; NONCE_SIZE] = record[..NONCE_SIZE]
-                .try_into()
-                .expect("nonce length checked");
-            let ciphertext = &record[NONCE_SIZE..];
-            let plaintext = decrypt_data(ciphertext, &nonce, key)
-                .map_err(|_| LogError::CorruptFile("record failed to decrypt".into()))?;
-            let entry: ReceivedEntry = bincode::deserialize(&plaintext)
-                .map_err(|e| LogError::CorruptFile(format!("record decode: {e}")))?;
-            entries.push(entry);
-        }
-        Ok(entries)
     }
 
     /// Record a received message's plaintext: append an encrypted record, then index.
@@ -154,17 +77,7 @@ impl ReceivedLog {
             wall_clock,
             plaintext: plaintext.to_vec(),
         };
-        let bytes =
-            bincode::serialize(&entry).map_err(|e| LogError::Serialization(e.to_string()))?;
-        let (ciphertext, nonce) = encrypt_data(&bytes, &self.key)?;
-        let record_len = u32::try_from(NONCE_SIZE + ciphertext.len())
-            .map_err(|_| LogError::Serialization("received record exceeds u32 length".into()))?;
-        let mut buf = Vec::with_capacity(4 + NONCE_SIZE + ciphertext.len());
-        buf.extend_from_slice(&record_len.to_be_bytes());
-        buf.extend_from_slice(&nonce);
-        buf.extend_from_slice(&ciphertext);
-        self.file.write_all(&buf)?;
-        self.file.flush()?;
+        self.file.append(&entry)?;
         self.seen.insert(event_id);
         self.by_conversation
             .entry(conversation)
@@ -268,76 +181,5 @@ mod tests {
             1,
             "duplicate skipped after reopen too"
         );
-    }
-
-    #[test]
-    fn wrong_password_fails_to_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recv.log");
-        {
-            let mut r = ReceivedLog::open(&path, "right").unwrap();
-            r.record(conv(1), "alice".into(), 1, b"secret", EventId::new([1; 32]))
-                .unwrap();
-        }
-        assert!(matches!(
-            ReceivedLog::open(&path, "wrong"),
-            Err(LogError::CorruptFile(_))
-        ));
-    }
-
-    #[test]
-    fn torn_trailing_record_is_dropped() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recv.log");
-        {
-            let mut r = ReceivedLog::open(&path, "pw").unwrap();
-            r.record(
-                conv(1),
-                "alice".into(),
-                1000,
-                b"good",
-                EventId::new([1; 32]),
-            )
-            .unwrap();
-        }
-        {
-            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-            file.write_all(&100u32.to_be_bytes()).unwrap(); // claims 100 bytes
-            file.write_all(&[0u8; 10]).unwrap(); // only 10 present
-        }
-        let r = ReceivedLog::open(&path, "pw").unwrap();
-        let c1 = r.entries(&conv(1));
-        assert_eq!(c1.len(), 1); // the torn record is dropped, the good one survives
-        assert_eq!(c1[0].plaintext, b"good");
-    }
-
-    #[test]
-    fn tampered_ciphertext_fails_to_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recv.log");
-        {
-            let mut r = ReceivedLog::open(&path, "pw").unwrap();
-            r.record(conv(1), "alice".into(), 1, b"secret", EventId::new([1; 32]))
-                .unwrap();
-        }
-        let mut bytes = std::fs::read(&path).unwrap();
-        let n = bytes.len();
-        bytes[n - 1] ^= 0xFF;
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(matches!(
-            ReceivedLog::open(&path, "pw"),
-            Err(LogError::CorruptFile(_))
-        ));
-    }
-
-    #[test]
-    fn bad_magic_fails_to_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recv.log");
-        std::fs::write(&path, b"XXXXXXnot-a-recv-log").unwrap();
-        assert!(matches!(
-            ReceivedLog::open(&path, "pw"),
-            Err(LogError::CorruptFile(_))
-        ));
     }
 }

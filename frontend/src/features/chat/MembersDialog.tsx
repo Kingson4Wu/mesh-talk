@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { IdentityCrest } from "@/components/identity";
 import { fadeSlideUp, listStagger, useMotionOK } from "@/lib/motion";
 import { useChat } from "@/store/chat";
-import { usePresence } from "@/store/presence";
+import { OFFLINE, presenceStatus, usePresence } from "@/store/presence";
 
 export function MembersDialog() {
   const { t } = useTranslation();
@@ -28,7 +28,7 @@ export function MembersDialog() {
   const [open, setOpen] = useState(false);
 
   const statusFor = (accountId: string | null | undefined) =>
-    accountId && presenceMap[accountId]?.online ? "online" : "offline";
+    presenceStatus((accountId ? presenceMap[accountId] : undefined) ?? OFFLINE);
 
   const memberIds = new Set(members.map((m) => m.user_id));
   const addable = peers.filter((p) => !memberIds.has(p.user_id));

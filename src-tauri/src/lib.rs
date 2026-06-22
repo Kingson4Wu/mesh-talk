@@ -16,6 +16,7 @@
 // Tauri desktop shell over it.
 pub mod chat_commands;
 pub mod commands;
+pub mod config_store;
 pub mod diagnostics;
 pub mod events;
 pub mod favorites;

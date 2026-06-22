@@ -9,8 +9,8 @@ use crate::eventlog::LogError;
 use crate::identity::account_keystore;
 use crate::identity::device::PublicIdentity;
 use crate::identity::keystore;
-use crate::node::net::discovery_socket;
 use crate::node::{HistoryEntry, Node, NodeError, ReceivedDm};
+use crate::transport::net::discovery_socket;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -106,7 +106,7 @@ impl NodeRuntime {
 
         // Dual-stack TCP listener (IPv6 + IPv4-mapped, falling back to IPv4) so the node is
         // reachable over IPv6/link-local too; OS-assigned port (0).
-        let listener = crate::node::net::bind_dual_stack_listener(0u16).await?;
+        let listener = crate::transport::net::bind_dual_stack_listener(0u16).await?;
         let tcp_port = listener.local_addr()?.port();
 
         // Build the announce BEFORE the identity is moved into the node.

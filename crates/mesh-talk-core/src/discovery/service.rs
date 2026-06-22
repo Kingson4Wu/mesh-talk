@@ -4,7 +4,7 @@
 
 use crate::discovery::announce::{decode, encode, Announce};
 use crate::discovery::roster::{Roster, UpdateOutcome};
-use crate::node::net::{ipv4_interface_addrs, join_discovery_group_all_ifaces};
+use crate::transport::net::{ipv4_interface_addrs, join_discovery_group_all_ifaces};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -236,7 +236,11 @@ pub fn spawn_discovery_with_trigger(
     trigger: Option<Arc<Notify>>,
 ) -> Vec<JoinHandle<()>> {
     let self_announce_bytes = Arc::new(encode(&announce));
-    let target: SocketAddr = (crate::node::net::DISCOVERY_MULTICAST_GROUP, discovery_port).into();
+    let target: SocketAddr = (
+        crate::transport::net::DISCOVERY_MULTICAST_GROUP,
+        discovery_port,
+    )
+        .into();
     vec![
         tokio::spawn(run_listen(
             Arc::clone(&socket),

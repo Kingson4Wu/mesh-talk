@@ -6,9 +6,9 @@
 //! frontend reads/writes it through the plugin's own enable/disable/is-enabled.
 
 use crate::commands::CommandError;
+use crate::config_store;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 
 /// The persisted, user-facing toggles (both default on: a messenger should keep
 /// running in the background and tell you when something arrives).
@@ -63,41 +63,18 @@ impl SettingsState {
     }
 }
 
-/// `<app config dir>/settings.json`, the persistence path for the two toggles.
-fn settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|d| d.join("settings.json"))
-}
+/// The persistence file for the two toggles, under the app config dir.
+const SETTINGS_FILE: &str = "settings.json";
 
 /// Load persisted settings (defaults if the file is missing or unreadable) and
 /// seed the managed state. Called once during setup.
 pub fn load_into_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &SettingsState) {
-    let loaded = settings_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<AppSettings>(&s).ok())
-        .unwrap_or_default();
-    state.set(loaded);
+    state.set(config_store::load::<R, AppSettings>(app, SETTINGS_FILE));
 }
 
 /// Persist settings to disk (best-effort; logged on failure).
 fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, value: &AppSettings) {
-    let Some(path) = settings_path(app) else {
-        log::warn!("No app config dir; settings not persisted");
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_json::to_string_pretty(value) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                log::warn!("Failed to persist settings: {e}");
-            }
-        }
-        Err(e) => log::warn!("Failed to serialize settings: {e}"),
-    }
+    config_store::save(app, SETTINGS_FILE, "settings", value);
 }
 
 /// Read the current two non-autostart toggles. (Launch-at-login is queried via
