@@ -6,10 +6,12 @@ import {
   Paperclip,
   Smile,
   Camera,
+  Image as ImageIcon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { pickImageFile } from "@/lib/avatarImage";
 import type { ChatMessage } from "@/store/chat";
 
 // A small curated palette — enough for everyday chat without pulling in a heavy emoji library.
@@ -163,6 +165,17 @@ export function Composer({
       .catch(() => {});
   };
 
+  // Dedicated "send image" button: pick an image file and send it through the same path
+  // as a pasted/screenshot image (renders inline). Separate from the generic attach (any file).
+  const pickImage = async () => {
+    if (!onPasteImage) return;
+    const file = await pickImageFile();
+    if (!file) return;
+    const ext = (file.type.split("/")[1] || "png").toLowerCase();
+    const buf = await file.arrayBuffer();
+    onPasteImage(new Uint8Array(buf), ext);
+  };
+
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
     const el = e.currentTarget;
     setText(el.value);
@@ -266,7 +279,9 @@ export function Composer({
           </div>
         )}
 
-        <div className="flex items-end gap-2 rounded-2xl border bg-background p-2 transition-colors focus-within:border-signal focus-within:ring-2 focus-within:ring-signal/30">
+        {/* Action toolbar — kept ABOVE the input so the buttons aren't crammed onto the
+            typing line (screenshot · attach · image · emoji). */}
+        <div className="mb-1.5 flex items-center gap-1">
           {onScreenshot && (
             <Button
               variant="ghost"
@@ -290,9 +305,23 @@ export function Composer({
               data-testid="composer-attach"
               className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
               title={t("composer.attach")}
+              aria-label={t("composer.attach")}
               onClick={onAttach}
             >
               <Paperclip className="h-4 w-4" />
+            </Button>
+          )}
+          {onPasteImage && (
+            <Button
+              variant="ghost"
+              size="icon"
+              data-testid="composer-image"
+              className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
+              title={t("composer.image")}
+              aria-label={t("composer.image")}
+              onClick={() => void pickImage()}
+            >
+              <ImageIcon className="h-4 w-4" />
             </Button>
           )}
           <Button
@@ -309,6 +338,9 @@ export function Composer({
           >
             <Smile className="h-4 w-4" />
           </Button>
+        </div>
+
+        <div className="flex items-end gap-2 rounded-2xl border bg-background p-2 transition-colors focus-within:border-signal focus-within:ring-2 focus-within:ring-signal/30">
           <textarea
             ref={ref}
             rows={1}

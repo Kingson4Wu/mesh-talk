@@ -114,6 +114,7 @@
     "message": "消息",
     "send": "发送",
     "attach": "附加文件",
+    "image": "发送图片",
     "emoji": "表情",
     "insertEmoji": "插入 {{emoji}}",
     "couldntOpenFile": "无法打开文件：{{error}}"

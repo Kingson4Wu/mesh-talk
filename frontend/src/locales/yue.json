@@ -114,6 +114,7 @@
     "message": "訊息",
     "send": "傳送",
     "attach": "夾個檔案",
+    "image": "send 張相",
     "emoji": "表情符號",
     "insertEmoji": "加 {{emoji}}",
     "couldntOpenFile": "開唔到個檔案：{{error}}"

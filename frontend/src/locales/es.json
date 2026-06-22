@@ -114,6 +114,7 @@
     "message": "mensaje",
     "send": "Enviar",
     "attach": "Adjuntar un archivo",
+    "image": "Enviar una imagen",
     "emoji": "Emoji",
     "insertEmoji": "Insertar {{emoji}}",
     "couldntOpenFile": "No se pudo abrir el archivo: {{error}}"

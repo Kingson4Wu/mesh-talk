@@ -114,6 +114,7 @@
     "message": "メッセージ",
     "send": "送信",
     "attach": "ファイルを添付",
+    "image": "画像を送信",
     "emoji": "絵文字",
     "insertEmoji": "{{emoji}} を挿入",
     "couldntOpenFile": "ファイルを開けませんでした：{{error}}"
