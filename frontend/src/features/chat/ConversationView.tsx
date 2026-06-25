@@ -535,6 +535,38 @@ export function ConversationView() {
             setError(t("composer.couldntOpenFile", { error: errorMessage(e) }));
           }
         }}
+        onImage={async () => {
+          // Image button → the NATIVE file dialog (a JS `<input type=file>` is flaky in
+          // WKWebView and silently no-ops), filtered to media, sent with `media: true` so it
+          // previews inline. Path-based, so no multi-MB bytes round-trip over IPC.
+          try {
+            const path = await openFileDialog({
+              multiple: false,
+              filters: [
+                {
+                  name: "Images & Video",
+                  extensions: [
+                    "png",
+                    "jpg",
+                    "jpeg",
+                    "gif",
+                    "webp",
+                    "bmp",
+                    "heic",
+                    "heif",
+                    "mp4",
+                    "mov",
+                    "webm",
+                    "m4v",
+                  ],
+                },
+              ],
+            });
+            if (typeof path === "string") await sendFile(path, true);
+          } catch (e) {
+            setError(t("composer.couldntOpenFile", { error: errorMessage(e) }));
+          }
+        }}
         onSend={(t) => {
           send(t, replyTo?.id ?? null);
           setReplyTo(null);

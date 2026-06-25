@@ -12,7 +12,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { pickImageFile } from "@/lib/avatarImage";
 import { STICKERS } from "@/lib/stickerPacks";
 import type { ChatMessage } from "@/store/chat";
 
@@ -71,6 +70,7 @@ export function Composer({
   mentionNames,
   prefill,
   onSendSticker,
+  onImage,
 }: {
   onSend: (text: string) => void;
   onAttach?: () => void;
@@ -87,6 +87,9 @@ export function Composer({
   prefill?: { text: string; n: number } | null;
   /** Send an animated sticker (by id, with its emoji-char fallback) as its own message. */
   onSendSticker?: (stickerId: string, fallback: string) => void;
+  /** Pick + send an image/video via the NATIVE file dialog (reliable in the webview;
+   * a JS `<input type=file>` is flaky in WKWebView). Paste/screenshot still use bytes. */
+  onImage?: () => void;
 }) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
@@ -188,24 +191,6 @@ export function Composer({
       .arrayBuffer()
       .then((buf) => onPasteImage(new Uint8Array(buf), ext))
       .catch(() => {});
-  };
-
-  // Dedicated "send image/video" button: pick a media file and send it through the same path
-  // as a pasted/screenshot image (renders inline). Separate from the generic attach (any file).
-  // Accepts video too (a .mov etc. previews inline); the REAL filename is passed through, so
-  // the chat shows "clip.mov" — not a MIME-derived "pasted-….quicktim" — and it previews.
-  const pickImage = async () => {
-    if (!onPasteImage) return;
-    const file = await pickImageFile("image/*,video/*");
-    if (!file) return;
-    // Prefer the file's own extension (a real .mov stays .mov); fall back to the MIME subtype.
-    const ext = (
-      file.name.split(".").pop() ||
-      file.type.split("/")[1] ||
-      "png"
-    ).toLowerCase();
-    const buf = await file.arrayBuffer();
-    onPasteImage(new Uint8Array(buf), ext, file.name);
   };
 
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -376,7 +361,7 @@ export function Composer({
               <Paperclip className="h-4 w-4" />
             </Button>
           )}
-          {onPasteImage && (
+          {onImage && (
             <Button
               variant="ghost"
               size="icon"
@@ -384,7 +369,7 @@ export function Composer({
               className="h-9 w-9 shrink-0 rounded-xl text-muted-foreground"
               title={t("composer.image")}
               aria-label={t("composer.image")}
-              onClick={() => void pickImage()}
+              onClick={onImage}
             >
               <ImageIcon className="h-4 w-4" />
             </Button>
