@@ -1,0 +1,40 @@
+# WASM bindings for mesh-talk-core — the browser/PWA entry to the protocol stack.
+#
+# Excluded from the root workspace (see the root Cargo.toml `[workspace] exclude`) so native
+# `cargo build --workspace` / the pre-commit gate never try to build a wasm-bindgen cdylib for
+# the host. Built on its own via wasm-pack (using the rustup toolchain that has the wasm32 std):
+#   wasm-pack build crates/mesh-talk-wasm --target nodejs --dev
+[package]
+name = "mesh-talk-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The pure protocol stack (no `native` feature → no tokio/sockets/fs).
+mesh-talk-core = { path = "../mesh-talk-core", default-features = false }
+wasm-bindgen = "0.2"
+# Bridges Rust async exports (`pub async fn`) to JS Promises.
+wasm-bindgen-futures = "0.4"
+# Surfaces Rust panics as readable JS console errors (dev ergonomics).
+console_error_panic_hook = "0.1"
+# For the keystore blob (the sealed identity persisted to IndexedDB). Versions match the core.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+zeroize = "1"
+# Run the Noise SecureChannel in wasm: io-util gives the in-memory duplex + IO traits, futures
+# drives the two handshake endpoints concurrently on the single wasm task.
+tokio = { version = "1.28", default-features = false, features = ["io-util"] }
+futures = "0.3"
+# Bridge the mesh SecureChannel onto a browser RTCDataChannel (AsyncRead/Write over JS).
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "RtcDataChannel",
+    "RtcDataChannelType",
+    "MessageEvent",
+] }

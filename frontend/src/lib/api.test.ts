@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// The IPC contract: the frontend must call the exact Tauri command names with the exact
-// (camelCase) arg keys the Rust commands expect. A typo here is a real runtime bug.
+// The IPC contract: the frontend must call the exact backend command names with the exact
+// (camelCase) arg keys the Rust commands expect. A typo here is a real runtime bug. api.ts now
+// routes through the `./backend` seam (Tauri IPC on desktop, wasm in the browser), so the
+// contract is asserted there.
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("./backend", () => ({ invoke, isTauri: () => true }));
 
 import { auth, chat } from "./api";
 

@@ -11,7 +11,8 @@ pub mod channel;
 pub mod handshake;
 /// Low-level socket plumbing (UDP discovery socket, multicast joins, dual-stack
 /// TCP listener) shared by discovery and the node runtime. Dependency-free of the
-/// higher layers, so it sits at the bottom of the stack.
+/// higher layers, so it sits at the bottom of the stack. Native-only (no sockets in wasm).
+#[cfg(feature = "native")]
 pub mod net;
 pub mod session;
 
@@ -22,11 +23,10 @@ pub use session::Session;
 /// BLAKE2s hash.
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
-/// Maximum size of a single Noise message on the wire (Noise spec limit).
-pub const MAX_FRAME: usize = 65535;
-
-/// Maximum plaintext per frame = `MAX_FRAME` minus the 16-byte AEAD tag.
-pub const MAX_PLAINTEXT: usize = MAX_FRAME - 16;
+// Wire limits live at the crate root (`crate::limits`) so the pure stack can use them in the
+// wasm build; re-exported here so `transport::MAX_FRAME` / `transport::MAX_PLAINTEXT` are
+// unchanged for native callers.
+pub use crate::limits::{MAX_FRAME, MAX_PLAINTEXT};
 
 /// Errors from the transport layer.
 #[derive(Debug)]

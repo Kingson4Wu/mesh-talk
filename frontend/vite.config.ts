@@ -4,6 +4,9 @@ import { fileURLToPath, URL } from "node:url";
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  // Base path: "/" for the Tauri app + LAN/http hosting (default); set VITE_BASE (e.g.
+  // "/mesh-talk/") for a GitHub Pages project site, where the app is served under a sub-path.
+  base: process.env.VITE_BASE || "/",
   plugins: [react()],
   resolve: {
     alias: {

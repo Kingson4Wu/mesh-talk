@@ -144,7 +144,7 @@ export function LinkDeviceDialog() {
                   {copied ? (
                     <Check className="h-4 w-4 shrink-0 text-verified" />
                   ) : (
-                    <Copy className="h-4 w-4 shrink-0 opacity-40 group-hover:opacity-100" />
+                    <Copy className="h-4 w-4 shrink-0 opacity-100 [@media(hover:hover)]:opacity-40 [@media(hover:hover)]:group-hover:opacity-100" />
                   )}
                 </button>
                 <p className="text-xs leading-relaxed text-muted-foreground">

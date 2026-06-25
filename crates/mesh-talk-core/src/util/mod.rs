@@ -2,6 +2,10 @@
 //! collision-avoiding de-dup for received-file saves, a safety number derived from
 //! a fingerprint, and a bounded-concurrency fan-out wrapper.
 
-pub mod fanout;
 pub mod safety_number;
+
+// Native only: `fanout` uses tokio tasks; `savename` touches the filesystem.
+#[cfg(feature = "native")]
+pub mod fanout;
+#[cfg(feature = "native")]
 pub mod savename;

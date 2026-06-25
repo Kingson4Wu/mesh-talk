@@ -223,6 +223,22 @@ impl PersistentEventLog {
         self.log = log;
         Ok(drop.len())
     }
+
+    /// Compact a presence-directory conversation (keep the newest announcement per author) and
+    /// persist the smaller log — bounds the append-only growth of periodic presence heartbeats.
+    pub fn compact_presence(&mut self, conversation: &ConversationId) -> Result<usize, LogError> {
+        let dropped = self.log.compact_presence(conversation);
+        if dropped > 0 {
+            let kept: Vec<Event> = self
+                .log
+                .conversations()
+                .into_iter()
+                .flat_map(|c| self.log.events(&c).into_iter().cloned().collect::<Vec<_>>())
+                .collect();
+            self.file.rewrite(&kept)?;
+        }
+        Ok(dropped)
+    }
 }
 
 /// Minimum droppable superseded profiles before [`PersistentEventLog::compact_superseded_profiles`]

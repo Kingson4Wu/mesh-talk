@@ -80,6 +80,7 @@
     "strandedNoNetwork": "未连接任何网络 · 设置直连"
   },
   "conversation": {
+    "back": "返回",
     "noneSelectedTitle": "未选择会话",
     "noneSelectedDesc": "选择一个联系人或频道开始聊天。",
     "unlockingTitle": "正在解锁你的加密存储…",
@@ -166,7 +167,20 @@
     "downloadFolderDesc": "接收文件的保存位置。留空则每次询问。",
     "downloadFolderSet": "接收的文件将自动保存到此处。",
     "chooseFolder": "选择文件夹",
-    "changeFolder": "更改"
+    "changeFolder": "更改",
+    "sectionLanHub": "局域网共享",
+    "relayService": "作为中继",
+    "relayServiceDesc": "让本网络内的手机通过这台电脑互相连接通信。",
+    "shareApp": "让手机下载 App",
+    "shareAppDesc": "启动本地网页服务器并显示二维码。用手机(同一 Wi-Fi)扫码即可下载并加入。",
+    "shareAppFailed": "无法开始共享",
+    "stopSharing": "停止共享",
+    "sectionGateway": "网关",
+    "gatewayRelay": "中继地址",
+    "gatewayRelayDesc": "本应用用于与对端同步的信令中继地址。向搭建网格的人索取地址。",
+    "gatewayRelayPlaceholder": "ws://… 或邀请链接",
+    "gatewayCopyInvite": "复制邀请",
+    "gatewayQrHint": "在另一台设备上扫码以加入此网关"
   },
   "search": {
     "title": "搜索消息",

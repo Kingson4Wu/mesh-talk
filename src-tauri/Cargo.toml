@@ -15,8 +15,14 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
-# The protocol core (the SDK layer this app is built on).
-mesh-talk-core = { path = "../crates/mesh-talk-core" }
+# The protocol core (the SDK layer this app is built on). The `gateway` feature pulls in WebRTC
+# so the desktop node can act as a mesh hub for browser/PWA phones (Phase 3 multi-peer mesh).
+mesh-talk-core = { path = "../crates/mesh-talk-core", features = ["gateway"] }
+# LAN hub: run the signaling relay in-process + (on demand) host the PWA over http so phones can
+# download the app + connect on the LAN. resolve_static_path/serve come from the relay crate.
+mesh-talk-signal = { path = "../crates/mesh-talk-signal" }
+tiny_http = "0.12"
+mime_guess = "2"
 # Tauri shell
 # NOTE: do NOT enable the "devtools" feature — it ships the webview inspector (right-click
 # → Inspect / console) in RELEASE builds too. Debug builds still get devtools automatically

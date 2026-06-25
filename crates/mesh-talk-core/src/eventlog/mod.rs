@@ -7,11 +7,17 @@
 //! composition), and [`sync`] (the bounded 3-message reconciliation).
 
 pub mod event;
-pub mod persist;
 pub mod store;
 pub mod sync;
 
+// The encrypted append-only *file* composition — native only. The in-memory `store` + `sync`
+// (the validating index and reconciliation) are pure and compile for wasm; the PWA build
+// persists the log via IndexedDB instead.
+#[cfg(feature = "native")]
+pub mod persist;
+
 pub use event::{Author, ConversationId, Event, EventId, EventKind};
+#[cfg(feature = "native")]
 pub use persist::PersistentEventLog;
 pub use store::{AppendOutcome, EventLog};
 pub use sync::{ApplyReport, SyncFollowup, SyncRequest, SyncResponse, SyncStore};

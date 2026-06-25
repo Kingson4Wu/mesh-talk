@@ -80,6 +80,7 @@
     "strandedNoNetwork": "未連到任何網路 · 設定直連"
   },
   "conversation": {
+    "back": "返回",
     "noneSelectedTitle": "仲未揀對話",
     "noneSelectedDesc": "揀個聯絡人或者頻道就可以開始傾。",
     "unlockingTitle": "解鎖緊你啲加密嘅嘢…",
@@ -166,7 +167,20 @@
     "downloadFolderDesc": "收到嘅檔案擺喺邊。唔填就每次問你。",
     "downloadFolderSet": "收到嘅檔案會自動擺呢度。",
     "chooseFolder": "揀資料夾",
-    "changeFolder": "改"
+    "changeFolder": "改",
+    "sectionLanHub": "區域網分享",
+    "relayService": "做中繼",
+    "relayServiceDesc": "等同一個網絡嘅手機經呢部電腦互相連接傾偈。",
+    "shareApp": "俾手機下載 App",
+    "shareAppDesc": "開個本機網頁伺服器再顯示 QR Code。用手機(同一個 Wi-Fi)掃一掃就可以下載同加入。",
+    "shareAppFailed": "開唔到分享",
+    "stopSharing": "停止分享",
+    "sectionGateway": "閘道",
+    "gatewayRelay": "中繼地址",
+    "gatewayRelayDesc": "呢個 App 用嚟同對端同步嘅信令中繼地址。問下整網狀網絡嗰個人攞地址。",
+    "gatewayRelayPlaceholder": "ws://… 或者邀請連結",
+    "gatewayCopyInvite": "複製邀請",
+    "gatewayQrHint": "喺另一部裝置掃碼加入呢個閘道"
   },
   "search": {
     "title": "搵訊息",

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { isTauri } from "@/lib/backend";
 import { Code2, ExternalLink, Info, Scale } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -34,7 +35,12 @@ export function AboutDialog() {
   }, [open]);
 
   const open_ = (url: string) => {
-    void openUrl(url).catch(() => {});
+    // The Tauri opener only exists in the desktop app; in the browser PWA use a normal new tab.
+    if (isTauri()) {
+      void openUrl(url).catch(() => {});
+    } else {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
   };
 
   return (

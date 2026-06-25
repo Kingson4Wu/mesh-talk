@@ -76,3 +76,7 @@ coverage/
 frontend/playwright-report/
 frontend/test-results/
 docs/superpowers/
+
+# wasm-pack build output
+crates/mesh-talk-wasm/pkg/
+crates/mesh-talk-wasm/target/

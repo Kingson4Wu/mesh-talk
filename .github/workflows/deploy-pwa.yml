@@ -1,0 +1,51 @@
+name: Deploy PWA to GitHub Pages
+
+# Manual trigger only: publishing is an outward-facing action, so this never runs automatically
+# on push. Enable Pages (Settings → Pages → Source: GitHub Actions) once, then run this workflow
+# to build the browser PWA and publish it at https://<owner>.github.io/mesh-talk/.
+#
+# This deploys ONLY the static app shell (the one-time download). At runtime the installed PWA
+# talks to peers over WebRTC; peer discovery uses a signaling relay, and because the app is served
+# over HTTPS a browser will not open a plaintext ws:// relay (mixed content) — point it at a wss://
+# relay, or use a same-LAN http:// host instead of Pages. See the gateway settings in-app.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # The wasm package is committed under frontend/src/wasm, so no Rust/wasm toolchain is needed.
+      - name: Build PWA (sub-path base for a project Pages site)
+        working-directory: frontend
+        env:
+          VITE_BASE: /mesh-talk/
+        run: |
+          npm ci
+          npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

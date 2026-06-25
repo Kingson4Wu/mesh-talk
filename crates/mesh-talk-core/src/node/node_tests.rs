@@ -1,7 +1,7 @@
 use super::*;
 use crate::discovery::announce::Announce;
+use crate::message::MessageBody;
 use crate::node::conversation::dm_conversation_id;
-use crate::node::message::MessageBody;
 use crate::node::postbox::run_relay_accept_loop;
 use crate::postoffice::PostOffice;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -3123,5 +3123,296 @@ async fn setting_an_oversized_avatar_is_rejected() {
     assert!(
         matches!(err, NodeError::Channel(_)),
         "oversize must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn desktop_surfaces_a_phone_from_the_gossip_directory() {
+    // Regression: the desktop used to resolve contacts ONLY from the LAN-discovery roster, so a
+    // phone (which lives only in the gossiped presence directory [7;32], never on LAN discovery)
+    // was invisible — couldn't be seen or DM'd. The node must surface [7;32] entries.
+    use crate::eventlog::event::{ConversationId, Event, EventKind};
+    let dir = tempfile::tempdir().unwrap();
+    let me = DeviceIdentity::generate();
+    let roster = Arc::new(Mutex::new(Roster::default())); // empty — the phone is NOT a LAN peer
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (ch, _c) = mpsc::unbounded_channel();
+    let (f, _f) = mpsc::unbounded_channel();
+    let node = Node::open(
+        me,
+        roster,
+        tx,
+        ch,
+        f,
+        &dir.path().join("me.log"),
+        &dir.path().join("me-sent.log"),
+        "pw",
+    )
+    .unwrap();
+
+    // A phone announced into [7;32] (as it would arrive via gossip): ed25519 || x25519 || name,
+    // authored + signed by the phone identity.
+    let phone = DeviceIdentity::generate();
+    let pp = phone.public();
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&pp.ed25519_pub);
+    payload.extend_from_slice(&pp.x25519_pub);
+    payload.extend_from_slice(b"PhoneZoe");
+    let ev = Event::new(
+        &phone,
+        ConversationId::new([7u8; 32]),
+        1,
+        vec![],
+        1,
+        12345,
+        EventKind::Message,
+        payload,
+    );
+    node.log.lock().unwrap().append(ev).unwrap();
+
+    let entries = node.gossip_directory();
+    assert_eq!(
+        entries.len(),
+        1,
+        "desktop should surface the gossiped phone"
+    );
+    let (id, pid, name, _ts) = &entries[0];
+    assert_eq!(*id, pp.user_id());
+    assert_eq!(name, "PhoneZoe");
+    assert_eq!(pid.ed25519_pub, pp.ed25519_pub);
+}
+
+#[tokio::test]
+async fn desktop_sends_a_dm_to_a_gossip_only_peer() {
+    // Desktop↔device-pair alignment: a phone is gossip-only (presence directory [7;32], never on
+    // LAN discovery / the roster). send_dm must resolve it from the gossip directory, ratchet-seal
+    // a device-pair DM, and SUCCEED on the durable append — there's no LAN transport here; the
+    // gateway sync delivers it. Regression for "phone online but desktop can't send to it".
+    use crate::eventlog::event::{ConversationId, Event, EventKind};
+    let dir = tempfile::tempdir().unwrap();
+    let me = DeviceIdentity::generate();
+    let roster = Arc::new(Mutex::new(Roster::default())); // empty — the phone is NOT a LAN peer
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (ch, _c) = mpsc::unbounded_channel();
+    let (f, _f) = mpsc::unbounded_channel();
+    let node = Node::open(
+        me,
+        roster,
+        tx,
+        ch,
+        f,
+        &dir.path().join("me.log"),
+        &dir.path().join("me-sent.log"),
+        "pw",
+    )
+    .unwrap();
+
+    // A phone announced into the presence directory [7;32] (ed25519 || x25519 || name).
+    let phone = DeviceIdentity::generate();
+    let pp = phone.public();
+    let phone_uid = pp.user_id();
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&pp.ed25519_pub);
+    payload.extend_from_slice(&pp.x25519_pub);
+    payload.extend_from_slice(b"Phone");
+    let ev = Event::new(
+        &phone,
+        ConversationId::new([7u8; 32]),
+        1,
+        vec![],
+        1,
+        1,
+        EventKind::Message,
+        payload,
+    );
+    node.log.lock().unwrap().append(ev).unwrap();
+
+    // Sending to the gossip-only phone resolves it from the directory + appends a device-pair DM,
+    // and succeeds even though the phone is in neither the roster nor reachable by LAN here.
+    node.send_dm(&phone_uid, b"hi from desktop")
+        .await
+        .expect("send_dm to a gossip-only peer should succeed (appended; gateway delivers)");
+
+    // It lands in the device-pair history with the phone — the SAME conversation the phone writes
+    // to, so the phone will pull it (and the desktop UI reads this conv too).
+    let hist = node.dm_history(&pp, 10);
+    assert!(
+        hist.iter()
+            .any(|h| h.from_me && h.text == b"hi from desktop"),
+        "the sent DM must appear in the device-pair history with the phone: {hist:?}"
+    );
+}
+
+#[tokio::test]
+async fn two_desktops_exchange_presence_over_loopback() {
+    // A desktop learns ANOTHER desktop's presence via the LAN directory gossip ([7;32]) — so a
+    // phone served by either's hub sees BOTH desktops, not just the one it connected to. Without
+    // gossip_directories_with_peers, two desktops only ever sync DM/channel conversations.
+    let a = DeviceIdentity::generate();
+    let b = DeviceIdentity::generate();
+    let a_uid = a.public().user_id();
+    let b_uid = b.public().user_id();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let b_addr = listener.local_addr().unwrap();
+    let a_roster = seed_roster(&b, "B", b_addr.port(), &a_uid);
+    let b_roster = seed_roster(&a, "A", 4000, &b_uid);
+
+    let dir = tempfile::tempdir().unwrap();
+    let (a_tx, _a_rx) = mpsc::unbounded_channel();
+    let (b_tx, _b_rx) = mpsc::unbounded_channel();
+    let (a_ch, _a_ch) = mpsc::unbounded_channel();
+    let (b_ch, _b_ch) = mpsc::unbounded_channel();
+    let (a_f, _a_f) = mpsc::unbounded_channel();
+    let (b_f, _b_f) = mpsc::unbounded_channel();
+    let a_node = Node::open(
+        a,
+        a_roster,
+        a_tx,
+        a_ch,
+        a_f,
+        &dir.path().join("a.log"),
+        &dir.path().join("a-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let b_node = Node::open(
+        b,
+        b_roster,
+        b_tx,
+        b_ch,
+        b_f,
+        &dir.path().join("b.log"),
+        &dir.path().join("b-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    tokio::spawn(Arc::clone(&b_node).run_accept_loop(listener));
+
+    // B announces; A announces + gossips the directories with its peers (dials B). request_round is
+    // bidirectional, so this one exchange converges both directions.
+    b_node.announce_presence("B").unwrap();
+    a_node.gossip_directories_with_peers("A").await;
+
+    let a_sees: Vec<String> = a_node
+        .gossip_directory()
+        .into_iter()
+        .map(|(id, _, _, _)| id)
+        .collect();
+    assert!(
+        a_sees.contains(&b_uid),
+        "A must learn B's presence via the directory gossip: {a_sees:?}"
+    );
+    let b_sees: Vec<String> = b_node
+        .gossip_directory()
+        .into_iter()
+        .map(|(id, _, _, _)| id)
+        .collect();
+    assert!(
+        b_sees.contains(&a_uid),
+        "B must receive A's presence via the directory gossip: {b_sees:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_phone_sees_a_third_pc_the_hub_learned_over_lan() {
+    // Reported bug: a phone connected (scanned) to ONE desktop "hub" sees that hub, but NOT the
+    // OTHER online desktops on the LAN it never scanned. The hub learns those other desktops via the
+    // LAN directory gossip ([7;32]); it must RE-gossip that third-party presence onward to the phone.
+    // Topology: C (other PC) <-> H (hub) over LAN; P (phone) syncs ONLY with H. P must end up seeing C.
+    let c = DeviceIdentity::generate();
+    let h = DeviceIdentity::generate();
+    let p = DeviceIdentity::generate();
+    let c_uid = c.public().user_id();
+    let h_uid = h.public().user_id();
+    let p_uid = p.public().user_id();
+
+    // Listeners: H dials C (LAN gossip); P dials H (its scanned hub).
+    let c_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let c_addr = c_listener.local_addr().unwrap();
+    let h_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let h_addr = h_listener.local_addr().unwrap();
+
+    // Rosters: H knows its LAN peer C; P knows only its hub H; C dials nobody.
+    let h_roster = seed_roster(&c, "C", c_addr.port(), &h_uid);
+    let p_roster = seed_roster(&h, "H", h_addr.port(), &p_uid);
+    let c_roster = Arc::new(Mutex::new(Roster::default()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _crx) = mpsc::unbounded_channel();
+    let (cch, _cch) = mpsc::unbounded_channel();
+    let (cf, _cf) = mpsc::unbounded_channel();
+    let (htx, _hrx) = mpsc::unbounded_channel();
+    let (hch, _hch) = mpsc::unbounded_channel();
+    let (hf, _hf) = mpsc::unbounded_channel();
+    let (ptx, _prx) = mpsc::unbounded_channel();
+    let (pch, _pch) = mpsc::unbounded_channel();
+    let (pf, _pf) = mpsc::unbounded_channel();
+    let c_node = Node::open(
+        c,
+        c_roster,
+        ctx,
+        cch,
+        cf,
+        &dir.path().join("c.log"),
+        &dir.path().join("c-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let h_node = Node::open(
+        h,
+        h_roster,
+        htx,
+        hch,
+        hf,
+        &dir.path().join("h.log"),
+        &dir.path().join("h-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    let p_node = Node::open(
+        p,
+        p_roster,
+        ptx,
+        pch,
+        pf,
+        &dir.path().join("p.log"),
+        &dir.path().join("p-sent.log"),
+        "pw",
+    )
+    .unwrap();
+    tokio::spawn(Arc::clone(&c_node).run_accept_loop(c_listener));
+    tokio::spawn(Arc::clone(&h_node).run_accept_loop(h_listener));
+
+    // C announces; the hub gossips the directory with its LAN peer C → H's [7;32] = {H, C}.
+    c_node.announce_presence("C").unwrap();
+    h_node.gossip_directories_with_peers("H").await;
+
+    // Precondition: the hub really did learn C over the LAN (this is the known-good path).
+    let h_sees: Vec<String> = h_node
+        .gossip_directory()
+        .into_iter()
+        .map(|(id, _, _, _)| id)
+        .collect();
+    assert!(
+        h_sees.contains(&c_uid),
+        "precondition: the hub must learn C over the LAN: {h_sees:?}"
+    );
+
+    // The phone syncs ONLY with its single roster peer, the hub H — exactly the gateway path.
+    p_node.gossip_directories_with_peers("P").await;
+
+    let p_sees: Vec<String> = p_node
+        .gossip_directory()
+        .into_iter()
+        .map(|(id, _, _, _)| id)
+        .collect();
+    assert!(
+        p_sees.contains(&h_uid),
+        "the phone must see its hub H: {p_sees:?}"
+    );
+    assert!(
+        p_sees.contains(&c_uid),
+        "BUG: the phone must see C — the PC it never scanned — re-gossiped via the hub: {p_sees:?}"
     );
 }

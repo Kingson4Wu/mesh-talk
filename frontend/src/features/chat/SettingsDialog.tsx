@@ -7,9 +7,11 @@ import {
   Languages,
   MinusSquare,
   Palette,
+  Radio,
   Rocket,
   Settings,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { useTranslation } from "react-i18next";
 import {
   Dialog,
@@ -21,7 +23,14 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { settings as settingsApi } from "@/lib/api";
+import { lanHub, settings as settingsApi } from "@/lib/api";
+import { isTauri } from "@/lib/backend";
+import {
+  applyGatewayInvite,
+  gatewayInviteLink,
+  gatewayRelayUrl,
+  setGatewayRelay,
+} from "@/lib/browserBackend";
 import {
   resolveLanguage,
   setLanguage,
@@ -104,6 +113,14 @@ export function SettingsDialog() {
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [downloadDir, setDownloadDir] = useState("");
   const [staySignedIn, setStaySignedIn] = useState(true);
+  // Browser/PWA only: the signaling relay the background gateway sync connects through.
+  const [relayUrl, setRelayUrl] = useState(() =>
+    isTauri() ? "" : (gatewayRelayUrl() ?? ""),
+  );
+  // Desktop only: LAN hub — "act as relay" toggle + the on-demand app-host join URL (for a QR).
+  const [relayOn, setRelayOn] = useState(false);
+  const [hostUrl, setHostUrl] = useState<string | null>(null);
+  const [hostError, setHostError] = useState<string | null>(null);
 
   // Load current state whenever the dialog opens.
   useEffect(() => {
@@ -121,6 +138,7 @@ export function SettingsDialog() {
       (on) => setLaunchAtLogin(on),
       () => {},
     );
+    if (isTauri()) void lanHub.relayRunning().then(setRelayOn, () => {});
   }, [open]);
 
   // Persist the toggles. Re-read the current settings first so we don't clobber fields the
@@ -241,35 +259,40 @@ export function SettingsDialog() {
           </Section>
 
           <Section title={t("settings.sectionBackground")}>
-            <Row
-              id="setting-launch-at-login"
-              icon={<Rocket className="h-4 w-4" />}
-              title={t("settings.launchAtLogin")}
-              desc={t("settings.launchAtLoginDesc")}
-              control={
-                <Switch
+            {/* Launch-at-login + close-to-tray are desktop-only (no meaning in a phone PWA). */}
+            {isTauri() && (
+              <>
+                <Row
                   id="setting-launch-at-login"
-                  checked={launchAtLogin}
-                  onCheckedChange={(v) => void onLaunch(v)}
-                  disabled={autostartBusy}
-                  aria-label={t("settings.launchAtLogin")}
+                  icon={<Rocket className="h-4 w-4" />}
+                  title={t("settings.launchAtLogin")}
+                  desc={t("settings.launchAtLoginDesc")}
+                  control={
+                    <Switch
+                      id="setting-launch-at-login"
+                      checked={launchAtLogin}
+                      onCheckedChange={(v) => void onLaunch(v)}
+                      disabled={autostartBusy}
+                      aria-label={t("settings.launchAtLogin")}
+                    />
+                  }
                 />
-              }
-            />
-            <Row
-              id="setting-close-to-tray"
-              icon={<MinusSquare className="h-4 w-4" />}
-              title={t("settings.closeToTray")}
-              desc={t("settings.closeToTrayDesc")}
-              control={
-                <Switch
+                <Row
                   id="setting-close-to-tray"
-                  checked={minimizeToTray}
-                  onCheckedChange={onMinimize}
-                  aria-label={t("settings.closeToTray")}
+                  icon={<MinusSquare className="h-4 w-4" />}
+                  title={t("settings.closeToTray")}
+                  desc={t("settings.closeToTrayDesc")}
+                  control={
+                    <Switch
+                      id="setting-close-to-tray"
+                      checked={minimizeToTray}
+                      onCheckedChange={onMinimize}
+                      aria-label={t("settings.closeToTray")}
+                    />
+                  }
                 />
-              }
-            />
+              </>
+            )}
             <Row
               id="setting-notifications"
               icon={<Bell className="h-4 w-4" />}
@@ -300,38 +323,187 @@ export function SettingsDialog() {
             />
           </Section>
 
-          <Section title={t("settings.sectionFiles")}>
-            <Row
-              icon={<FolderOpen className="h-4 w-4" />}
-              title={t("settings.downloadFolder")}
-              desc={
-                downloadDir
-                  ? t("settings.downloadFolderSet")
-                  : t("settings.downloadFolderDesc")
-              }
-              control={
-                <div className="flex max-w-[11rem] flex-col items-end gap-1">
-                  {downloadDir && (
-                    <span
-                      className="max-w-full truncate font-mono text-[11px] text-muted-foreground"
-                      title={downloadDir}
+          {/* Download folder uses a native file dialog — desktop only. */}
+          {isTauri() && (
+            <Section title={t("settings.sectionFiles")}>
+              <Row
+                icon={<FolderOpen className="h-4 w-4" />}
+                title={t("settings.downloadFolder")}
+                desc={
+                  downloadDir
+                    ? t("settings.downloadFolderSet")
+                    : t("settings.downloadFolderDesc")
+                }
+                control={
+                  <div className="flex max-w-[11rem] flex-col items-end gap-1">
+                    {downloadDir && (
+                      <span
+                        className="max-w-full truncate font-mono text-[11px] text-muted-foreground"
+                        title={downloadDir}
+                      >
+                        {downloadDir}
+                      </span>
+                    )}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void chooseDir()}
                     >
-                      {downloadDir}
-                    </span>
-                  )}
+                      {downloadDir
+                        ? t("settings.changeFolder")
+                        : t("settings.chooseFolder")}
+                    </Button>
+                  </div>
+                }
+              />
+            </Section>
+          )}
+
+          {isTauri() && (
+            <Section title={t("settings.sectionLanHub")}>
+              <Row
+                id="setting-relay"
+                icon={<Radio className="h-4 w-4" />}
+                title={t("settings.relayService")}
+                desc={t("settings.relayServiceDesc")}
+                control={
+                  <Switch
+                    id="setting-relay"
+                    data-testid="settings-relay-toggle"
+                    checked={relayOn}
+                    onCheckedChange={(v) => {
+                      setRelayOn(v);
+                      void lanHub
+                        .setRelayRunning(v)
+                        .catch(() => setRelayOn(!v));
+                    }}
+                  />
+                }
+              />
+              <div className="rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">
+                      {t("settings.shareApp")}
+                    </div>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {t("settings.shareAppDesc")}
+                    </p>
+                  </div>
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => void chooseDir()}
+                    data-testid="settings-share-app"
+                    onClick={() => {
+                      if (hostUrl) {
+                        void lanHub.stopAppHost().catch(() => {});
+                        setHostUrl(null);
+                        setHostError(null);
+                      } else {
+                        setHostError(null);
+                        void lanHub.startAppHost().then(
+                          (u) => setHostUrl(u),
+                          (e) =>
+                            setHostError(
+                              e instanceof Error ? e.message : String(e),
+                            ),
+                        );
+                      }
+                    }}
                   >
-                    {downloadDir
-                      ? t("settings.changeFolder")
-                      : t("settings.chooseFolder")}
+                    {hostUrl
+                      ? t("settings.stopSharing")
+                      : t("settings.shareApp")}
                   </Button>
                 </div>
-              }
-            />
-          </Section>
+                {hostError && (
+                  <p
+                    className="mt-2 text-xs text-destructive"
+                    data-testid="settings-share-error"
+                  >
+                    {t("settings.shareAppFailed")}: {hostError}
+                  </p>
+                )}
+                {hostUrl && (
+                  <div
+                    className="mt-3 flex flex-col items-center gap-1.5"
+                    data-testid="settings-share-qr"
+                  >
+                    <div className="rounded bg-white p-2">
+                      <QRCodeSVG value={hostUrl} size={148} />
+                    </div>
+                    <p className="break-all text-center font-mono text-[11px] text-muted-foreground">
+                      {hostUrl}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+
+          {/* The signaling-relay address is a desktop-browser/dev affordance only. A phone uses the
+              dedicated MobileSettings (this dialog never renders there) and gets its relay from the
+              scanned invite (?relay=…), so it's gated to the non-Tauri desktop browser. */}
+          {!isTauri() && (
+            <Section title={t("settings.sectionGateway")}>
+              <Row
+                id="setting-gateway-relay"
+                icon={<Radio className="h-4 w-4" />}
+                title={t("settings.gatewayRelay")}
+                desc={t("settings.gatewayRelayDesc")}
+                control={
+                  <div className="flex max-w-[12rem] flex-col items-end gap-1">
+                    <input
+                      id="setting-gateway-relay"
+                      data-testid="settings-gateway-relay"
+                      type="text"
+                      inputMode="url"
+                      value={relayUrl}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        // Pasting an invite link applies its relay + room; otherwise treat the
+                        // value as a raw relay address.
+                        if (applyGatewayInvite(v)) {
+                          setRelayUrl(gatewayRelayUrl() ?? "");
+                        } else {
+                          setRelayUrl(v);
+                          setGatewayRelay(v.trim() || null);
+                        }
+                      }}
+                      placeholder={t("settings.gatewayRelayPlaceholder")}
+                      className={`${SELECT_CLASS} w-44`}
+                      aria-label={t("settings.gatewayRelay")}
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      data-testid="settings-gateway-copy"
+                      disabled={!relayUrl}
+                      onClick={() => {
+                        const link = gatewayInviteLink();
+                        if (link) void navigator.clipboard?.writeText(link);
+                      }}
+                    >
+                      {t("settings.gatewayCopyInvite")}
+                    </Button>
+                  </div>
+                }
+              />
+              {relayUrl && (
+                <div
+                  className="flex flex-col items-center gap-1.5 rounded-lg border p-3"
+                  data-testid="settings-gateway-qr"
+                >
+                  <div className="rounded bg-white p-2">
+                    <QRCodeSVG value={gatewayInviteLink() ?? ""} size={132} />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {t("settings.gatewayQrHint")}
+                  </p>
+                </div>
+              )}
+            </Section>
+          )}
         </div>
       </DialogContent>
     </Dialog>

@@ -49,16 +49,33 @@ impl Node {
         text: &[u8],
         reply_to: Option<EventId>,
     ) -> Result<(), NodeError> {
-        let peer = self
+        // Resolve the recipient: a LAN peer (roster — delivered direct + post office) or a
+        // gossip-only peer such as a phone (presence directory — never on LAN discovery, reached
+        // through the gateway sync this node hubs). The phone's DMs are device-pair, so the desktop
+        // addresses it the same way (this is the desktop↔device-pair alignment).
+        let roster_peer = self
             .roster
             .lock()
             .expect("roster mutex not poisoned")
             .get(recipient)
-            .cloned()
-            .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?;
+            .cloned();
+        let peer_public = match &roster_peer {
+            Some(p) => p.public.clone(),
+            None => self
+                .gossip_directory()
+                .into_iter()
+                .find(|(id, _, _, _)| id == recipient)
+                .map(|(_, pid, _, _)| pid)
+                .ok_or_else(|| NodeError::UnknownPeer(recipient.to_string()))?,
+        };
 
         let wrapped = MessageBody::new(text.to_vec(), reply_to).encode();
-        let conv = dm_conversation_id(&self.identity.public(), &peer.public);
+        let conv = dm_conversation_id(&self.identity.public(), &peer_public);
+        log::info!(
+            "[mesh] send DM to {recipient} (gossip-only={}) conv={}",
+            roster_peer.is_none(),
+            hex::encode(&conv.as_bytes()[..8])
+        );
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
         // Seal the wrapped body with the Double Ratchet (forward-secret). Compute the
         // wire OUTSIDE the log lock so no lock spans the seal.
@@ -67,7 +84,7 @@ impl Node {
                 .dm_ratchet
                 .lock()
                 .expect("dm_ratchet mutex not poisoned");
-            r.encrypt(&self.identity, &peer.public, &wrapped)
+            r.encrypt(&self.identity, &peer_public, &wrapped)
                 .map_err(NodeError::Log)?
         };
         let wall_clock = now_millis();
@@ -103,19 +120,26 @@ impl Node {
             .expect("sentlog mutex not poisoned")
             .record(conv, seq, wall_clock, &wrapped);
 
-        // Best-effort direct delivery (the recipient may be offline) plus always
-        // replicating to the elected post office (store-and-forward).
-        let direct = self.deliver_direct(&peer, conv).await;
-        let replicated = self.replicate_to_post_office(conv).await;
+        // Deliver. LAN peer: best-effort direct + always replicate to the post office
+        // (store-and-forward). Gossip-only peer (phone): there is no LAN transport — the gateway
+        // sync (this node hubs the relay the phone is connected to) carries the appended event when
+        // the phone next pulls, so a durable append IS the send.
+        let result = match roster_peer {
+            Some(peer) => {
+                let direct = self.deliver_direct(&peer, conv).await;
+                let replicated = self.replicate_to_post_office(conv).await;
+                match (direct, replicated) {
+                    (Ok(()), _) => Ok(()),                             // delivered directly
+                    (Err(_), Ok(true)) => Ok(()),                      // a post office holds it
+                    (Err(e), Ok(false)) => Err(NodeError::Session(e)), // offline peer, no PO
+                    (Err(_), Err(e)) => Err(NodeError::Session(e)),    // both paths failed
+                }
+            }
+            None => Ok(()), // gossip peer: durably appended; the gateway sync delivers it
+        };
         // Either round may also have pulled events back to us.
         self.emit_new_messages(conv);
-
-        match (direct, replicated) {
-            (Ok(()), _) => Ok(()),                             // delivered directly
-            (Err(_), Ok(true)) => Ok(()),                      // a post office holds it
-            (Err(e), Ok(false)) => Err(NodeError::Session(e)), // offline peer, no PO
-            (Err(_), Err(e)) => Err(NodeError::Session(e)),    // both paths failed
-        }
+        result
     }
 
     /// Send a DM to an ACCOUNT: fan out a per-device ratcheted copy to every known

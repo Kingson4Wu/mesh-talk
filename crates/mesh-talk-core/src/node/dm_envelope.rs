@@ -1,6 +1,6 @@
 //! The DM routing envelope for account-addressed messaging (multi-device). A DM's
 //! sealed plaintext is `DmEnvelope = MAGIC ‖ bincode({ route, body })`, where `body`
-//! is the inner [`crate::node::message::MessageBody`] bytes and `route` names the
+//! is the inner [`crate::message::MessageBody`] bytes and `route` names the
 //! sender/recipient ACCOUNTS (not devices). The receiver uses the route to file the
 //! message under the right account conversation and to decide `from_me` (true when the
 //! route's sender is its own account — i.e. a self-synced copy of its own send).

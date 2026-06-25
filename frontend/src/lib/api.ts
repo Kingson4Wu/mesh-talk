@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "./backend";
 import {
   disable as autostartDisable,
   enable as autostartEnable,
@@ -207,6 +207,15 @@ export const avatars = {
     invoke<void>("publish_avatar", { avatar: dataUrl }),
 };
 
+/** Desktop LAN hub: host the PWA over http on demand (phones scan/download) + run the relay. */
+export const lanHub = {
+  relayRunning: () => invoke<boolean>("relay_running"),
+  setRelayRunning: (running: boolean) =>
+    invoke<void>("set_relay_running", { running }),
+  startAppHost: () => invoke<string>("start_app_host"),
+  stopAppHost: () => invoke<void>("stop_app_host"),
+};
+
 export const settings = {
   /** The two non-autostart toggles (minimize-to-tray, notifications). */
   get: () => invoke<AppSettings>("get_app_settings"),
@@ -214,6 +223,13 @@ export const settings = {
     invoke<void>("set_app_settings", { settings: value }),
   // Launch-at-login is owned by the autostart plugin (OS launch-agent is the
   // source of truth), so it's read/written through the plugin, not our state.
-  autostartEnabled: () => autostartIsEnabled(),
-  setAutostart: (on: boolean) => (on ? autostartEnable() : autostartDisable()),
+  // The plugin is desktop-only; in the browser PWA it's absent, so report "off"/no-op.
+  autostartEnabled: () =>
+    isTauri() ? autostartIsEnabled() : Promise.resolve(false),
+  setAutostart: (on: boolean) =>
+    isTauri()
+      ? on
+        ? autostartEnable()
+        : autostartDisable()
+      : Promise.resolve(),
 };

@@ -1,28 +1,11 @@
 //! DM conversation identity derivation.
 
 use crate::eventlog::event::ConversationId;
-use crate::identity::device::PublicIdentity;
 use sha2::{Digest, Sha256};
 
-/// Domain separator for DM conversation-id derivation.
-const DM_CONV_DOMAIN: &[u8] = b"mesh-talk-dm-conversation-v1";
-
-/// The deterministic conversation id for the 1:1 DM between two peers — a hash of
-/// the SORTED pair of Ed25519 keys, so both peers compute the same id regardless
-/// of who is "a" and who is "b". A self-DM (`a == b`) yields a well-defined,
-/// unique id (it hashes the key twice); it never collides with a two-party pair.
-pub fn dm_conversation_id(a: &PublicIdentity, b: &PublicIdentity) -> ConversationId {
-    let (lo, hi) = if a.ed25519_pub <= b.ed25519_pub {
-        (a.ed25519_pub, b.ed25519_pub)
-    } else {
-        (b.ed25519_pub, a.ed25519_pub)
-    };
-    let mut hasher = Sha256::new();
-    hasher.update(DM_CONV_DOMAIN);
-    hasher.update(lo);
-    hasher.update(hi);
-    ConversationId::new(hasher.finalize().into())
-}
+/// The per-device-pair DM conversation id. Defined in [`crate::dm`] (pure, so the wasm node shares
+/// the exact derivation); re-exported here where the rest of the node DM code expects it.
+pub use crate::dm::dm_conversation_id;
 
 /// Domain separator for account-conversation-id derivation.
 const ACCOUNT_CONV_DOMAIN: &[u8] = b"mesh-talk-account-conversation-v1";

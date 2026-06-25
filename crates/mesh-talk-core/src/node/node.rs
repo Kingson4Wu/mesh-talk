@@ -22,7 +22,7 @@ use crate::node::ratchet_sessions::RatchetSessions;
 use crate::node::reaction::ReactionPayload;
 use crate::node::received_log::ReceivedLog;
 use crate::node::sentlog::SentLog;
-use crate::node::session::SessionError;
+use crate::session::SessionError;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};

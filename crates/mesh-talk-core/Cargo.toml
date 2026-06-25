@@ -15,6 +15,27 @@ description = "Mesh-Talk core: a serverless, end-to-end-encrypted LAN messaging 
 # under `[dependencies]` or `default`.
 fast-test-kdf = []
 
+# `native` gates everything that needs OS sockets, threads, the filesystem, or the CLI: the
+# Noise socket transport, LAN discovery, the post-office relay, the node runtime, and the
+# on-disk record-log persistence. It is ON by default (the desktop app + CLI + tests). A
+# `wasm32` build does `--no-default-features --lib` to get the pure protocol stack — identity,
+# event log, ratchets, sealed DMs, channel/file crypto — compiled for the browser (PWA). See
+# docs/superpowers/specs/2026-06-23-mobile-pwa-design.md.
+default = ["native"]
+native = ["dep:tokio", "dep:socket2", "dep:if-addrs", "dep:clap", "dep:mdns-sd", "dep:env_logger"]
+# The browser gateway: a WebRTC data-channel endpoint a PWA connects to, relaying its Noise
+# frames into the mesh (mobile-PWA plan, Phase 2). Opt-in (NOT default) because the `webrtc`
+# stack is heavy — normal builds, the wasm build, and the fast pre-commit gate skip it; the
+# desktop app + the gateway spike enable it explicitly.
+gateway = [
+    "native",
+    "dep:webrtc",
+    "dep:bytes",
+    "dep:tokio-tungstenite",
+    "dep:serde_json",
+    "dep:futures-util",
+]
+
 [lints]
 workspace = true
 
@@ -22,13 +43,20 @@ workspace = true
 name = "mesh_talk_core"
 path = "src/lib.rs"
 
-# A headless node, usable on its own and as the reference SDK consumer.
+# A headless node, usable on its own and as the reference SDK consumer. Needs the OS transport,
+# so it only builds with `native` (which is the default).
 [[bin]]
 name = "mesh-talk-node"
 path = "src/bin/mesh-talk-node.rs"
+required-features = ["native"]
+
+# E2E harness: runs the real desktop NodeRuntime (incl. the gateway hub) headlessly.
+[[bin]]
+name = "mesh-talk-runtime-node"
+path = "src/bin/mesh-talk-runtime-node.rs"
+required-features = ["native", "gateway"]
 
 [dependencies]
-tokio = { workspace = true }
 serde = { workspace = true }
 rand_core = { workspace = true }
 base64 = { workspace = true }
@@ -41,15 +69,28 @@ sha2 = { workspace = true }
 hkdf = { workspace = true }
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
-snow = { workspace = true }
 zeroize = { workspace = true }
 argon2 = { workspace = true }
-socket2 = { workspace = true }
-if-addrs = { workspace = true }
-clap = { workspace = true }
 # Logging facade only (no logger backend in the SDK); the host app's `log` logger captures
 # these. Used for sync-cost telemetry so we can evaluate reconciliation scaling on real data.
 log = { workspace = true }
+
+# Native-only: OS sockets, the Noise transport backend, interface enumeration, and the CLI.
+# Optional so the crate also compiles for `wasm32` (browser PWA) with `--no-default-features`.
+tokio = { workspace = true, optional = true }
+# Noise (pure-Rust resolver: aes-gcm/chacha20poly1305/curve25519-dalek/blake2/sha2 — no ring),
+# so the SecureChannel handshake compiles for wasm too (the browser gateway client).
+snow = { workspace = true }
+socket2 = { workspace = true, optional = true }
+if-addrs = { workspace = true, optional = true }
+mdns-sd = { workspace = true, optional = true }
+env_logger = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+webrtc = { version = "0.17.1", optional = true }
+bytes = { version = "1", optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+serde_json = { version = "1", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 # Unix-only: a `kill(pid, 0)` liveness probe so the CLI's data-dir lockfile can detect a
 # lock left by a crashed/killed node and reclaim it. Already in the build graph transitively
@@ -57,8 +98,21 @@ log = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# wasm32 (browser PWA): route the RNG through the JS crypto API. `getrandom/js` covers
+# `rand_core` (dalek key generation); `uuid`'s own `js` feature is additionally required for it
+# to pick a wasm randomness source. Without these, the build fails for wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+uuid = { workspace = true, features = ["js"] }
+# Just the async IO traits (no runtime/OS) so `transport::SecureChannel`'s length-prefixed
+# framing compiles for wasm. Native gets full tokio via the `native` feature instead.
+tokio = { version = "1.28", default-features = false, features = ["io-util"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
+# The signaling relay, used by the `gateway` integration test (only compiled with --features
+# gateway, but dev-deps can't be feature-gated; it's small + standalone).
+mesh-talk-signal = { path = "../mesh-talk-signal" }
 rand_chacha = "0.3" # seeded CSPRNG for deterministic property tests (rand_core 0.6 SeedableRng)
 # Self-dev-dependency on our OWN crate, activating `fast-test-kdf`. This is the lever that
 # makes the multi-process integration rigs fast: when Cargo builds the test targets it unifies

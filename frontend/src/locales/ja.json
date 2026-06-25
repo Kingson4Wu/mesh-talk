@@ -80,6 +80,7 @@
     "strandedNoNetwork": "ネットワーク未接続 · 直接つなぐ"
   },
   "conversation": {
+    "back": "戻る",
     "noneSelectedTitle": "会話が選択されていません",
     "noneSelectedDesc": "連絡先またはチャンネルを選んでチャットを始めましょう。",
     "unlockingTitle": "暗号化されたストアを解除しています…",
@@ -166,7 +167,20 @@
     "downloadFolderDesc": "受信したファイルの保存先。未設定の場合は毎回確認します。",
     "downloadFolderSet": "受信したファイルはここに自動保存されます。",
     "chooseFolder": "フォルダを選択",
-    "changeFolder": "変更"
+    "changeFolder": "変更",
+    "sectionLanHub": "LAN 共有",
+    "relayService": "リレーとして動作",
+    "relayServiceDesc": "このネットワーク上のスマホがこのパソコンを経由して互いに通信できるようにします。",
+    "shareApp": "スマホにアプリをダウンロードさせる",
+    "shareAppDesc": "ローカル Web サーバーを起動し QR コードを表示します。スマホ(同じ Wi-Fi)で読み取るとダウンロードして参加できます。",
+    "shareAppFailed": "共有を開始できませんでした",
+    "stopSharing": "共有を停止",
+    "sectionGateway": "ゲートウェイ",
+    "gatewayRelay": "リレーアドレス",
+    "gatewayRelayDesc": "このアプリがピアと同期するために接続するシグナリングリレー。メッシュの管理者にアドレスを尋ねてください。",
+    "gatewayRelayPlaceholder": "ws://… または招待リンク",
+    "gatewayCopyInvite": "招待をコピー",
+    "gatewayQrHint": "別のデバイスで読み取ってこのゲートウェイに参加"
   },
   "search": {
     "title": "メッセージを検索",

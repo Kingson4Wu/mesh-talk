@@ -36,6 +36,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../frontend/dist": "dist"
+    },
     "icon": [
       "icons/icon.png",
       "icons/icon.icns",

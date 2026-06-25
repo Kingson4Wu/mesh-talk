@@ -99,7 +99,21 @@ impl<R: Serialize + DeserializeOwned> EncryptedRecordLog<R> {
 
         let mut rest = Vec::new();
         file.read_to_end(&mut rest)?;
-        let records = Self::parse_records(&rest, &key)?;
+        let (records, valid_len) = Self::parse_records(&rest, &key)?;
+        if valid_len < rest.len() {
+            // A torn / corrupt trailing region — a crash mid-append, a partial flush, or a
+            // power-loss-zeroed tail. Truncate to the valid prefix so future appends land cleanly
+            // and we don't re-scan (and re-drop everything after) it on every open. Without this,
+            // a single bad trailing record makes the node fail to open AT ALL — which is exactly
+            // how an over-grown log bricked a node. Header = magic(6) + salt(SALT_SIZE).
+            let header = (6 + SALT_SIZE) as u64;
+            file.set_len(header + valid_len as u64)?;
+            log::warn!(
+                "{:?}: dropped {} byte(s) of torn/corrupt trailing log data on open",
+                path,
+                rest.len() - valid_len
+            );
+        }
         Ok((
             Self {
                 file,
@@ -113,36 +127,53 @@ impl<R: Serialize + DeserializeOwned> EncryptedRecordLog<R> {
         ))
     }
 
-    /// Parse the record region. A torn trailing record (crash mid-write) is
-    /// dropped; a record that fails to decrypt (tampering) is an error.
-    fn parse_records(mut data: &[u8], key: &EncryptionKey) -> Result<Vec<R>, LogError> {
+    /// Parse the record region, returning the decoded records plus the byte length of the valid
+    /// prefix (so the caller can truncate a torn/corrupt tail).
+    ///
+    /// A torn trailing record (crash mid-write) is dropped. A complete frame that fails to
+    /// decrypt/decode AFTER at least one good record is treated as a corrupt tail and dropped —
+    /// the key is proven correct by the prefix, so the failure is on-disk damage, not a bad
+    /// password. But if the VERY FIRST frame fails — which is what a wrong password or a corrupt
+    /// header looks like — that is an error, so we never silently discard a whole log we simply
+    /// can't read (e.g. a mistyped password must NOT wipe your history).
+    fn parse_records(data: &[u8], key: &EncryptionKey) -> Result<(Vec<R>, usize), LogError> {
         let mut records = Vec::new();
+        let mut consumed = 0usize;
         loop {
-            if data.len() < 4 {
+            let rest = &data[consumed..];
+            if rest.len() < 4 {
                 break; // clean end, or a torn length prefix
             }
-            let len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-            data = &data[4..];
-            if data.len() < len {
+            let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+            if rest.len() - 4 < len {
                 break; // torn trailing record — drop it
             }
-            let record = &data[..len];
-            data = &data[len..];
+            let record = &rest[4..4 + len];
 
-            if record.len() < NONCE_SIZE {
-                return Err(LogError::CorruptFile("record shorter than nonce".into()));
+            // Decrypt + decode one complete frame; `None` means it's damaged.
+            let parsed: Option<R> = (|| {
+                if record.len() < NONCE_SIZE {
+                    return None;
+                }
+                let nonce: [u8; NONCE_SIZE] = record[..NONCE_SIZE].try_into().ok()?;
+                let plaintext = decrypt_data(&record[NONCE_SIZE..], &nonce, key).ok()?;
+                bincode::deserialize(&plaintext).ok()
+            })();
+
+            match parsed {
+                Some(value) => {
+                    records.push(value);
+                    consumed += 4 + len;
+                }
+                None if records.is_empty() => {
+                    return Err(LogError::CorruptFile(
+                        "record failed to decrypt (wrong password or corrupt log)".into(),
+                    ));
+                }
+                None => break, // corrupt tail after a valid prefix — drop the rest
             }
-            let nonce: [u8; NONCE_SIZE] = record[..NONCE_SIZE]
-                .try_into()
-                .expect("nonce length checked");
-            let ciphertext = &record[NONCE_SIZE..];
-            let plaintext = decrypt_data(ciphertext, &nonce, key)
-                .map_err(|_| LogError::CorruptFile("record failed to decrypt".into()))?;
-            let value: R = bincode::deserialize(&plaintext)
-                .map_err(|e| LogError::CorruptFile(format!("record decode: {e}")))?;
-            records.push(value);
         }
-        Ok(records)
+        Ok((records, consumed))
     }
 
     /// Encrypt one record into its `[u32 len][nonce][ciphertext]` wire form.
@@ -344,6 +375,51 @@ mod tests {
         let r: Result<(EncryptedRecordLog<Rec>, _), _> =
             EncryptedRecordLog::open(&path, "pw", TEST_MAGIC);
         assert!(matches!(r, Err(LogError::CorruptFile(_))));
+    }
+
+    #[test]
+    fn corrupt_trailing_record_after_valid_prefix_is_recovered_and_truncated() {
+        // The exact failure that bricked a node: a fully-present trailing record that won't
+        // decrypt (a partial flush / power-loss-zeroed tail) sitting AFTER good records. open()
+        // must recover the valid prefix instead of refusing the whole log, AND truncate the file
+        // so later appends land cleanly (not get re-dropped on every open).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        {
+            let (mut log, _): (EncryptedRecordLog<Rec>, _) =
+                EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+            log.append(&rec(1, b"one")).unwrap();
+            log.append(&rec(2, b"two")).unwrap();
+        }
+        // A COMPLETE but undecryptable frame: a valid length prefix followed by exactly that many
+        // garbage bytes (≥ nonce) — so it isn't a torn tail; it parses, then fails GCM.
+        {
+            let garbage_len = NONCE_SIZE + 24;
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&(garbage_len as u32).to_be_bytes()).unwrap();
+            file.write_all(&vec![0xFFu8; garbage_len]).unwrap();
+            file.flush().unwrap();
+        }
+        // Recovers the valid prefix (does NOT error) and truncates the corrupt tail.
+        {
+            let (_log, records): (EncryptedRecordLog<Rec>, _) =
+                EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+            assert_eq!(records, vec![rec(1, b"one"), rec(2, b"two")]);
+        }
+        // Truncation made the file clean: a fresh append + reopen sees all three — proving the
+        // tail was physically removed, not just skipped in memory.
+        {
+            let (mut log, records): (EncryptedRecordLog<Rec>, _) =
+                EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+            assert_eq!(records.len(), 2);
+            log.append(&rec(3, b"three")).unwrap();
+        }
+        let (_log, records): (EncryptedRecordLog<Rec>, _) =
+            EncryptedRecordLog::open(&path, "pw", TEST_MAGIC).unwrap();
+        assert_eq!(
+            records,
+            vec![rec(1, b"one"), rec(2, b"two"), rec(3, b"three")]
+        );
     }
 
     #[test]

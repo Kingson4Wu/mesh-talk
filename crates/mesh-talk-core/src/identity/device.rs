@@ -32,6 +32,9 @@ impl PublicIdentity {
 }
 
 /// A device's secret identity. Hold in memory only; persist via `keystore`.
+// Clone so a long-lived task (e.g. the mesh gateway hub) can own an `Arc<DeviceIdentity>` without
+// borrowing the node; the secrets already live in process memory, so cloning adds no exposure.
+#[derive(Clone)]
 pub struct DeviceIdentity {
     signing_key: SigningKey,
     dh_secret: StaticSecret,

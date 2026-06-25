@@ -38,6 +38,15 @@ pub fn init_logging(app_handle: &tauri::AppHandle) -> Result<(), Box<dyn std::er
             }),
         ])
         .level(LogLevelFilter::Debug)
+        // The WebRTC stack logs every SCTP packet at Debug, which floods the log and buries the
+        // application-layer messages. Cap those crates at Warn so mesh/sync/node logs are readable.
+        .level_for("webrtc_sctp", LogLevelFilter::Warn)
+        .level_for("webrtc", LogLevelFilter::Warn)
+        .level_for("webrtc_ice", LogLevelFilter::Warn)
+        .level_for("webrtc_mdns", LogLevelFilter::Warn)
+        .level_for("webrtc_dtls", LogLevelFilter::Warn)
+        .level_for("webrtc_data", LogLevelFilter::Warn)
+        .level_for("webrtc_srtp", LogLevelFilter::Warn)
         .timezone_strategy(TimezoneStrategy::UseLocal)
         .build();
 

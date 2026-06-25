@@ -47,6 +47,13 @@ struct Args {
     /// the post-office role (no DM REPL — it only relays).
     #[arg(long)]
     post_office: bool,
+    /// Act as a browser gateway: connect to this signaling relay (ws[s]://host:port) and serve
+    /// PWA peers in `--gateway-room` into the mesh. Requires a `gateway`-feature build.
+    #[arg(long)]
+    signal_url: Option<String>,
+    /// Signaling room to wait in for PWA peers (used with `--signal-url`).
+    #[arg(long, default_value = "mesh-talk")]
+    gateway_room: String,
 }
 
 /// Why a `/msg` prefix did not resolve to exactly one peer.
@@ -243,6 +250,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Inbound: serve sync rounds on each accepted connection.
     tokio::spawn(Arc::clone(&node).run_accept_loop(listener));
 
+    // Optionally also act as a browser gateway: serve PWA peers (over WebRTC, via the signaling
+    // relay) into the mesh. Only active in a `gateway`-feature build.
+    if let Some(signal_url) = args.signal_url.clone() {
+        let room = args.gateway_room.clone();
+        #[cfg(feature = "gateway")]
+        {
+            println!("gateway: serving PWA peers via {signal_url} (room: {room})");
+            // Use the MESH hub protocol (run_gateway_hub → run_mesh_hub), the same one the desktop
+            // app + the browser PWA's runMeshSync speak — NOT the legacy 2-peer accept_gateway_peers,
+            // which a mesh phone can't connect to. Reconnect if the relay drops.
+            let node = Arc::clone(&node);
+            tokio::spawn(async move {
+                loop {
+                    let _ = Arc::clone(&node).run_gateway_hub(&signal_url, &room).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            });
+        }
+        #[cfg(not(feature = "gateway"))]
+        {
+            eprintln!(
+                "--signal-url {signal_url} / --gateway-room {room} set, but this build lacks the \
+                 `gateway` feature; ignoring. Rebuild with `--features gateway`."
+            );
+        }
+    }
+
     // Print received DMs as they arrive.
     tokio::spawn(async move {
         while let Some(dm) = incoming_rx.recv().await {
@@ -302,6 +336,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Presence gossip (mirrors the desktop NodeRuntime): announce ourselves into the presence
+    // directory [7;32] and exchange the presence/relay directories with LAN peers — immediately when
+    // a new peer appears, and every ~30s regardless. WITHOUT this a CLI node (incl. a `--signal-url`
+    // gateway hub) never carries OTHER PCs' presence, so a phone served by it sees only the hub.
+    {
+        let node = Arc::clone(&node);
+        let roster = Arc::clone(&roster);
+        let name = args.name.clone();
+        tokio::spawn(async move {
+            let mut seen: std::collections::HashSet<UserId> = std::collections::HashSet::new();
+            let mut tick: u32 = 0;
+            loop {
+                let peers = {
+                    let r = roster.lock().expect("roster mutex not poisoned");
+                    r.peers()
+                };
+                let newcomer = peers
+                    .iter()
+                    .filter(|p| !p.post_office)
+                    .any(|p| seen.insert(p.public.user_id()));
+                // Gossip on the first poll, on any newcomer, and every ~30s (10 ticks of 3s).
+                if newcomer || tick.is_multiple_of(10) {
+                    node.gossip_directories_with_peers(&name).await;
+                }
+                tick = tick.wrapping_add(1);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
+
     emit(&format!(
         "node {user_id} listening on tcp/{tcp_port}, discovery udp/{}",
         args.discovery_port
@@ -327,6 +391,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ));
                 }
             }
+        } else if line == "/dir" {
+            // The gossiped presence directory [7;32] — every node this one knows about (other than
+            // itself), as it would serve to a phone. Used by the e2e to assert convergence.
+            let dir = node.gossip_directory();
+            for (id, _, name, _) in &dir {
+                emit(&format!("dir {id} {name}"));
+            }
+            emit(&format!("dir-end {}", dir.len()));
         } else if let Some(rest) = line.strip_prefix("/msg ") {
             handle_msg(&node, &roster, rest);
         } else if let Some(rest) = line.strip_prefix("/history ") {

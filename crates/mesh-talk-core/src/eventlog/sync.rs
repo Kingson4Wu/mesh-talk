@@ -43,7 +43,7 @@ const SYNC_MARGIN: usize = 256;
 const MAX_EVENT_METADATA_OVERHEAD: usize = 4096;
 const _: () = assert!(
     crate::file::crypto::CHUNK_SIZE + 16 + MAX_EVENT_METADATA_OVERHEAD + SYNC_MARGIN
-        < crate::transport::MAX_PLAINTEXT
+        < crate::limits::MAX_PLAINTEXT
 );
 
 /// Sent by the peer initiating sync: "for this conversation, here are the ids I have."
@@ -364,9 +364,9 @@ mod tests {
         let e = ev(&id, 1, parents, 1, &payload);
         let sz = encoded_event_size(&e);
         assert!(
-            sz < crate::transport::MAX_PLAINTEXT,
+            sz < crate::limits::MAX_PLAINTEXT,
             "encoded event {sz} >= frame budget {}",
-            crate::transport::MAX_PLAINTEXT
+            crate::limits::MAX_PLAINTEXT
         );
     }
 

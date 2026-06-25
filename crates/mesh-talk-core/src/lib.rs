@@ -29,15 +29,37 @@
     clippy::manual_flatten
 )]
 
+// The pure protocol stack — compiles for both native and `wasm32` (browser PWA): identity &
+// account crypto, the event-log data model, ratchets, sealed DMs, channel/file crypto, and the
+// record-log encryption. The filesystem- and socket-backed parts inside these modules are
+// themselves `#[cfg(feature = "native")]`-gated.
 pub mod channel;
-pub mod discovery;
 pub mod dm;
 pub mod eventlog;
 pub mod file;
 pub mod identity;
-pub mod node;
-pub mod postoffice;
+pub mod limits;
+pub mod message;
 pub mod ratchet;
+// The event-log sync protocol (requester `request_round` + responder `serve_one`) over a
+// `SecureChannel`. Pure (no sockets) → available to wasm too, so the PWA can sync over a data
+// channel; the native node + the browser gateway both drive it.
+pub mod session;
 pub mod storage;
+// The Noise `SecureChannel` is byte-stream-generic + uses only the pure-Rust snow resolver, so
+// it compiles for wasm (the browser gateway runs it over a data channel); the socket-backed
+// `transport::net` inside it stays native-gated.
 pub mod transport;
 pub mod util;
+
+// Native-only: OS sockets, threads, and the runtime. Gated out of the `wasm32` build, which
+// substitutes a browser transport (WebRTC/WebSocket) + IndexedDB storage at the app layer.
+#[cfg(feature = "native")]
+pub mod discovery;
+// The browser WebRTC gateway (opt-in `gateway` feature; pulls the heavy `webrtc` stack).
+#[cfg(feature = "gateway")]
+pub mod gateway;
+#[cfg(feature = "native")]
+pub mod node;
+#[cfg(feature = "native")]
+pub mod postoffice;

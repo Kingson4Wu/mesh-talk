@@ -9,11 +9,23 @@ import "@fontsource-variable/geist-mono"; // mono (crypto/identity/ports/IDs)
 import "./lib/theme"; // apply the persisted theme before first paint
 import "./lib/i18n"; // initialize i18next before first paint
 import { applyPlatformClass } from "./lib/platform";
+import { isTauri } from "./lib/backend";
 import "./index.css";
 
 // Mark the root with `data-os="macos"` under the overlay title bar so the sidebar header
 // gets traffic-light clearance (macOS only; no-op elsewhere). Runs before first paint.
 applyPlatformClass();
+
+// Register the PWA service worker for the app-shell offline cache — browser/mobile only. The
+// Tauri desktop shell loads from the local filesystem and has no service-worker scope, so skip.
+if (!isTauri() && "serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    // BASE_URL is "/" by default, or the configured sub-path (e.g. "/mesh-talk/") on GitHub Pages.
+    navigator.serviceWorker
+      .register(`${import.meta.env.BASE_URL}sw.js`)
+      .catch(() => {});
+  });
+}
 
 // Desktop app: suppress the webview's native right-click context menu (Cut/Copy/Inspect…)
 // in production builds so it doesn't behave like a browser. Kept in dev for debugging.

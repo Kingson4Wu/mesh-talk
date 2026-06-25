@@ -5,9 +5,9 @@
 
 use crate::discovery::roster::{PeerRecord, Roster};
 use crate::identity::device::DeviceIdentity;
-use crate::node::session::{serve_one, Served};
 use crate::node::transport::secure_accept;
 use crate::postoffice::{elect, PostOffice};
+use crate::session::{serve_one, Served};
 use crate::transport::SecureChannel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -106,7 +106,7 @@ mod tests {
     use crate::discovery::announce::Announce;
     use crate::eventlog::event::{ConversationId, Event, EventKind};
     use crate::eventlog::store::EventLog;
-    use crate::node::session::request_round;
+    use crate::session::request_round;
     use std::net::{IpAddr, Ipv4Addr};
 
     fn po_roster(relays: &[(&DeviceIdentity, u16)], normals: &[&DeviceIdentity]) -> Roster {

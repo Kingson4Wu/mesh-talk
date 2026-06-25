@@ -483,6 +483,13 @@ export const test = base.extend({
           read_log_tail: () => "INFO node started\nINFO discovery announced",
           save_log_tail: ok,
 
+          // LAN hub (desktop): relay toggle + on-demand http app-host.
+          relay_running: () => false,
+          set_relay_running: ok,
+          start_app_host: () =>
+            "http://192.168.1.10:8080/?relay=ws://192.168.1.10:47480&room=mesh-talk",
+          stop_app_host: ok,
+
           // autostart plugin (invoked as plugin commands; mocked as no-ops below)
         };
 

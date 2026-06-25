@@ -1,0 +1,42 @@
+# mesh-talk-signal — a tiny WebSocket signaling relay for the browser gateway (mobile-PWA plan,
+# Phase 2). It brokers ONLY the WebRTC SDP/ICE handshake between a PWA and a desktop node, keyed
+# by room id; the actual data channel is peer-to-peer and end-to-end encrypted and never touches
+# this server. Deployable as a single self-hostable binary. No dependency on the protocol core.
+[package]
+name = "mesh-talk-signal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebSocket signaling relay for Mesh-Talk's browser gateway (SDP/ICE brokering only)."
+
+[[bin]]
+name = "mesh-talk-signal"
+path = "src/main.rs"
+
+[lib]
+name = "mesh_talk_signal"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+futures-util = "0.3"
+tokio-tungstenite = "0.24"
+serde = { workspace = true }
+serde_json = "1"
+# Optional LAN app-host: serve the built PWA over http alongside the ws relay (one command),
+# so phones can download the app on the LAN with no TLS / GitHub Pages.
+tiny_http = "0.12"
+mime_guess = "2"
+# Render the LAN join URL as a scannable QR right in the terminal (unicode renderer only — no
+# image backend), so a phone can join by scanning, no external tool needed.
+qrcode = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"
+tempfile = { workspace = true }

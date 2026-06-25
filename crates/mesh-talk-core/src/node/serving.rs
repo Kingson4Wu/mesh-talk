@@ -1,12 +1,14 @@
 //! Outbound delivery (direct + post-office replication) and the inbound serve loop. Split out of node.rs (one `impl Node` block per domain).
 
+use super::node::now_millis;
 use super::*;
 use crate::discovery::roster::PeerRecord;
 use crate::eventlog::event::{Author, ConversationId, Event, EventKind};
 use crate::file::decode_manifest;
+use crate::identity::device::PublicIdentity;
 use crate::node::conversation::{account_conversation_id, dm_conversation_id};
-use crate::node::session::{request_round, serve_one, serve_wire_bytes, Served, SessionError};
 use crate::node::transport::{dial, secure_accept};
+use crate::session::{request_round, serve_one, serve_wire_bytes, Served, SessionError};
 use crate::transport::SecureChannel;
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,12 +110,23 @@ impl Node {
             self.serve_pairing(&mut channel, req).await;
             return;
         }
+        self.serve_sync_connection(&mut channel, first).await;
+    }
+
+    /// Serve an authenticated peer's sync rounds over `channel` (the `first` frame already read,
+    /// past the pairing peek), surfacing newly-received messages until the peer disconnects or
+    /// idles out. Generic over the channel transport so it serves both TCP mesh peers and
+    /// browser-gateway peers (WebRTC `PollDataChannel`) through the exact same logic.
+    pub async fn serve_sync_connection<IO>(&self, channel: &mut SecureChannel<IO>, first: Vec<u8>)
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         // The first frame may be a Request, which makes serve_wire_bytes await the peer's
         // streamed have-chunks — so it needs the same idle timeout as the loop, or a peer that
         // sends one Request then stalls would pin this task (and its connection permit) forever.
         match tokio::time::timeout(
             SERVE_IDLE_TIMEOUT,
-            serve_wire_bytes(&mut channel, &self.log, &first),
+            serve_wire_bytes(channel, &self.log, &first),
         )
         .await
         {
@@ -126,8 +139,7 @@ impl Node {
             _ => return,
         }
         for _ in 0..MAX_SERVE_ROUNDS {
-            match tokio::time::timeout(SERVE_IDLE_TIMEOUT, serve_one(&mut channel, &self.log)).await
-            {
+            match tokio::time::timeout(SERVE_IDLE_TIMEOUT, serve_one(channel, &self.log)).await {
                 Ok(Ok(Served::Handled(conv))) => {
                     self.emit_new_messages(conv);
                     self.process_channel(conv);
@@ -136,6 +148,39 @@ impl Node {
                 }
                 _ => break, // peer closed, error, or idle past the timeout
             }
+        }
+    }
+
+    /// Accept browser-gateway (PWA) peers: wait in `room` on the signaling relay, run the WebRTC
+    /// and Noise handshake as the answerer, then serve the peer's sync rounds into the mesh via
+    /// the exact same path as a TCP peer ([`Self::serve_sync_connection`]). Loops to accept the
+    /// next phone after one disconnects (the serve loop idles out on disconnect, so a dropped
+    /// peer is reaped without pinning the task). Runs until the signaling relay is unreachable; a
+    /// failed answer backs off briefly and retries. (mobile-PWA plan, Phase 2.)
+    #[cfg(feature = "gateway")]
+    pub async fn accept_gateway_peers(self: Arc<Self>, signal_url: String, room: String) {
+        loop {
+            let mut gw = match crate::gateway::connect_secure(
+                &signal_url,
+                &room,
+                crate::gateway::Role::Answerer,
+                &self.identity,
+                None,
+            )
+            .await
+            {
+                Ok(gw) => gw,
+                Err(e) => {
+                    log::warn!(target: "mesh_talk::gateway", "gateway answer failed: {e}");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            let first = match tokio::time::timeout(SERVE_IDLE_TIMEOUT, gw.channel.recv()).await {
+                Ok(Ok(b)) => b,
+                _ => continue, // handshake peer vanished before its first frame
+            };
+            self.serve_sync_connection(&mut gw.channel, first).await;
         }
     }
 
@@ -420,6 +465,12 @@ impl Node {
     /// (author not yet in the roster, or its ratchet key not yet derivable) is
     /// retried on a later sync rather than lost.
     pub(in crate::node) fn emit_new_messages(&self, conv: ConversationId) {
+        // The presence ([7;32]) and relay ([8;32]) directories carry plaintext announcements, NOT
+        // ratchet DMs — never try to decrypt them as DMs (it just fails with "bad wire" every sync).
+        let cb = *conv.as_bytes();
+        if cb == [7u8; 32] || cb == [8u8; 32] {
+            return;
+        }
         let self_author = Author::from_ed25519(self.identity.public().ed25519_pub);
         let candidates: Vec<Event> = {
             let log = self.log.lock().expect("log mutex not poisoned");
@@ -434,15 +485,41 @@ impl Node {
                 .cloned()
                 .collect()
         };
+        if !candidates.is_empty() {
+            log::info!(
+                "[mesh] emit conv={}: {} new message candidate(s)",
+                hex::encode(&conv.as_bytes()[..8]),
+                candidates.len()
+            );
+        }
         for event in candidates {
-            // Resolve the author's public identity + display name from the roster.
+            // Resolve the author's public identity + display name from the roster, falling back to
+            // the gossiped presence directory — a phone (gossip-only, never on LAN discovery) isn't
+            // in the roster, and without this fallback its DMs could never be decrypted/surfaced.
             let author_uid = event.author.user_id();
-            let (peer_public, peer_name, peer_account) = {
+            let from_roster = {
                 let roster = self.roster.lock().expect("roster mutex not poisoned");
-                match roster.get(&author_uid) {
-                    Some(p) => (p.public.clone(), p.name.clone(), p.account_id.clone()),
-                    None => continue, // unknown author yet; retry later (NOT marked emitted)
-                }
+                roster
+                    .get(&author_uid)
+                    .map(|p| (p.public.clone(), p.name.clone(), p.account_id.clone()))
+            };
+            let (peer_public, peer_name, peer_account) = match from_roster {
+                Some(r) => r,
+                None => match self
+                    .gossip_directory()
+                    .into_iter()
+                    .find(|(id, _, _, _)| *id == author_uid)
+                {
+                    Some((id, pid, name, _)) => (pid, name, Some(id)),
+                    None => {
+                        log::warn!(
+                            "[mesh] emit conv={}: author {} not in roster OR gossip directory — skipping (retry later)",
+                            hex::encode(&conv.as_bytes()[..8]),
+                            author_uid
+                        );
+                        continue; // unknown author yet; retry later (NOT marked emitted)
+                    }
+                },
             };
             // Decrypt the ratchet wire. The wire key is single-use: a successful
             // decrypt advances + persists the session, so a re-fed event won't reopen.
@@ -453,9 +530,22 @@ impl Node {
                     .expect("dm_ratchet mutex not poisoned");
                 match r.decrypt(&self.identity, &peer_public, &event.ciphertext) {
                     Ok(pt) => pt,
-                    Err(_) => continue, // not yet decryptable / not a ratchet DM (NOT emitted)
+                    Err(e) => {
+                        log::warn!(
+                            "[mesh] emit conv={}: ratchet DECRYPT failed for author {} — {e:?} (retry later)",
+                            hex::encode(&conv.as_bytes()[..8]),
+                            author_uid
+                        );
+                        continue; // not yet decryptable / not a ratchet DM (NOT emitted)
+                    }
                 }
             };
+            log::info!(
+                "[mesh] emit conv={}: decrypted a DM from {} ({} bytes)",
+                hex::encode(&conv.as_bytes()[..8]),
+                author_uid,
+                wrapped.len()
+            );
             // Account-addressed (multi-device) envelope? File it under the ACCOUNT
             // conversation, recording the route's sender account (account history
             // derives `from_me` from it). A legacy plaintext keeps today's device-pair
@@ -521,6 +611,221 @@ impl Node {
                 text: body.text,
                 reply_to: body.reply_to,
             });
+        }
+    }
+}
+
+/// Relay directory: announce the relay endpoint(s) this node hosts so they gossip to phones.
+impl Node {
+    /// Announce a relay endpoint (ws URL) into the well-known relay directory conversation
+    /// ([8u8; 32]) — the same one the browser nodes read via `known_relay_urls`. Gossiped to every
+    /// phone this node serves (and, via the LAN mesh, to other desktops), so a phone learns this
+    /// relay even if it never scanned it and can fail over to it. Idempotent per URL.
+    pub fn announce_relay_endpoint(&self, url: &str) -> Result<(), NodeError> {
+        let conv = ConversationId::new([8u8; 32]);
+        let bytes = url.as_bytes().to_vec();
+        let present = {
+            let log = self.log.lock().expect("log mutex not poisoned");
+            log.events(&conv).iter().any(|e| e.ciphertext == bytes)
+        };
+        if present {
+            return Ok(());
+        }
+        self.append_event(conv, EventKind::Message, bytes)?;
+        Ok(())
+    }
+
+    /// Announce this node's identity into the well-known presence directory ([7u8; 32]) — the same
+    /// one the browser nodes read via `directory` (payload = ed25519 || x25519, 64 bytes). Gossiped
+    /// to every phone this node's hub serves, so phones DISCOVER the desktop user (and can DM them),
+    /// not just each other. Idempotent (skips if we already announced).
+    pub fn announce_presence(&self, name: &str) -> Result<(), NodeError> {
+        let conv = ConversationId::new([7u8; 32]);
+        let pubid = self.identity.public();
+        // Heartbeat: append a fresh presence event (current wall_clock) so phones see who is online
+        // now. Payload = ed25519 (32) || x25519 (32) || display name (UTF-8), matching the wasm node.
+        let mut payload = Vec::with_capacity(64 + name.len());
+        payload.extend_from_slice(&pubid.ed25519_pub);
+        payload.extend_from_slice(&pubid.x25519_pub);
+        payload.extend_from_slice(name.as_bytes());
+        // Parentless (like the wasm node) so old heartbeats stay unreferenced + compactable; then
+        // compact to keep only the newest announcement per author.
+        let self_author = Author::from_ed25519(pubid.ed25519_pub);
+        let mut log = self.log.lock().expect("log mutex not poisoned");
+        let (_, lamport) = log.prepare(&conv);
+        let seq = log
+            .version_vector(&conv)
+            .get(&self_author)
+            .copied()
+            .unwrap_or(0)
+            + 1;
+        let event = Event::new(
+            &self.identity,
+            conv,
+            seq,
+            Vec::new(),
+            lamport,
+            now_millis(),
+            EventKind::Message,
+            payload,
+        );
+        log.append(event).map_err(NodeError::Log)?;
+        let _ = log.compact_presence(&conv);
+        log::info!(
+            "[mesh] announced OWN presence: id={} name={name}",
+            self.identity.public().user_id()
+        );
+        Ok(())
+    }
+
+    /// Announce ourselves, then exchange the presence ([7;32]) + relay ([8;32]) DIRECTORIES with
+    /// every LAN peer. This is how a desktop's presence reaches OTHER desktops (and, through any of
+    /// their hubs, the phones): without it, two desktops only ever sync DM/channel conversations,
+    /// so a phone served by desktop A never learns desktop B exists. `request_round` is
+    /// bidirectional, so one dial converges both directions for a directory. Best-effort per peer.
+    pub async fn gossip_directories_with_peers(&self, name: &str) {
+        let _ = self.announce_presence(name);
+        let peers = {
+            let roster = self.roster.lock().expect("roster mutex not poisoned");
+            roster.peers()
+        };
+        let dirs = [
+            ConversationId::new([7u8; 32]),
+            ConversationId::new([8u8; 32]),
+        ];
+        let lan: Vec<_> = peers.iter().filter(|p| !p.post_office).collect();
+        let mut gossiped = 0usize;
+        for peer in &lan {
+            let mut channel = match dial(peer.addr, &self.identity, Some(&peer.public)).await {
+                Ok(c) => c,
+                Err(e) => {
+                    // Pinpoints "0/N gossiped": the hub couldn't reach this LAN peer to exchange the
+                    // directory, so its presence won't reach phones. (If DMs to it work but this
+                    // fails, suspect a transient / the peer's accept loop being busy this round.)
+                    log::warn!(
+                        "[mesh] directory gossip: DIAL to LAN peer {} @ {} failed: {e}",
+                        &peer.public.user_id()[..8.min(peer.public.user_id().len())],
+                        peer.addr
+                    );
+                    continue;
+                }
+            };
+            let mut ok = true;
+            for conv in dirs {
+                if let Err(e) = request_round(&mut channel, &self.log, conv).await {
+                    log::warn!(
+                        "[mesh] directory gossip: SYNC ({}) with LAN peer {} @ {} failed: {e}",
+                        hex::encode(&conv.as_bytes()[..2]),
+                        &peer.public.user_id()[..8.min(peer.public.user_id().len())],
+                        peer.addr
+                    );
+                    ok = false;
+                    break; // channel broke; move to the next peer
+                }
+            }
+            if ok {
+                gossiped += 1;
+            }
+        }
+        // Diagnostic: shows whether this node's presence directory actually carries the OTHER nodes
+        // it then serves to phones. If a phone "only sees the PC it scanned", check here on the hub:
+        // `dir now has N other node(s)` should list the other PCs. N==0 ⇒ LAN gossip isn't
+        // converging (no LAN peers discovered / dials failing); N>0 but the phone still doesn't see
+        // them ⇒ the break is phone-side (stale PWA / not pulling [7;32]).
+        let dir = self.gossip_directory();
+        log::info!(
+            "[mesh] gossiped directories with {}/{} LAN peer(s); presence dir now has {} other node(s): {:?}",
+            gossiped,
+            lan.len(),
+            dir.len(),
+            dir.iter()
+                .map(|(id, _, n, _)| format!("{}={}", &id[..8.min(id.len())], n))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Read the gossiped presence directory ([7u8; 32]): every node that announced into the mesh
+    /// (latest announcement per identity), as (user_id, public identity, display name,
+    /// last_seen_ms). Phones live ONLY here (they're not on LAN discovery), so the desktop merges
+    /// these into its contact list + DM peer resolution — that's how it sees phones (and other
+    /// gossip-reachable nodes) at all. Excludes self.
+    pub fn gossip_directory(&self) -> Vec<(String, PublicIdentity, String, u64)> {
+        use std::collections::HashMap;
+        let conv = ConversationId::new([7u8; 32]);
+        let me = self.identity.public().user_id();
+        let log = self.log.lock().expect("log mutex not poisoned");
+        let mut latest: HashMap<String, (PublicIdentity, String, u64)> = HashMap::new();
+        for e in log.events(&conv) {
+            if e.ciphertext.len() < 64 {
+                continue;
+            }
+            let ed: [u8; 32] = e.ciphertext[..32].try_into().unwrap();
+            let x: [u8; 32] = e.ciphertext[32..64].try_into().unwrap();
+            let pid = PublicIdentity {
+                ed25519_pub: ed,
+                x25519_pub: x,
+            };
+            let id = pid.user_id();
+            if id == me {
+                continue;
+            }
+            let name = String::from_utf8_lossy(&e.ciphertext[64..]).into_owned();
+            match latest.get(&id) {
+                Some((_, _, ts)) if *ts >= e.wall_clock => {}
+                _ => {
+                    latest.insert(id, (pid, name, e.wall_clock));
+                }
+            }
+        }
+        latest
+            .into_iter()
+            .map(|(id, (pid, name, ts))| (id, pid, name, ts))
+            .collect()
+    }
+}
+
+/// Mesh gateway hub (feature `gateway`): serve browser spokes against this node's own event log.
+#[cfg(feature = "gateway")]
+impl Node {
+    /// Run this node as a mesh gateway HUB on `relay_url` in `room`: for every browser spoke that
+    /// connects via the signaling relay (mesh mode), serve the mesh sync over the WebRTC channel
+    /// against this node's event log — so phones reach the desktop node, and through it each other
+    /// and the rest of the LAN mesh. Runs until the relay socket closes.
+    pub async fn run_gateway_hub(
+        self: Arc<Self>,
+        relay_url: &str,
+        room: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = Arc::new(self.identity.clone());
+        crate::gateway::run_mesh_hub(relay_url, room, identity, move |mut channel| {
+            let node = Arc::clone(&self);
+            async move {
+                node.serve_gateway_sync(&mut channel).await;
+            }
+        })
+        .await
+    }
+
+    /// Serve a gateway peer's sync rounds AND surface what arrives: after each round, decrypt +
+    /// emit new DMs, channel messages, files, and profiles — the same processing a TCP/LAN peer
+    /// gets via [`Self::serve_sync_connection`]. (Plain `gateway::serve_connection` only syncs the
+    /// log; without this step a phone's DM would land in the log but never reach the UI.)
+    async fn serve_gateway_sync<IO>(&self, channel: &mut SecureChannel<IO>)
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        // Serve until the peer closes, errors, or idles past the timeout.
+        while let Ok(Ok(Served::Handled(conv))) =
+            tokio::time::timeout(SERVE_IDLE_TIMEOUT, serve_one(channel, &self.log)).await
+        {
+            log::info!(
+                "[mesh] gateway hub served a sync round for conv={}",
+                hex::encode(&conv.as_bytes()[..8])
+            );
+            self.emit_new_messages(conv);
+            self.process_channel(conv);
+            self.process_file_events(conv);
+            self.process_profile_events(conv);
         }
     }
 }

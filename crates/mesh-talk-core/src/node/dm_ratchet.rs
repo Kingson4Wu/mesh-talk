@@ -7,22 +7,7 @@
 use crate::eventlog::LogError;
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use crate::node::ratchet_sessions::RatchetSessions;
-use crate::ratchet::{init_alice, init_bob, Header};
-use hkdf::Hkdf;
-use sha2::Sha256;
-use x25519_dalek::{PublicKey, StaticSecret};
-
-/// Derive the shared root secret from the two identities' X25519 keys (symmetric).
-fn shared_root(me: &DeviceIdentity, peer: &PublicIdentity) -> [u8; 32] {
-    let my_secret = StaticSecret::from(me.secret_bytes().1); // x25519 secret (mirror dm.rs)
-    let dh = my_secret
-        .diffie_hellman(&PublicKey::from(peer.x25519_pub))
-        .to_bytes();
-    let hk = Hkdf::<Sha256>::new(None, &dh);
-    let mut out = [0u8; 32];
-    hk.expand(b"MeshTalk-DM-Root", &mut out).expect("32 valid");
-    out
-}
+use crate::ratchet::{dm_shared_root as shared_root, init_alice, init_bob, Header};
 
 /// Frame a header + ciphertext into one wire blob: `u16-BE header_len ‖ header ‖ ct`.
 fn frame(header: &Header, ct: &[u8]) -> Vec<u8> {

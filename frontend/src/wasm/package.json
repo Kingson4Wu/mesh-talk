@@ -1,0 +1,16 @@
+{
+  "name": "mesh-talk-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "files": [
+    "mesh_talk_wasm_bg.wasm",
+    "mesh_talk_wasm.js",
+    "mesh_talk_wasm.d.ts"
+  ],
+  "main": "mesh_talk_wasm.js",
+  "types": "mesh_talk_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

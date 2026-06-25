@@ -4,6 +4,7 @@
 
 use crate::commands::CommandError;
 use mesh_talk_core::eventlog::event::{ConversationId, EventId};
+use mesh_talk_core::identity::device::PublicIdentity;
 use mesh_talk_core::node::NodeRuntime;
 use serde::Serialize;
 use std::sync::Arc;
@@ -124,7 +125,7 @@ pub async fn my_id(state: tauri::State<'_, NodeState>) -> Result<String, Command
 pub async fn list_peers(state: tauri::State<'_, NodeState>) -> Result<Vec<PeerInfo>, CommandError> {
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
-    Ok(rt
+    let mut out: Vec<PeerInfo> = rt
         .peers()
         .into_iter()
         .map(|p| PeerInfo {
@@ -134,7 +135,38 @@ pub async fn list_peers(state: tauri::State<'_, NodeState>) -> Result<Vec<PeerIn
             post_office: p.post_office,
             account_id: p.account_id,
         })
-        .collect())
+        .collect();
+    // Merge the gossiped presence directory (phones + gossip-only nodes, not on LAN discovery),
+    // so the desktop sees them too. Deduped against LAN-roster peers by user-id, and filtered to
+    // RECENTLY-SEEN entries — the directory is append-only, so without this every identity ever
+    // announced (old test sessions, nodes long offline) would show as a stale ghost.
+    let have: std::collections::HashSet<String> = out.iter().map(|p| p.user_id.clone()).collect();
+    let now = now_ms();
+    for (id, _pid, name, ts) in rt.gossip_directory() {
+        if !have.contains(&id) && now.saturating_sub(ts as u128) < GOSSIP_SHOW_WINDOW_MS {
+            out.push(PeerInfo {
+                user_id: id.clone(),
+                name,
+                addr: String::new(),
+                post_office: false,
+                account_id: Some(id),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Only show gossip-directory nodes whose last presence heartbeat is recent — i.e. actually
+/// online (heartbeats are every 30s, so ~90s is 3 missed beats of grace). Drops the stale ghosts
+/// that pile up in the append-only directory (old sessions / closed apps).
+const GOSSIP_SHOW_WINDOW_MS: u128 = 90 * 1000;
+
+/// Milliseconds since the Unix epoch (for gossip last-seen recency).
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -222,6 +254,18 @@ pub async fn peer_avatars(
         .collect())
 }
 
+/// If `account` denotes a gossip-only peer — a PHONE, whose "account id" IS its device user-id and
+/// which lives in the gossiped presence directory rather than as a multi-device LAN account —
+/// return its public identity so the desktop talks to it DEVICE-TO-DEVICE (the phone speaks
+/// device-pair DMs; this is the desktop↔device-pair alignment). A real multi-device account has a
+/// UUID id that never matches a directory device, so it returns None and uses the account path.
+fn gossip_peer(rt: &NodeRuntime, account: &str) -> Option<PublicIdentity> {
+    rt.gossip_directory()
+        .into_iter()
+        .find(|(id, _, _, _)| id == account)
+        .map(|(_, pid, _, _)| pid)
+}
+
 #[tauri::command]
 pub async fn send_to_account(
     state: tauri::State<'_, NodeState>,
@@ -229,19 +273,28 @@ pub async fn send_to_account(
     text: String,
     reply_to: Option<String>,
 ) -> Result<(), CommandError> {
-    // Snapshot the node handle, then release the state lock before the .await send.
-    let node = {
+    // Snapshot the node handle (+ whether this is a gossip phone), then release the state lock
+    // before the .await send.
+    let (node, is_gossip_phone) = {
         let guard = state.0.lock().await;
         let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
-        rt.handle()
+        (rt.handle(), gossip_peer(rt, &account).is_some())
     };
     let reply = match reply_to {
         Some(h) => Some(parse_event_id(&h)?),
         None => None,
     };
-    node.send_to_account(&account, text.as_bytes(), reply)
-        .await
-        .map_err(CommandError::from)
+    // A phone: send a DEVICE-PAIR DM (send_dm_reply resolves it from the gossip directory and the
+    // gateway sync delivers it). A real account: fan out the account-addressed envelope as before.
+    if is_gossip_phone {
+        node.send_dm_reply(&account, text.as_bytes(), reply)
+            .await
+            .map_err(CommandError::from)
+    } else {
+        node.send_to_account(&account, text.as_bytes(), reply)
+            .await
+            .map_err(CommandError::from)
+    }
 }
 
 #[tauri::command]
@@ -253,11 +306,13 @@ pub async fn account_history(
     let limit = limit.min(500);
     let guard = state.0.lock().await;
     let rt = guard.as_ref().ok_or_else(CommandError::not_started)?;
-    Ok(rt
-        .account_history(&account, limit)
-        .into_iter()
-        .map(HistoryItem::from)
-        .collect())
+    // A phone: read the DEVICE-PAIR conversation it actually writes to (the inbound DM lands there,
+    // not under an account conversation). A real account: aggregate the account conversation.
+    let entries = match gossip_peer(rt, &account) {
+        Some(peer_public) => rt.history(&peer_public, limit),
+        None => rt.account_history(&account, limit),
+    };
+    Ok(entries.into_iter().map(HistoryItem::from).collect())
 }
 
 #[tauri::command]
@@ -314,6 +369,14 @@ pub async fn list_accounts(
     for p in rt.peers() {
         if let Some(acct) = p.account_id {
             by_account.entry(acct).or_default().push(p.name);
+        }
+    }
+    // Phones + gossip-only nodes (in the presence directory, not the LAN roster) are each their
+    // own account — surface RECENTLY-SEEN ones (drop stale ghosts from the append-only directory).
+    let now = now_ms();
+    for (id, _pid, name, ts) in rt.gossip_directory() {
+        if now.saturating_sub(ts as u128) < GOSSIP_SHOW_WINDOW_MS {
+            by_account.entry(id).or_default().push(name);
         }
     }
     Ok(by_account
@@ -1293,6 +1356,27 @@ pub async fn get_presence(
     }
     for (acct, secs) in by_account {
         out.insert(acct, presence_from_seen(secs.into_iter()));
+    }
+
+    // Gossip-directory nodes (phones / gossip-only — not in the LAN roster): online if their last
+    // presence heartbeat is recent. Heartbeats are ~30s, so allow ~90s of grace (vs the tighter
+    // LAN TTL). Keeps a fresher LAN sighting if the same account is both.
+    let now = now_ms();
+    for (id, _pid, _name, ts) in rt.gossip_directory() {
+        let secs = (now.saturating_sub(ts as u128) / 1000) as u64;
+        let fresher = out
+            .get(&id)
+            .and_then(|e| e.last_seen_secs)
+            .is_none_or(|e| secs < e);
+        if fresher {
+            out.insert(
+                id,
+                PresenceInfo {
+                    online: secs < 90,
+                    last_seen_secs: Some(secs),
+                },
+            );
+        }
     }
 
     // Per-channel presence: the freshest of any known member device currently in roster.

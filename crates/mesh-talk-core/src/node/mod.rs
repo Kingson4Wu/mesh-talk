@@ -16,8 +16,9 @@ pub(crate) mod dm_ratchet;
 pub(crate) mod filebook;
 pub(crate) mod files;
 pub(crate) mod linking;
+#[cfg(feature = "native")]
+pub mod mdns;
 pub(crate) mod media_store;
-pub(crate) mod message;
 pub(crate) mod name_directory;
 pub(crate) mod node;
 pub(crate) mod pairing;
@@ -33,10 +34,10 @@ pub(crate) mod received_log;
 pub(crate) mod runtime;
 pub(crate) mod sentlog;
 pub(crate) mod serving;
-pub(crate) mod session;
 pub(crate) mod transport;
 
 pub use crate::discovery::service::spawn_discovery;
+pub use crate::message::MessageBody;
 pub use crate::transport::net::{
     bind_dual_stack_listener, discovery_socket, ipv4_interface_addrs, DEFAULT_DISCOVERY_PORT,
     DISCOVERY_MULTICAST_GROUP,
@@ -46,7 +47,6 @@ pub use dm_envelope::{DmEnvelope, DmRoute, ReactionEnvelope};
 pub use dm_ratchet::DmRatchet;
 pub use filebook::{FileBook, ReceivedFile};
 pub use files::FileProgress;
-pub use message::MessageBody;
 pub use node::{
     ChannelSummary, HistoryEntry, LinkedAccount, Node, NodeError, ReceivedDm, ReceivedProfile,
     SearchHit,

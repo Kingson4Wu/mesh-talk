@@ -80,6 +80,7 @@
     "strandedNoNetwork": "未連接任何網路 · 設定直連"
   },
   "conversation": {
+    "back": "返回",
     "noneSelectedTitle": "未選擇對話",
     "noneSelectedDesc": "選擇一位聯絡人或頻道開始聊天。",
     "unlockingTitle": "正在解鎖你的加密儲存空間…",
@@ -166,7 +167,20 @@
     "downloadFolderDesc": "接收檔案的儲存位置。留空則每次詢問。",
     "downloadFolderSet": "接收的檔案會自動儲存到此處。",
     "chooseFolder": "選擇資料夾",
-    "changeFolder": "變更"
+    "changeFolder": "變更",
+    "sectionLanHub": "區域網路共享",
+    "relayService": "作為中繼",
+    "relayServiceDesc": "讓本網路內的手機透過這台電腦互相連接通訊。",
+    "shareApp": "讓手機下載 App",
+    "shareAppDesc": "啟動本機網頁伺服器並顯示 QR Code。用手機(同一 Wi-Fi)掃碼即可下載並加入。",
+    "shareAppFailed": "無法開始共享",
+    "stopSharing": "停止共享",
+    "sectionGateway": "閘道",
+    "gatewayRelay": "中繼位址",
+    "gatewayRelayDesc": "本應用用於與對端同步的信令中繼位址。向架設網狀網路的人索取位址。",
+    "gatewayRelayPlaceholder": "ws://… 或邀請連結",
+    "gatewayCopyInvite": "複製邀請",
+    "gatewayQrHint": "在另一台裝置上掃碼以加入此閘道"
   },
   "search": {
     "title": "搜尋訊息",

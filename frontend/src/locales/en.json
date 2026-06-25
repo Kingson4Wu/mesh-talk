@@ -80,6 +80,7 @@
     "strandedNoNetwork": "Not on any network — set up a direct link"
   },
   "conversation": {
+    "back": "Back",
     "noneSelectedTitle": "No conversation selected",
     "noneSelectedDesc": "Pick a contact or channel to start chatting.",
     "unlockingTitle": "Unlocking your encrypted stores…",
@@ -166,7 +167,20 @@
     "downloadFolderDesc": "Where received files are saved. Leave unset to be asked each time.",
     "downloadFolderSet": "Received files are saved here automatically.",
     "chooseFolder": "Choose folder",
-    "changeFolder": "Change"
+    "changeFolder": "Change",
+    "sectionLanHub": "LAN sharing",
+    "relayService": "Act as a relay",
+    "relayServiceDesc": "Let phones on this network connect through this computer to reach each other.",
+    "shareApp": "Let a phone download the app",
+    "shareAppDesc": "Start a local web server + show a QR. Scan it on a phone (same Wi-Fi) to download and join.",
+    "shareAppFailed": "Couldn't start sharing",
+    "stopSharing": "Stop sharing",
+    "sectionGateway": "Gateway",
+    "gatewayRelay": "Relay address",
+    "gatewayRelayDesc": "The signaling relay this app connects through to sync with peers. Ask whoever runs the mesh for the address.",
+    "gatewayRelayPlaceholder": "ws://… or an invite link",
+    "gatewayCopyInvite": "Copy invite",
+    "gatewayQrHint": "Scan on another device to join this gateway"
   },
   "search": {
     "title": "Search messages",

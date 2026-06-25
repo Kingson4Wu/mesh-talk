@@ -80,6 +80,7 @@
     "strandedNoNetwork": "Sin red — crea un enlace directo"
   },
   "conversation": {
+    "back": "Atrás",
     "noneSelectedTitle": "Ninguna conversación seleccionada",
     "noneSelectedDesc": "Elige un contacto o canal para empezar a chatear.",
     "unlockingTitle": "Desbloqueando tus almacenes cifrados…",
@@ -166,7 +167,20 @@
     "downloadFolderDesc": "Dónde se guardan los archivos recibidos. Déjalo sin definir para preguntar cada vez.",
     "downloadFolderSet": "Los archivos recibidos se guardan aquí automáticamente.",
     "chooseFolder": "Elegir carpeta",
-    "changeFolder": "Cambiar"
+    "changeFolder": "Cambiar",
+    "sectionLanHub": "Compartir en LAN",
+    "relayService": "Actuar como retransmisor",
+    "relayServiceDesc": "Permite que los teléfonos de esta red se conecten entre sí a través de este equipo.",
+    "shareApp": "Dejar que un teléfono descargue la app",
+    "shareAppDesc": "Inicia un servidor web local y muestra un QR. Escanéalo en un teléfono (misma Wi-Fi) para descargar y unirse.",
+    "shareAppFailed": "No se pudo iniciar el uso compartido",
+    "stopSharing": "Dejar de compartir",
+    "sectionGateway": "Puerta de enlace",
+    "gatewayRelay": "Dirección del retransmisor",
+    "gatewayRelayDesc": "El retransmisor de señalización por el que esta app se conecta para sincronizar con los pares. Pide la dirección a quien gestiona la malla.",
+    "gatewayRelayPlaceholder": "ws://… o un enlace de invitación",
+    "gatewayCopyInvite": "Copiar invitación",
+    "gatewayQrHint": "Escanéalo en otro dispositivo para unirte a esta puerta de enlace"
   },
   "search": {
     "title": "Buscar mensajes",

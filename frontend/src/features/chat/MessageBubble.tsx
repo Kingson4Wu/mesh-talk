@@ -379,7 +379,7 @@ function Actions({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+    <div className="flex items-center gap-0.5 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100">
       <button
         onClick={onReply}
         disabled={disabled}

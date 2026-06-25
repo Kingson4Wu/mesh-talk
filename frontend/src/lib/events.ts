@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isTauri } from "./backend";
 import type {
   ChannelMessageEvent,
   DmReceivedEvent,
@@ -15,6 +16,9 @@ export function subscribeNodeEvents(handlers: {
   onFileProgress?: (e: FileProgressEvent) => void;
   onProfile?: (e: ProfileReceivedEvent) => void;
 }): () => void {
+  // Inbound events arrive over Tauri IPC on desktop. The browser PWA has no event source yet
+  // (it lands with the browser transport in a later phase), so subscribing is a no-op there.
+  if (!isTauri()) return () => {};
   const unlisteners: Promise<UnlistenFn>[] = [];
   if (handlers.onDm) {
     unlisteners.push(

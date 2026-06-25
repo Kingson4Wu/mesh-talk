@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@/lib/backend", () => ({ invoke, isTauri: () => true }));
 
 // Capture the event handlers start() registers, so we can drive inbound events.
 const { captured } = vi.hoisted(() => ({

@@ -21,6 +21,7 @@ pub mod config_store;
 pub mod diagnostics;
 pub mod events;
 pub mod favorites;
+pub mod lan_host;
 pub mod logger;
 pub mod perf;
 pub mod services;
@@ -171,8 +172,13 @@ pub fn run_tauri() {
         .manage(favorites_state)
         .manage(avatars_state)
         .manage(crate::chat_commands::NodeState::empty())
+        .manage(crate::lan_host::LanHub::default())
         .invoke_handler(tauri::generate_handler![
             commands::login,
+            crate::lan_host::start_app_host,
+            crate::lan_host::stop_app_host,
+            crate::lan_host::set_relay_running,
+            crate::lan_host::relay_running,
             commands::logout,
             commands::register,
             commands::auto_login,

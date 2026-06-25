@@ -213,6 +213,21 @@ impl NodeRuntime {
                 }
             }));
         }
+        // Presence gossip: announce ourselves + exchange the presence/relay directories with every
+        // LAN peer every 30s — so every desktop learns every OTHER desktop, and a phone (via any
+        // hub) sees them all, not just the one it connected to. Safe to run always: the directory
+        // is last-writer-wins (compacted + wall-clock-superseded), so it can't grow unbounded.
+        {
+            let node = Arc::clone(&node);
+            let name = display_name.to_string();
+            tasks.push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    tick.tick().await;
+                    node.gossip_directories_with_peers(&name).await;
+                }
+            }));
+        }
         tasks.push(tokio::spawn(async move {
             while let Some(dm) = incoming_rx.recv().await {
                 on_dm(dm);
@@ -243,6 +258,7 @@ impl NodeRuntime {
             let node = Arc::clone(&node);
             let roster = Arc::clone(&roster);
             let names = Arc::clone(&names);
+            let name = display_name.to_string();
             tasks.push(tokio::spawn(async move {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 loop {
@@ -259,13 +275,23 @@ impl NodeRuntime {
                             let _ = dir.record(&p.public.user_id(), &p.name);
                         }
                     }
-                    // Re-publish our avatar to peers we hadn't seen before (a no-op if we've
-                    // set no avatar). `seen` only tracks ids, so this stays bounded.
-                    let newcomers = peers
+                    // Peers we hadn't seen before this poll (every ~3s — far snappier than the 30s
+                    // directory tick). `seen` only tracks ids, so this stays bounded.
+                    let newcomers: Vec<PeerRecord> = peers
                         .into_iter()
-                        .filter(|p| !p.post_office && seen.insert(p.public.user_id()));
-                    for peer in newcomers {
-                        node.republish_profile_to(&peer).await;
+                        .filter(|p| !p.post_office && seen.insert(p.public.user_id()))
+                        .collect();
+                    if !newcomers.is_empty() {
+                        // A new LAN peer just appeared — exchange the presence/relay directories
+                        // RIGHT NOW so it enters our [7;32] (and we enter theirs) within seconds,
+                        // not up to 30s later. This is what makes a freshly-online PC show up
+                        // promptly to PHONES: a phone served by our gateway hub reads OUR [7;32], so
+                        // a peer that isn't in it yet is invisible to the phone until the next tick.
+                        node.gossip_directories_with_peers(&name).await;
+                        // Re-publish our avatar to the newcomers (a no-op if we've set none).
+                        for peer in &newcomers {
+                            node.republish_profile_to(peer).await;
+                        }
                     }
                     tokio::time::sleep(Duration::from_secs(PROFILE_REPUBLISH_INTERVAL_SECS)).await;
                 }
@@ -345,11 +371,28 @@ impl NodeRuntime {
 
     /// The public identity of a known peer (to derive its DM conversation), if known.
     pub fn peer_public(&self, user_id: &str) -> Option<PublicIdentity> {
-        self.roster
+        if let Some(p) = self
+            .roster
             .lock()
             .expect("roster mutex not poisoned")
             .get(user_id)
             .map(|p| p.public.clone())
+        {
+            return Some(p);
+        }
+        // Fall back to the gossiped presence directory — phones (and gossip-only nodes) live there,
+        // not in the LAN roster, so this is how the desktop resolves them to DM / show history.
+        self.node
+            .gossip_directory()
+            .into_iter()
+            .find(|(id, _, _, _)| id == user_id)
+            .map(|(_, pid, _, _)| pid)
+    }
+
+    /// Nodes from the gossiped presence directory ([7;32]) — phones + other gossip-reachable nodes
+    /// that never appear in the LAN roster. Merged into the contact list so the desktop sees them.
+    pub fn gossip_directory(&self) -> Vec<(String, PublicIdentity, String, u64)> {
+        self.node.gossip_directory()
     }
 
     /// Send a DM to a known peer by user-id.
@@ -520,6 +563,38 @@ impl Drop for NodeRuntime {
         for task in &self.tasks {
             task.abort();
         }
+    }
+}
+
+impl NodeRuntime {
+    /// Announce a relay endpoint this node hosts into the gossiped relay directory, so phones
+    /// (even ones reached only through a hub) learn it and can fail over to it. Best-effort.
+    pub fn announce_relay_endpoint(&self, url: &str) {
+        let _ = self.node.announce_relay_endpoint(url);
+    }
+}
+
+/// Mesh gateway hub (feature `gateway`): expose the node as a WebRTC hub for browser spokes.
+#[cfg(feature = "gateway")]
+impl NodeRuntime {
+    /// Spawn a background task that runs this node as a mesh gateway HUB on `relay_url`/`room`,
+    /// reconnecting if the relay drops (e.g. it isn't up yet, or restarts). Returns the task
+    /// handle so the caller can abort it (e.g. when the relay is turned off). Phones that join the
+    /// relay then reach this desktop node — and, through it, each other + the LAN mesh.
+    pub fn spawn_gateway_hub(
+        &self,
+        relay_url: String,
+        room: String,
+    ) -> tokio::task::JoinHandle<()> {
+        let node = std::sync::Arc::clone(&self.node);
+        tokio::spawn(async move {
+            loop {
+                let _ = std::sync::Arc::clone(&node)
+                    .run_gateway_hub(&relay_url, &room)
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        })
     }
 }
 

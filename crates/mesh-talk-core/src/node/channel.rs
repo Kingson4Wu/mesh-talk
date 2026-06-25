@@ -8,7 +8,7 @@ use crate::channel::sender_key::SenderKeyDistribution;
 use crate::channel::{ChannelMeta, ChannelState};
 use crate::eventlog::event::{Author, ConversationId, Event, EventId, EventKind};
 use crate::identity::device::{DeviceIdentity, PublicIdentity};
-use crate::node::message::MessageBody;
+use crate::message::MessageBody;
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

@@ -3,7 +3,9 @@ import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { LoginScreen } from "@/features/auth/LoginScreen";
 import { ChatApp } from "@/features/chat/ChatApp";
+import { MobileApp } from "@/features/mobile/MobileApp";
 import { WindowControls } from "@/components/WindowControls";
+import { useIsMobile } from "@/lib/useIsMobile";
 import { useAuth } from "@/store/auth";
 import { useAvatars } from "@/store/avatars";
 
@@ -11,6 +13,10 @@ export default function App() {
   const { t } = useTranslation();
   const user = useAuth((s) => s.user);
   const booting = useAuth((s) => s.booting);
+  // The ONLY viewport decision in the app: a phone-width screen gets the single-pane mobile shell,
+  // everything else the desktop two-pane. (isTauri — desktop app vs browser PWA — is the orthogonal
+  // capability axis, handled inside the shells/lib.)
+  const mobile = useIsMobile();
   const tryAutoLogin = useAuth((s) => s.tryAutoLogin);
   const loadAvatars = useAvatars((s) => s.load);
 
@@ -28,7 +34,11 @@ export default function App() {
       {/* Custom min/max/close for the frameless window (Windows/Linux); null on macOS/web. */}
       <WindowControls />
       {user ? (
-        <ChatApp />
+        mobile ? (
+          <MobileApp />
+        ) : (
+          <ChatApp />
+        )
       ) : booting ? (
         <Unlocking label={t("login.resuming")} />
       ) : (

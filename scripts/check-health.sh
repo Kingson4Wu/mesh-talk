@@ -215,6 +215,13 @@ if [ "$FAST" = "1" ]; then
     fi
 fi
 if [ "$RUN_UI_E2E" = "1" ]; then
+    # The gateway/mesh e2e tests drive a real signaling relay binary. Build it (release) so the
+    # tests exercise the CURRENT relay (incl. mesh mode) rather than a stale/absent binary.
+    print_status "success" "Building the signaling relay for e2e..."
+    if ! nice -n 10 cargo build -p mesh-talk-signal --release; then
+        print_status "error" "Failed to build mesh-talk-signal (needed by the gateway/mesh e2e)."
+        exit 1
+    fi
     print_status "success" "Running UI E2E (Playwright)..."
     ( cd frontend && npx playwright install chromium >/dev/null 2>&1 || true )
     if ! { cd frontend && npx playwright test --project=chromium; }; then

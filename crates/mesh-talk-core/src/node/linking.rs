@@ -6,8 +6,8 @@ use crate::eventlog::event::{ConversationId, EventId};
 use crate::identity::account::Account;
 use crate::identity::device::PublicIdentity;
 use crate::node::pairing::PendingLink;
-use crate::node::session::SessionError;
 use crate::node::transport::dial;
+use crate::session::SessionError;
 use crate::transport::SecureChannel;
 use tokio::net::TcpStream;
 

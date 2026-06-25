@@ -36,6 +36,14 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      # The gateway/mesh e2e tests drive a real signaling relay binary; build it so they run
+      # (rather than skip on a missing binary) and exercise the current relay, incl. mesh mode.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build signaling relay
+        working-directory: ${{ github.workspace }}
+        run: cargo build -p mesh-talk-signal --release
+
       - name: Run UI E2E
         run: npx playwright test
 

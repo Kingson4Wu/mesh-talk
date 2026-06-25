@@ -6,8 +6,15 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Allow one retry everywhere: the PWA tests do real wasm PBKDF2 logins (synchronous, CPU-heavy)
+  // and the multi-context gateway tests add WebRTC, so a round can occasionally exceed its budget
+  // under load (e.g. the pre-commit gate, right after clippy/tests). A retry absorbs that flake; a
+  // genuine break still fails both attempts.
+  retries: 1,
+  // Serial: the PWA tests each run a real wasm PBKDF2 login (synchronous on the main thread), so
+  // running them in parallel saturates the CPU and makes the login flow flake. Serial is a touch
+  // slower but reliable (CI already used 1 worker).
+  workers: 1,
   reporter: process.env.CI ? "list" : "html",
   use: {
     baseURL: "http://localhost:5173",

@@ -151,7 +151,7 @@ export function MembersDialog() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-100 transition-opacity hover:text-destructive [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
                     title={t("common.remove")}
                     aria-label={t("common.remove")}
                     onClick={() => removeMember(m.user_id)}

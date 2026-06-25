@@ -11,13 +11,34 @@
 //! Ed25519-signed over its content (Plan 3), which binds the ciphertext to its
 //! conversation and author, so this module does not bind those itself.
 
-use crate::identity::device::DeviceIdentity;
+use crate::eventlog::event::ConversationId;
+use crate::identity::device::{DeviceIdentity, PublicIdentity};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use bincode::Options;
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
+
+/// Domain separator for DM conversation-id derivation.
+const DM_CONV_DOMAIN: &[u8] = b"mesh-talk-dm-conversation-v1";
+
+/// The deterministic conversation id for the 1:1 DM between two peers — a hash of the SORTED pair
+/// of Ed25519 keys, so both peers compute the same id regardless of order. A self-DM (`a == b`)
+/// hashes the key twice for a well-defined, non-colliding id. Single source of truth shared by the
+/// native node ([`crate::node::conversation`] re-exports it) and the wasm node.
+pub fn dm_conversation_id(a: &PublicIdentity, b: &PublicIdentity) -> ConversationId {
+    let (lo, hi) = if a.ed25519_pub <= b.ed25519_pub {
+        (a.ed25519_pub, b.ed25519_pub)
+    } else {
+        (b.ed25519_pub, a.ed25519_pub)
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(DM_CONV_DOMAIN);
+    hasher.update(lo);
+    hasher.update(hi);
+    ConversationId::new(hasher.finalize().into())
+}
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
