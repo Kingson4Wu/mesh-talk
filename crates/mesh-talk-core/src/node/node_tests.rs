@@ -472,6 +472,64 @@ async fn recall_account_tombstones_own_message_and_enforces_window() {
 }
 
 #[tokio::test]
+async fn channel_sticker_send_recall_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let me = DeviceIdentity::generate();
+    let bob = DeviceIdentity::generate();
+    let bob_pub = bob.public();
+
+    let roster = Arc::new(Mutex::new(Roster::default()));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (ch_tx, _ch_rx) = mpsc::unbounded_channel();
+    let (file_tx, _file_rx) = mpsc::unbounded_channel();
+    let node = Node::open(
+        me,
+        roster,
+        tx,
+        ch_tx,
+        file_tx,
+        &dir.path().join("me.log"),
+        &dir.path().join("me-sent.log"),
+        "pw",
+    )
+    .unwrap();
+
+    let channel = node.create_channel("general", vec![bob_pub]).await.unwrap();
+    node.send_channel_message(channel, b"plain text")
+        .await
+        .unwrap();
+    node.send_sticker_channel(channel, "1f602", "😂".as_bytes())
+        .await
+        .unwrap();
+
+    // The sticker surfaces with its id + emoji fallback; the text message is normal.
+    let hist = node.channel_history(channel, 10);
+    assert_eq!(hist.len(), 2);
+    let sticker = hist
+        .iter()
+        .find(|e| e.sticker.as_deref() == Some("1f602"))
+        .expect("sticker message present");
+    assert_eq!(sticker.text, "😂".as_bytes());
+    let text_msg = hist
+        .iter()
+        .find(|e| e.text == b"plain text")
+        .expect("text message present");
+    let text_id = text_msg.id;
+    let sticker_id_ev = sticker.id;
+
+    // Recall the sticker (our own, fresh) → tombstoned, sticker cleared.
+    node.recall_channel(channel, sticker_id_ev).await.unwrap();
+    let hist = node.channel_history(channel, 10);
+    let recalled = hist.iter().find(|e| e.id == sticker_id_ev).unwrap();
+    assert!(recalled.recalled && recalled.sticker.is_none());
+
+    // Delete the text message locally (sent seq->id path) → gone from history.
+    assert_eq!(node.delete_message(channel, text_id, false).unwrap(), 1);
+    let hist = node.channel_history(channel, 10);
+    assert!(!hist.iter().any(|e| e.id == text_id));
+}
+
+#[tokio::test]
 async fn reopen_suppresses_recorded_history_but_retries_unrecorded() {
     let dir = tempfile::tempdir().unwrap();
     let me = DeviceIdentity::generate();
